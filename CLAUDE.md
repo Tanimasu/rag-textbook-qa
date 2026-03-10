@@ -50,7 +50,17 @@ python simple_evaluation.py
 
 ## Key Architecture Decisions
 
-**Book identifiers** (used as ChromaDB collection suffixes): `os`, `computer_organization`. These are hardcoded in scripts and must match across the pipeline.
+**Book identifiers** (used as ChromaDB collection suffixes) — defined in `vectorize_chunks.py::BOOK_NAME_MAP` and referenced in `rag_engine.py` test queries:
+
+| 教材 | Docling 标识 | MinerU 标识 |
+|------|-------------|-------------|
+| 操作系统 | `os` | `os_mineru` |
+| 计算机组成原理 | `computer_organization` | `computer_organization_mineru` |
+| 计算机网络 | `computer_network` | `computer_network_mineru` |
+| 数据结构 | `data_structure` | `data_structure_mineru` |
+| 数据库原理及应用教程 | `database` | `database_mineru` |
+
+The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a-zA-Z0-9._-]` for collection names.
 
 **ChromaDB collections** follow the naming pattern `textbook_{book_name}`. The RAGEngine and MultiBookVectorizer both rely on this convention.
 
