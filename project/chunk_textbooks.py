@@ -243,10 +243,13 @@ class SmartTextbookChunker:
             if not content or len(content.strip()) < 10:
                 continue
 
-            # 如果内容过长，分割
+            # 如果内容过长，分割（HTML 表格整体保留，不切割）
             if len(content) > self.max_chunk_size:
-                chunks = self.split_long_content(content, level)
-                all_chunks.extend(chunks)
+                if content.lstrip().startswith('<table'):
+                    all_chunks.append(self.create_chunk(content, level))
+                else:
+                    chunks = self.split_long_content(content, level)
+                    all_chunks.extend(chunks)
             else:
                 # 直接创建块
                 chunk = self.create_chunk(content, level)
@@ -356,8 +359,8 @@ def main():
     """主函数"""
 
     # 配置路径
-    input_file = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络_cleaned.md")
-    output_json = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络_chunks.json")
+    input_file = Path(r"D:\CodeField\Graduation_project\project\output\数据结构.md")
+    output_json = Path(r"D:\CodeField\Graduation_project\project\output\数据结构_chunks.json")
 
     # 检查输入文件
     if not input_file.exists():

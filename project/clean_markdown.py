@@ -401,8 +401,8 @@ class SmartMarkdownCleaner:
 def main():
     """主函数"""
     # 配置路径
-    input_file = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络.md")
-    output_file = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络_cleaned.md")
+    input_file = Path(r"D:\CodeField\Graduation_project\project\output\数据库原理及应用教程_mineru.md")
+    output_file = Path(r"D:\CodeField\Graduation_project\project\output\数据库原理及应用教程_mineru_cleaned.md")
 
     # 检查输入文件
     if not input_file.exists():

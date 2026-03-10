@@ -52,7 +52,7 @@ def check_markdown_quality(md_path: str) -> dict:
 
 if __name__ == "__main__":
     # 修改这里指定要检查的 Markdown 文件
-    MD_PATH = "./output/操作系统_cleaned.md"
+    MD_PATH = "./output/计算机网络_mineru_cleaned.md"
 
     if not Path(MD_PATH).exists():
         print(f"文件不存在: {MD_PATH}")

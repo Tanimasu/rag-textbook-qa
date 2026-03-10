@@ -10,9 +10,11 @@ This is a Chinese-language **RAG (Retrieval-Augmented Generation) Q&A system** f
 
 The processing pipeline runs in sequence:
 
-1. **PDF to Markdown** — `parsingPDF.py`: Uses Docling + EasyOCR (GPU) to convert PDFs in `project/data/` to Markdown in `project/output/`
+1. **PDF to Markdown** — two options (edit hardcoded paths in script before running):
+   - `parsingPDF.py`: Uses Docling + EasyOCR (GPU). Forces OCR on all pages. Known issue: misses content on scanned pages.
+   - `parsingPDF_mineru.py`: Uses MinerU 2.7.6 (pipeline backend). `parse_method="auto"` detects per page whether OCR is needed. Produces ~50% more content than Docling on mixed digital/scanned PDFs. Output files are named `*_mineru.md` to distinguish from Docling output. Always uses `formula_enable=True`; for long PDFs that would OOM, automatically splits into `CHUNK_PAGES`-page segments (default 120) using pymupdf, processes each segment separately, then merges the Markdown. **Do NOT set `formula_enable=False`** — MinerU will treat formula regions as images (`![](images/...)`) which are useless for RAG.
 2. **Clean Markdown** — `clean_markdown.py`: Normalizes heading hierarchy (SmartMarkdownCleaner), outputs `*_cleaned.md`
-3. **Chunk** — `chunk_textbooks.py`: Splits cleaned Markdown into JSON chunks (`*_chunks.json`) using SmartTextbookChunker (max 800 chars, min 100 chars, 50 char overlap)
+3. **Chunk** — `chunk_textbooks.py`: Splits cleaned Markdown into JSON chunks (`*_chunks.json`) using SmartTextbookChunker (max 800 chars, min 100 chars, 50 char overlap). HTML tables (MinerU output) are kept as single chunks regardless of size to preserve table integrity.
 4. **Vectorize** — `vectorize_chunks.py`: Embeds chunks with `BAAI/bge-large-zh-v1.5` and stores in ChromaDB at `project/vector_db/`. Each book gets its own collection named `textbook_{book_name}`.
 5. **Query/RAG** — `rag_engine.py`: Hybrid retrieval (embedding + BM25/jieba) → Cross-Encoder reranking (`BAAI/bge-reranker-base`) → prompt construction → LLM call via `llm_client.py`. Optional HyDE (`enable_hyde=True`) generates a hypothetical document via LLM before embedding the query.
 6. **Evaluate** — two options:
@@ -27,7 +29,8 @@ All scripts are run from `project/` as the working directory:
 cd project/
 
 # Step 1: Parse PDF (edit hardcoded paths in script first)
-python parsingPDF.py
+python parsingPDF.py          # Docling version
+python parsingPDF_mineru.py   # MinerU version (recommended for scanned PDFs)
 
 # Step 2: Clean markdown
 python clean_markdown.py
@@ -76,6 +79,7 @@ python simple_evaluation.py
 | `vectorize_chunks.py` | MultiBookVectorizer - ChromaDB + sentence-transformers |
 | `chunk_textbooks.py` | SmartTextbookChunker - Markdown to JSON chunks |
 | `clean_markdown.py` | SmartMarkdownCleaner - heading normalization |
+| `parsingPDF_mineru.py` | MinerU-based PDF parser (alternative to parsingPDF.py); outputs `*_mineru.md` |
 | `simple_evaluation.py` | Evaluation with keyword overlap metrics (no external deps) |
 | `ragas_evaluation.py` | Evaluation with RAGAS metrics (faithfulness, relevancy, precision, recall) |
 | `eval_dataset.json` | Ground-truth Q&A pairs for evaluation |
@@ -104,4 +108,6 @@ python simple_evaluation.py
 
 ## Dependencies
 
-Key Python packages: `docling`, `chromadb`, `sentence-transformers`, `rank-bm25`, `jieba`, `openai`, `pandas`, `openpyxl`, `tqdm`, `ragas`, `langchain-openai`, `langchain-community`, `datasets`
+Key Python packages: `docling`, `mineru`, `chromadb`, `sentence-transformers`, `rank-bm25`, `jieba`, `openai`, `pandas`, `openpyxl`, `tqdm`, `ragas`, `langchain-openai`, `langchain-community`, `datasets`
+
+MinerU requires `C:\Users\Trasky\mineru.json` (auto-generated on first model download) and models cached at `D:\HuggingFaceCache\hub`. Windows Developer Mode must be enabled for HuggingFace Hub symlinks to work.
