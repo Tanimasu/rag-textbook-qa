@@ -243,10 +243,13 @@ class SmartTextbookChunker:
             if not content or len(content.strip()) < 10:
                 continue
 
-            # 如果内容过长，分割
+            # 如果内容过长，分割（HTML 表格整体保留，不切割）
             if len(content) > self.max_chunk_size:
-                chunks = self.split_long_content(content, level)
-                all_chunks.extend(chunks)
+                if content.lstrip().startswith('<table'):
+                    all_chunks.append(self.create_chunk(content, level))
+                else:
+                    chunks = self.split_long_content(content, level)
+                    all_chunks.extend(chunks)
             else:
                 # 直接创建块
                 chunk = self.create_chunk(content, level)
@@ -352,41 +355,28 @@ class SmartTextbookChunker:
         print(f"   ✅ 预览文件: {txt_path}")
 
 
-def main():
-    """主函数"""
-
-    # 配置路径
-    input_file = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络_cleaned.md")
-    output_json = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络_chunks.json")
-
-    # 检查输入文件
+def chunk_single_file(input_file: Path, output_json: Path):
+    """对单个文件执行分块并打印示例"""
     if not input_file.exists():
-        print(f"❌ 错误：找不到文件 {input_file}")
-        exit(1)
+        print(f"错误：找不到文件 {input_file}")
+        return False
 
-    print(f"📂 输入文件: {input_file}")
-    print(f"📂 输出文件: {output_json}")
-    print(f"📂 文件大小: {input_file.stat().st_size:,} 字节\n")
+    print(f"输入文件: {input_file}")
+    print(f"输出文件: {output_json}")
+    print(f"文件大小: {input_file.stat().st_size:,} 字节\n")
 
     try:
-        # 创建分块器
         chunker = SmartTextbookChunker(
-            max_chunk_size=800,  # 最大800字符
-            min_chunk_size=100,  # 最小100字符
-            overlap_size=50  # 重叠50字符
+            max_chunk_size=800,
+            min_chunk_size=100,
+            overlap_size=50
         )
-
-        # 执行分块
         chunks = chunker.chunk_document(str(input_file))
-
-        # 保存结果
         chunker.save_chunks(chunks, str(output_json))
 
-        # 显示示例
         print("\n" + "=" * 70)
-        print("📄 分块示例（前3个块）")
+        print("分块示例（前3个块）")
         print("=" * 70)
-
         for i, chunk in enumerate(chunks[:3], 1):
             print(f"\n【Chunk {i}】")
             print(f"ID: {chunk.chunk_id}")
@@ -400,18 +390,77 @@ def main():
             print(f"长度: {chunk.char_count} 字符")
             print(f"内容预览:\n{chunk.content[:200]}...")
 
-        print("\n" + "=" * 70)
-        print("🎉 分块完成！")
-        print("\n💡 下一步:")
-        print(f"   1. 检查 JSON 文件: {output_json}")
-        print(f"   2. 检查预览文件: {output_json.parent / (output_json.stem + '_preview.txt')}")
-        print(f"   3. 确认分块质量后，可进行向量化")
-        print("=" * 70)
+        return True
 
     except Exception as e:
-        print(f"\n❌ 发生错误: {e}")
+        print(f"\n错误: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+
+def batch_chunk_cleaned(output_dir: Path = None):
+    """批量分块 output_dir 下所有 *_cleaned.md 文件"""
+    if output_dir is None:
+        output_dir = Path(__file__).parent / "output"
+
+    cleaned_files = sorted(output_dir.glob("*_cleaned.md"))
+
+    if not cleaned_files:
+        print(f"在 {output_dir} 下没有找到 *_cleaned.md 文件")
+        return
+
+    print("=" * 70)
+    print(f"批量分块模式：共找到 {len(cleaned_files)} 个 cleaned 文件")
+    for f in cleaned_files:
+        print(f"  {f.name}")
+    print("=" * 70)
+
+    success, failed = [], []
+
+    for md_file in cleaned_files:
+        # 输出 JSON 与 md 同名，后缀改为 _chunks.json
+        stem = md_file.stem  # e.g. 数据结构_mineru_cleaned
+        json_name = stem.replace("_cleaned", "_chunks") + ".json"
+        output_json = output_dir / json_name
+
+        print(f"\n{'=' * 70}")
+        print(f"处理: {md_file.name}  ->  {json_name}")
+        print("=" * 70)
+
+        ok = chunk_single_file(md_file, output_json)
+        (success if ok else failed).append(md_file.name)
+
+    print("\n" + "=" * 70)
+    print("批量分块完成")
+    print(f"  成功: {len(success)} 个")
+    for name in success:
+        print(f"    OK  {name}")
+    if failed:
+        print(f"  失败: {len(failed)} 个")
+        for name in failed:
+            print(f"    FAIL  {name}")
+    print("=" * 70)
+
+
+def main():
+    """主函数
+
+    用法:
+        python chunk_textbooks.py          # 批量模式：处理 output/ 下所有 *_cleaned.md
+        python chunk_textbooks.py --single # 单文件模式：处理下方 input_file 指定的文件
+    """
+    import sys
+
+    if "--single" in sys.argv:
+        # ── 单文件模式：在此修改路径 ──────────────────────────────────────
+        input_file = Path(r"D:\CodeField\Graduation_project\project\output\数据结构_mineru_cleaned.md")
+        output_json = Path(r"D:\CodeField\Graduation_project\project\output\数据结构_mineru_chunks.json")
+        # ──────────────────────────────────────────────────────────────────
+        chunk_single_file(input_file, output_json)
+    else:
+        output_dir = Path(r"D:\CodeField\Graduation_project\project\output")
+        batch_chunk_cleaned(output_dir)
 
 
 if __name__ == "__main__":

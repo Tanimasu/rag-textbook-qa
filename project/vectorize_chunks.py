@@ -230,93 +230,117 @@ class MultiBookVectorizer:
         print("-" * 70)
 
 
+def _parse_selection(raw: str, total: int) -> list[int]:
+    """将用户输入解析为 0-based 索引列表。
+    支持格式：all / 1 / 1,3 / 1-3 / 1,3-5,7
+    """
+    raw = raw.strip().lower()
+    if raw == "all":
+        return list(range(total))
+
+    indices = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            indices.update(range(int(a) - 1, int(b)))  # 转 0-based
+        elif part.isdigit():
+            indices.add(int(part) - 1)
+    return sorted(i for i in indices if 0 <= i < total)
+
+
 def main():
-    """主函数"""
+    """主函数：自动扫描 output/ 下所有 *_chunks.json，交互选择后向量化"""
+    from pathlib import Path
+    import re
 
-    # ============ 配置 ============
-    base_path = r"D:\CodeField\Graduation_project\project\output"
-    db_path = r"D:\CodeField\Graduation_project\project\vector_db"
+    output_dir = Path(r"D:\CodeField\Graduation_project\project\output")
+    db_path    = r"D:\CodeField\Graduation_project\project\vector_db"
 
-    # 教材配置
-    books = [
-        {
-            'name': 'os',  # 书籍标识
-            'display_name': '操作系统',
-            'chunks_path': f'{base_path}\\操作系统_chunks.json'
-        },
-        {
-            'name': 'computer_organization',  # 书籍标识
-            'display_name': '计算机组成原理',
-            'chunks_path': f'{base_path}\\计算机组成原理_chunks.json'
-        },
-        {
-            'name': 'computer_network',  # 书籍标识
-            'display_name': '计算机网络',
-            'chunks_path': f'{base_path}\\计算机网络_chunks.json'
-        },
-    ]
+    # ── 文件 stem → ChromaDB 集合名映射表 ───────────────────────────────
+    # ChromaDB 只允许 [a-zA-Z0-9._-]，且首尾必须是字母或数字
+    BOOK_NAME_MAP = {
+        "操作系统":                   "os",
+        "操作系统_mineru":            "os_mineru",
+        "计算机组成原理":             "computer_organization",
+        "计算机组成原理_mineru":      "computer_organization_mineru",
+        "计算机网络":                 "computer_network",
+        "计算机网络_mineru":          "computer_network_mineru",
+        "数据结构":                   "data_structure",
+        "数据结构_mineru":            "data_structure_mineru",
+        "数据库原理及应用教程":       "database",
+        "数据库原理及应用教程_mineru":"database_mineru",
+    }
 
-    # ============ 初始化 ============
+    def to_collection_name(stem: str) -> str:
+        """stem 已去掉 _chunks 后缀，转为合法集合名"""
+        if stem in BOOK_NAME_MAP:
+            return BOOK_NAME_MAP[stem]
+        # 兜底：去掉非法字符，保留 [a-zA-Z0-9._-]
+        safe = re.sub(r"[^a-zA-Z0-9._-]", "_", stem).strip("_")
+        if not safe:
+            safe = "book_" + str(abs(hash(stem)))[:8]
+        return safe
+
+    # ── 1. 自动发现所有 chunks 文件 ─────────────────────────────────────
+    chunk_files = sorted(output_dir.glob("*_chunks.json"))
+    if not chunk_files:
+        print(f"在 {output_dir} 下没有找到 *_chunks.json 文件")
+        return
+
+    print("\n" + "=" * 70)
+    print(" 可用的 chunks 文件")
+    print("=" * 70)
+    for i, f in enumerate(chunk_files, 1):
+        size_kb = f.stat().st_size // 1024
+        print(f"  {i:2d}. {f.name:<50s}  ({size_kb} KB)")
+    print("=" * 70)
+
+    # ── 2. 选择要处理的文件 ─────────────────────────────────────────────
+    print("\n输入要向量化的编号（支持格式：all / 1 / 1,3 / 1-3 / 1,3-5）")
+    raw = input("选择: ").strip()
+    selected_indices = _parse_selection(raw, len(chunk_files))
+
+    if not selected_indices:
+        print("未选中任何文件，退出。")
+        return
+
+    selected_files = [chunk_files[i] for i in selected_indices]
+    print(f"\n已选择 {len(selected_files)} 个文件：")
+    for f in selected_files:
+        print(f"  - {f.name}")
+
+    # ── 3. 初始化向量化器（只加载一次模型）──────────────────────────────
     vectorizer = MultiBookVectorizer(db_path=db_path)
 
-    # ============ 向量化所有教材 ============
-    print("\n" + "=" * 70)
-    print(" 批量向量化教材")
-    print("=" * 70)
-
-    for book in books:
-        print(f"\n处理: {book['display_name']}")
-        response = input(f"是否向量化《{book['display_name']}》? (y/n): ")
-
-        if response.lower() == 'y':
+    # ── 4. 逐一向量化 ────────────────────────────────────────────────────
+    success, failed = [], []
+    for f in selected_files:
+        # book_name 取文件 stem，去掉末尾 _chunks，再映射为合法集合名
+        stem = f.stem[:-7] if f.stem.endswith("_chunks") else f.stem
+        book_name = to_collection_name(stem)
+        try:
             vectorizer.vectorize_book(
-                chunks_path=book['chunks_path'],
-                book_name=book['name'],
+                chunks_path=str(f),
+                book_name=book_name,
                 batch_size=32,
-                clear_existing=True  # 清空旧数据
+                clear_existing=True
             )
-        print("\n")
+            success.append(book_name)
+        except Exception as e:
+            print(f"\n错误：{f.name} 向量化失败 — {e}")
+            import traceback; traceback.print_exc()
+            failed.append(book_name)
 
-    # ============ 列出所有教材 ============
-    vectorizer.list_books()
-
-    # ============ 测试搜索 ============
-    print("\n\n" + "=" * 70)
-    print(" 测试搜索功能")
+    # ── 5. 汇总 ──────────────────────────────────────────────────────────
+    print("\n" + "=" * 70)
+    print("向量化汇总")
+    print(f"  成功: {len(success)} 本  {success}")
+    if failed:
+        print(f"  失败: {len(failed)} 本  {failed}")
     print("=" * 70)
 
-    test_cases = [
-        {
-            'book': 'os',
-            'queries': [
-                "什么是进程？",
-                "死锁的必要条件",
-            ]
-        },
-        {
-            'book': 'computer_organization',
-            'queries': [
-                "什么是CPU？",
-                "冯诺依曼结构",
-            ]
-        },
-        {
-            'book': 'computer_network',
-            'queries': [
-                "什么是TCP/IP协议？",
-                "OSI七层模型",
-            ]
-        },
-    ]
-
-    for case in test_cases:
-        for query in case['queries']:
-            vectorizer.search_book(
-                book_name=case['book'],
-                query=query,
-                top_k=3
-            )
-            input("\n按回车继续...")
+    vectorizer.list_books()
 
 
 if __name__ == "__main__":

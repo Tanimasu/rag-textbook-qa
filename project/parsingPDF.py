@@ -13,8 +13,8 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOption
 from docling.datamodel.base_models import InputFormat
 from pathlib import Path
 # 确保路径完全正确
-source = Path(r"D:\CodeField\Graduation_project\project\data\计算机网络.pdf")
-output_path = Path(r"D:\CodeField\Graduation_project\project\output\计算机网络.md")
+source = Path(r"D:\CodeField\Graduation_project\project\data\数据库原理及应用教程.pdf")
+output_path = Path(r"D:\CodeField\Graduation_project\project\output\数据库原理及应用教程.md")
 output_path.parent.mkdir(exist_ok=True)
 if not source.exists():
     print(f"找不到文件: {source}")

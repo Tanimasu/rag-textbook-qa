@@ -565,6 +565,12 @@ def main():
     )
 
     # 测试问题
+    # book 标识符对应 ChromaDB collection 名（去掉 textbook_ 前缀）：
+    #   os / os_mineru                              → 操作系统
+    #   computer_organization / *_mineru            → 计算机组成原理
+    #   computer_network / *_mineru                 → 计算机网络
+    #   data_structure / *_mineru                   → 数据结构
+    #   database / database_mineru                  → 数据库原理及应用教程
     test_queries = [
         {"query": "什么是进程？", "book": "os"},
         {"query": "CPU 的功能是什么？", "book": "computer_organization"},
@@ -574,6 +580,7 @@ def main():
     print("\n" + "=" * 70)
     print("🎓 计算机课程 AI 助教系统")
     print("=" * 70)
+    rag.vectorizer.list_books()
     print("💡 使用说明：")
     print("   - 输入 'test' 运行测试用例")
     print("   - 输入问题直接提问")
