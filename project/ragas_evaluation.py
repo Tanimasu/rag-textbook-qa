@@ -20,7 +20,8 @@ API_KEY  = os.getenv("RAGAS_API_KEY")  or os.getenv("LLM_API_KEY", "")
 BASE_URL = os.getenv("RAGAS_API_BASE") or os.getenv("LLM_API_BASE", "https://api.ohmygpt.com/v1")
 MODEL    = os.getenv("RAGAS_MODEL")    or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite-preview")
 
-DB_PATH  = "./vector_db"
+DB_PATH      = "./vector_db"
+RUN_BASELINE = False   # 设为 True 才运行无 RAG 的 baseline 对比（费 token）
 
 
 class RAGASEvaluator:
@@ -221,6 +222,48 @@ class RAGASEvaluator:
         return None
 
 
+    def prepare_baseline_data(self, rag_engine: RAGEngine, test_questions: List[Dict]) -> Dataset:
+        """
+        不使用 RAG，直接让 LLM 回答问题，作为 baseline 对比。
+        上下文传空字符串，仅评估 answer_relevancy。
+        """
+        print("=" * 60)
+        print("准备 Baseline 数据（无 RAG，直接 LLM）")
+        print("=" * 60)
+
+        questions, answers, contexts, ground_truths = [], [], [], []
+
+        for i, item in enumerate(test_questions, 1):
+            question = item["question"]
+            print(f"[{i}/{len(test_questions)}] {question}")
+            try:
+                prompt = (
+                    "你是一个计算机课程的专业 AI 助教，请回答以下问题。"
+                    "先给出简明答案（2-3句话），再给出详细解释。\n\n"
+                    f"问题：{question}\n\n请开始你的回答："
+                )
+                result = rag_engine.llm.generate_answer(prompt, temperature=0.7, max_tokens=2000)
+                if result["success"]:
+                    questions.append(question)
+                    answers.append(result["answer"])
+                    contexts.append([""])          # 无检索上下文
+                    ground_truths.append(item.get("ground_truth", ""))
+                    print(f"  [回答] {result['answer'][:200]}...")
+                else:
+                    print(f"  失败: {result.get('error', 'unknown')}")
+            except Exception as e:
+                print(f"  异常: {e}")
+
+        if not questions:
+            raise ValueError("没有成功处理任何问题，无法评估。")
+
+        print(f"\nBaseline 数据准备完成：{len(questions)} 条\n")
+        data = {"question": questions, "answer": answers, "contexts": contexts}
+        if any(ground_truths):
+            data["ground_truth"] = ground_truths
+        return Dataset.from_dict(data)
+
+
 def create_test_dataset() -> List[Dict]:
     """内置测试问题集（也可以直接使用 eval_dataset.json）。"""
     return [
@@ -233,22 +276,50 @@ def create_test_dataset() -> List[Dict]:
 
 
 if __name__ == "__main__":
+    import json
+
     # 初始化 RAG 引擎
     rag = RAGEngine(db_path=DB_PATH, enable_llm=True, verbose=False, enable_hyde=True)
 
     # 初始化评估器
     evaluator = RAGASEvaluator()
 
-    # 准备数据并评估
-    import json
-    test_questions = json.load(open("test_questions.json", encoding="utf-8"))
-    # test_questions = create_test_dataset()
-    dataset = evaluator.prepare_evaluation_data(rag, test_questions)
-    result = evaluator.evaluate(dataset)
+    # 加载测试题（优先读文件，否则用内置集）
+    try:
+        test_questions = json.load(open("test_questions.json", encoding="utf-8"))
+    except FileNotFoundError:
+        print("test_questions.json 不存在，使用内置测试集")
+        test_questions = create_test_dataset()
 
-    # 显示并保存结果
-    df = evaluator.print_results(result)
-    if df is not None:
-        out = "ragas_evaluation_results.csv"
-        df.to_csv(out, index=False, encoding="utf-8-sig")
-        print(f"结果已保存到: {out}")
+    # ── 1. RAG 评估 ──────────────────────────────────────────
+    rag_dataset = evaluator.prepare_evaluation_data(rag, test_questions)
+    rag_result  = evaluator.evaluate(rag_dataset)
+    print("\n【RAG 系统评估结果】")
+    rag_df = evaluator.print_results(rag_result)
+    if rag_df is not None:
+        rag_df.to_csv("ragas_evaluation_results.csv", index=False, encoding="utf-8-sig")
+        print("结果已保存到: ragas_evaluation_results.csv")
+
+    # ── 2. Baseline 评估（无 RAG，直接 LLM）──────────────────
+    if RUN_BASELINE:
+        baseline_dataset = evaluator.prepare_baseline_data(rag, test_questions)
+        baseline_result  = evaluator.evaluate(baseline_dataset, metrics=[faithfulness, answer_relevancy, context_precision, context_recall])
+        print("\n【Baseline 评估结果（无 RAG）】")
+        base_df = evaluator.print_results(baseline_result)
+        if base_df is not None:
+            base_df.to_csv("ragas_baseline_results.csv", index=False, encoding="utf-8-sig")
+            print("结果已保存到: ragas_baseline_results.csv")
+
+        # ── 3. 对比摘要 ──────────────────────────────────────
+        print("\n" + "=" * 60)
+        print("RAG vs Baseline 对比摘要")
+        print("=" * 60)
+        for metric in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+            rag_score  = float(rag_df[metric].mean())  if rag_df  is not None and metric in rag_df.columns  else float("nan")
+            base_score = float(base_df[metric].mean()) if base_df is not None and metric in base_df.columns else float("nan")
+            delta = rag_score - base_score
+            sign  = "+" if delta >= 0 else ""
+            print(f"  {metric:20s}  RAG={rag_score:.4f}  Baseline={base_score:.4f}  delta={sign}{delta:.4f}")
+        print("=" * 60)
+    else:
+        print("\n（Baseline 对比已跳过，设 RUN_BASELINE=True 可开启）")

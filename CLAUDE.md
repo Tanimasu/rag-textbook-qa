@@ -17,9 +17,7 @@ The processing pipeline runs in sequence:
 3. **Chunk** — `chunk_textbooks.py`: Splits cleaned Markdown into JSON chunks (`*_chunks.json`) using SmartTextbookChunker (max 800 chars, min 100 chars, 50 char overlap). HTML tables (MinerU output) are kept as single chunks regardless of size to preserve table integrity.
 4. **Vectorize** — `vectorize_chunks.py`: Embeds chunks with `BAAI/bge-large-zh-v1.5` and stores in ChromaDB at `project/vector_db/`. Each book gets its own collection named `textbook_{book_name}`.
 5. **Query/RAG** — `rag_engine.py`: Hybrid retrieval (embedding + BM25/jieba) → Cross-Encoder reranking (`BAAI/bge-reranker-base`) → prompt construction → LLM call via `llm_client.py`. Optional HyDE (`enable_hyde=True`) generates a hypothetical document via LLM before embedding the query.
-6. **Evaluate** — two options:
-   - `simple_evaluation.py`: no external deps, keyword overlap metrics (Jaccard similarity, coverage, length score). Reads `eval_dataset.json`, saves to `simple_eval_results.json` and `.xlsx`.
-   - `ragas_evaluation.py`: full RAGAS metrics (faithfulness, answer relevancy, context precision/recall) via LangChain + LLM. Falls back to local HuggingFace embeddings if API embeddings are unavailable.
+6. **Evaluate** — `ragas_evaluation.py`: full RAGAS metrics (faithfulness, answer relevancy, context precision/recall) via LangChain + LLM. Also runs a **no-RAG baseline** (direct LLM, no retrieval) and prints a side-by-side comparison. Falls back to local HuggingFace embeddings if API embeddings are unavailable.
 
 ## Running Scripts
 
@@ -44,8 +42,8 @@ python vectorize_chunks.py
 # Step 5: Interactive Q&A (type 'test' for built-in test cases)
 python rag_engine.py
 
-# Run evaluation against eval_dataset.json
-python simple_evaluation.py
+# Run RAGAS evaluation (RAG + no-RAG baseline comparison)
+python ragas_evaluation.py
 ```
 
 ## Key Architecture Decisions
@@ -90,8 +88,7 @@ The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a
 | `chunk_textbooks.py` | SmartTextbookChunker - Markdown to JSON chunks |
 | `clean_markdown.py` | SmartMarkdownCleaner - heading normalization |
 | `parsingPDF_mineru.py` | MinerU-based PDF parser (alternative to parsingPDF.py); outputs `*_mineru.md` |
-| `simple_evaluation.py` | Evaluation with keyword overlap metrics (no external deps) |
-| `ragas_evaluation.py` | Evaluation with RAGAS metrics (faithfulness, relevancy, precision, recall) |
+| `ragas_evaluation.py` | Evaluation with RAGAS metrics (faithfulness, relevancy, precision, recall) + no-RAG baseline comparison |
 | `eval_dataset.json` | Ground-truth Q&A pairs for evaluation |
 | `project/vector_db/` | Persisted ChromaDB vector store |
 | `project/output/` | Intermediate Markdown and chunk files |
