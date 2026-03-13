@@ -4,12 +4,9 @@ Run: cd project && streamlit run app.py
 """
 import json
 import os
-import sys
+import sqlite3
 
 import streamlit as st
-
-# Ensure project directory is on path so local modules resolve
-sys.path.insert(0, os.path.dirname(__file__))
 
 # ─────────────────────────────────────────────────────────────
 # Page config (must be first Streamlit call)
@@ -22,9 +19,44 @@ st.set_page_config(
 
 RAGAS_RESULTS_PATH = os.path.join(os.path.dirname(__file__), "ragas_evaluation_results.csv")
 TEST_QUESTIONS_PATH = os.path.join(os.path.dirname(__file__), "test_questions.json")
+VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
 
-BOOK_LABELS = ["操作系统", "计算机组成原理", "全部"]
-BOOK_IDS    = ["os", "computer_organization", None]
+BOOK_NAME_LABELS = {
+    "os": "操作系统",
+    "computer_organization": "计算机组成原理",
+    "computer_network": "计算机网络",
+    "database": "数据库原理及应用",
+    "data_structure": "数据结构",
+}
+
+
+def format_book_label(book_id: str) -> str:
+    """将集合后缀转换成适合前端显示的教材名称。"""
+    return BOOK_NAME_LABELS.get(book_id, book_id.replace("_", " ").title())
+
+
+@st.cache_data(show_spinner=False)
+def load_available_books():
+    """从 ChromaDB 中读取当前已向量化的教材列表。"""
+    sqlite_path = os.path.join(VECTOR_DB_PATH, "chroma.sqlite3")
+
+    if not os.path.exists(sqlite_path):
+        return [("全部", None)]
+
+    with sqlite3.connect(sqlite_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT name
+            FROM collections
+            WHERE name LIKE 'textbook_%'
+            ORDER BY name
+            """
+        ).fetchall()
+
+    book_ids = [row[0].replace("textbook_", "") for row in rows]
+    options = [(format_book_label(book_id), book_id) for book_id in book_ids]
+    options.append(("全部", None))
+    return options
 
 
 # ─────────────────────────────────────────────────────────────
@@ -32,6 +64,10 @@ BOOK_IDS    = ["os", "computer_organization", None]
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="正在加载 RAG 引擎，请稍候…")
 def load_engine():
+    # Keep the import local so Streamlit does not load the full RAG stack until needed.
+    import sys
+
+    sys.path.insert(0, os.path.dirname(__file__))
     from rag_engine import RAGEngine
     return RAGEngine(db_path="./vector_db", verbose=False)
 
@@ -44,8 +80,12 @@ with st.sidebar:
     st.markdown("---")
 
     st.subheader("教材选择")
-    book_label = st.radio("选择教材", BOOK_LABELS, index=0)
-    book_id = BOOK_IDS[BOOK_LABELS.index(book_label)]
+    book_options = load_available_books()
+    book_labels = [label for label, _ in book_options]
+    book_mapping = dict(book_options)
+    default_index = len(book_labels) - 1 if len(book_labels) == 1 else 0
+    book_label = st.radio("选择教材", book_labels, index=default_index)
+    book_id = book_mapping[book_label]
 
     st.markdown("---")
     st.subheader("参数设置")
