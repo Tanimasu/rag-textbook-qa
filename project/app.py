@@ -2,6 +2,7 @@
 app.py — Streamlit UI for CS Textbook RAG Q&A System
 Run: cd project && streamlit run app.py
 """
+import html
 import json
 import os
 import sqlite3
@@ -33,6 +34,291 @@ BOOK_NAME_LABELS = {
 def format_book_label(book_id: str) -> str:
     """将集合后缀转换成适合前端显示的教材名称。"""
     return BOOK_NAME_LABELS.get(book_id, book_id.replace("_", " ").title())
+
+
+def inject_custom_styles():
+    st.markdown(
+        """
+        <style>
+        :root {
+            --accent: #e85d5d;
+            --accent-soft: #fff1ef;
+            --ink: #22304a;
+            --muted: #6d7890;
+            --line: #e7ebf3;
+            --panel: #ffffff;
+            --panel-alt: #f7f9fc;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(232, 93, 93, 0.08), transparent 28%),
+                linear-gradient(180deg, #f7f8fb 0%, #f3f5f9 100%);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f6f7fb 0%, #eef2f7 100%);
+            border-right: 1px solid rgba(34, 48, 74, 0.08);
+        }
+
+        [data-testid="stSidebar"] .block-container {
+            padding-top: 2rem;
+            padding-bottom: 1.25rem;
+        }
+
+        .block-container {
+            max-width: 1120px;
+            padding-top: 1.6rem;
+            padding-bottom: 5rem;
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 0.35rem 0.9rem;
+        }
+
+        .stTabs [aria-selected="true"] {
+            background: var(--accent-soft);
+            border-color: rgba(232, 93, 93, 0.2);
+            color: #a54a4a;
+        }
+
+        [data-testid="stChatInput"] {
+            background: rgba(255, 255, 255, 0.92);
+            border-top: 1px solid rgba(34, 48, 74, 0.08);
+        }
+
+        .hero {
+            background: linear-gradient(135deg, #ffffff 0%, #fff7f4 100%);
+            border: 1px solid rgba(232, 93, 93, 0.14);
+            border-radius: 24px;
+            padding: 1.25rem 1.35rem;
+            box-shadow: 0 14px 40px rgba(34, 48, 74, 0.06);
+            margin-bottom: 1rem;
+        }
+
+        .hero h1 {
+            color: var(--ink);
+            font-size: 2rem;
+            line-height: 1.2;
+            margin: 0;
+        }
+
+        .hero p {
+            margin: 0.55rem 0 0;
+            color: var(--muted);
+            font-size: 0.98rem;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin: 0.9rem 0 1.2rem;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 0.95rem 1rem;
+        }
+
+        .status-label {
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .status-value {
+            color: var(--ink);
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+
+        .answer-shell {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            box-shadow: 0 18px 44px rgba(34, 48, 74, 0.06);
+            padding: 1.35rem 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .answer-title {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            color: var(--ink);
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .answer-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #ffb347 0%, #ff8a3d 100%);
+            color: #fff;
+            font-size: 1rem;
+        }
+
+        .inline-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            margin: 0.75rem 0 0.5rem;
+        }
+
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.38rem 0.75rem;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            border: 1px solid rgba(232, 93, 93, 0.14);
+            color: #a54a4a;
+            font-size: 0.83rem;
+            line-height: 1;
+        }
+
+        .source-card {
+            background: var(--panel-alt);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.7rem;
+        }
+
+        .source-title {
+            color: var(--ink);
+            font-weight: 700;
+            margin-bottom: 0.3rem;
+        }
+
+        .source-meta {
+            color: var(--muted);
+            font-size: 0.84rem;
+            margin-bottom: 0.45rem;
+        }
+
+        .source-snippet {
+            color: #33415c;
+            font-size: 0.92rem;
+            line-height: 1.6;
+        }
+
+        .empty-state {
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px dashed rgba(109, 120, 144, 0.35);
+            border-radius: 22px;
+            padding: 1.1rem 1.2rem;
+            color: var(--muted);
+            margin-top: 0.75rem;
+        }
+
+        div[data-testid="stChatMessage"] {
+            background: transparent;
+        }
+
+        div[data-testid="stChatMessageContent"] {
+            width: 100%;
+        }
+
+        @media (max-width: 900px) {
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero h1 {
+                font-size: 1.6rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def format_section_label(source: dict) -> str:
+    parts = [
+        source.get("chapter", "").strip(),
+        source.get("section_h2", "").strip(),
+        source.get("section_h3", "").strip(),
+    ]
+    parts = [part for part in parts if part]
+    return " > ".join(parts) if parts else "未标注章节"
+
+
+def render_source_preview(sources: list[dict]):
+    if not sources:
+        return
+
+    preview_items = sources[:3]
+    tags = []
+    for source in preview_items:
+        book = format_book_label(source.get("book_name", "") or "未知教材")
+        section = format_section_label(source)
+        tags.append(f"<span class='tag'>📘 {book} · {section}</span>")
+
+    st.markdown(
+        "<div class='inline-tags'>" + "".join(tags) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_sources_expander(sources: list[dict]):
+    if not sources:
+        return
+
+    with st.expander(f"📚 参考来源（{len(sources)}）", expanded=False):
+        for i, source in enumerate(sources, 1):
+            score = source.get("final_score", source.get("similarity", 0))
+            method = source.get("method", "hybrid")
+            book = format_book_label(source.get("book_name", "") or "未知教材")
+            section = format_section_label(source)
+            content = source.get("content", "")
+            snippet = html.escape(content[:220] + ("..." if len(content) > 220 else ""))
+
+            st.markdown(
+                f"""
+                <div class="source-card">
+                    <div class="source-title">{i}. {book}</div>
+                    <div class="source-meta">{section} · 分数 {score:.3f} · {method}</div>
+                    <div class="source-snippet">{snippet}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_answer_block(answer: str, sources: list[dict]):
+    st.markdown(
+        """
+        <div class="answer-shell">
+            <div class="answer-title">
+                <span class="answer-badge">答</span>
+                <span>教材回答</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(answer)
+    render_source_preview(sources)
+    render_sources_expander(sources)
 
 
 @st.cache_data(show_spinner=False)
@@ -72,6 +358,9 @@ def load_engine():
     return RAGEngine(db_path="./vector_db", verbose=False)
 
 
+inject_custom_styles()
+
+
 # ─────────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────────
@@ -87,11 +376,24 @@ with st.sidebar:
     book_label = st.radio("选择教材", book_labels, index=default_index)
     book_id = book_mapping[book_label]
 
-    st.markdown("---")
-    st.subheader("参数设置")
-    top_k       = st.slider("检索数量 (top_k)",   min_value=1,   max_value=10,   value=5)
-    temperature = st.slider("生成温度 (temperature)", min_value=0.1, max_value=1.0, value=0.7, step=0.05)
-    max_tokens  = st.slider("最大生成长度 (max_tokens)", min_value=500, max_value=3000, value=2000, step=100)
+    st.caption(f"当前可检索教材：{max(0, len(book_options) - 1)} 本")
+
+    with st.expander("高级参数", expanded=False):
+        top_k = st.slider("检索条数 (top_k)", min_value=1, max_value=10, value=5)
+        temperature = st.slider(
+            "回答发散度 (temperature)",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+        )
+        max_tokens = st.slider(
+            "最大回答长度 (max_tokens)",
+            min_value=500,
+            max_value=3000,
+            value=2000,
+            step=100,
+        )
 
     st.markdown("---")
     if st.button("清空对话", use_container_width=True):
@@ -105,6 +407,31 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+selected_book_text = "全教材检索" if book_id is None else format_book_label(book_id)
+st.markdown(
+    f"""
+    <div class="hero">
+        <h1>教材问答工作台</h1>
+        <p>围绕教材原文进行检索、回答与溯源，适合课程演示和论文答辩时展示 RAG 的可解释性。</p>
+    </div>
+    <div class="status-grid">
+        <div class="status-card">
+            <div class="status-label">当前检索范围</div>
+            <div class="status-value">{selected_book_text}</div>
+        </div>
+        <div class="status-card">
+            <div class="status-label">已加载教材</div>
+            <div class="status-value">{max(0, len(book_options) - 1)} 本</div>
+        </div>
+        <div class="status-card">
+            <div class="status-label">当前检索条数</div>
+            <div class="status-value">Top {top_k}</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # Tabs
@@ -116,30 +443,24 @@ tab_chat, tab_eval = st.tabs(["💬 问答对话", "📊 评估结果"])
 # TAB 1: Chat
 # ═════════════════════════════════════════════════════════════
 with tab_chat:
+    if not st.session_state.messages:
+        st.markdown(
+            """
+            <div class="empty-state">
+                可以直接提问概念题、比较题或定义题，例如“什么是进程？”、“线程与进程的区别是什么？”。
+                回答会优先依据教材原文生成，并给出参考章节来源。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     # Render existing messages
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            # Show sources for assistant messages
-            if msg["role"] == "assistant" and msg.get("sources"):
-                with st.expander("📚 参考来源"):
-                    for i, src in enumerate(msg["sources"], 1):
-                        score = src.get("final_score", src.get("similarity", 0))
-                        method = src.get("method", "")
-                        chapter = src.get("chapter", "")
-                        h2 = src.get("section_h2", "")
-                        h3 = src.get("section_h3", "")
-                        section = f"{chapter} > {h2}" + (f" > {h3}" if h3 else "")
-                        book = src.get("book_name", "")
-                        content = src.get("content", "")
-
-                        st.markdown(
-                            f"**{i}. [{book}] {section}**  "
-                            f"`得分: {score:.3f}` `方法: {method}`"
-                        )
-                        st.caption(content[:300] + ("…" if len(content) > 300 else ""))
-                        if i < len(msg["sources"]):
-                            st.divider()
+            if msg["role"] == "assistant":
+                render_answer_block(msg["content"], msg.get("sources", []))
+            else:
+                st.markdown(msg["content"])
 
     # Chat input
     user_question = st.chat_input("请输入您的问题…")
@@ -164,27 +485,7 @@ with tab_chat:
             answer = result.get("answer") or "抱歉，未能生成答案。"
             sources = result.get("results", [])
 
-            st.markdown(answer)
-
-            if sources:
-                with st.expander("📚 参考来源"):
-                    for i, src in enumerate(sources, 1):
-                        score = src.get("final_score", src.get("similarity", 0))
-                        method = src.get("method", "")
-                        chapter = src.get("chapter", "")
-                        h2 = src.get("section_h2", "")
-                        h3 = src.get("section_h3", "")
-                        section = f"{chapter} > {h2}" + (f" > {h3}" if h3 else "")
-                        book = src.get("book_name", "")
-                        content = src.get("content", "")
-
-                        st.markdown(
-                            f"**{i}. [{book}] {section}**  "
-                            f"`得分: {score:.3f}` `方法: {method}`"
-                        )
-                        st.caption(content[:300] + ("…" if len(content) > 300 else ""))
-                        if i < len(sources):
-                            st.divider()
+            render_answer_block(answer, sources)
 
         st.session_state.messages.append({
             "role": "assistant",
