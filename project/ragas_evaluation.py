@@ -3,6 +3,7 @@ ragas_evaluation.py
 使用 RAGAS 框架评估 RAG 系统质量，计算忠实度、相关性、上下文精确度等指标。
 运行方式：python ragas_evaluation.py
 """
+import json
 import os
 from typing import List, Dict
 from dotenv import load_dotenv
@@ -122,9 +123,8 @@ class RAGASEvaluator:
 
         # 将问题、回答、标准答案写入对比文件
         qa_out = "ragas_qa_comparison.json"
-        import json as _json
         with open(qa_out, "w", encoding="utf-8") as f:
-            _json.dump(qa_records, f, ensure_ascii=False, indent=2)
+            json.dump(qa_records, f, ensure_ascii=False, indent=2)
         print(f"问答对比已保存到: {qa_out}")
 
         print(f"\n数据准备完成：{len(questions)} 条\n")
@@ -276,8 +276,6 @@ def create_test_dataset() -> List[Dict]:
 
 
 if __name__ == "__main__":
-    import json
-
     # 初始化 RAG 引擎
     rag = RAGEngine(db_path=DB_PATH, enable_llm=True, verbose=False, enable_hyde=True)
 
@@ -286,7 +284,8 @@ if __name__ == "__main__":
 
     # 加载测试题（优先读文件，否则用内置集）
     try:
-        test_questions = json.load(open("test_questions.json", encoding="utf-8"))
+        with open("test_questions.json", encoding="utf-8") as f:
+            test_questions = json.load(f)
     except FileNotFoundError:
         print("test_questions.json 不存在，使用内置测试集")
         test_questions = create_test_dataset()

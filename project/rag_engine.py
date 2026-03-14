@@ -211,13 +211,14 @@ class RAGEngine:
     def search_embedding(self, book_name: str, query: str, top_k: int = 3):
         """语义向量检索"""
         collection_name = f"textbook_{book_name}"
-
-        try:
-            collection = self.vectorizer.client.get_collection(collection_name)
-        except:
+        collection_names = {
+            collection.name for collection in self.vectorizer.client.list_collections()
+        }
+        if collection_name not in collection_names:
             if self.verbose:
                 print(f"❌ 未找到教材集合: {collection_name}")
             return []
+        collection = self.vectorizer.client.get_collection(collection_name)
 
         # HyDE：用假设性文档 embedding；否则用 BGE instruction 前缀
         if self.enable_hyde and self.enable_llm and self.llm:

@@ -6,7 +6,9 @@ import html
 import json
 import os
 import sqlite3
+import sys
 
+import pandas as pd
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────
@@ -18,9 +20,12 @@ st.set_page_config(
     layout="wide",
 )
 
-RAGAS_RESULTS_PATH = os.path.join(os.path.dirname(__file__), "ragas_evaluation_results.csv")
-TEST_QUESTIONS_PATH = os.path.join(os.path.dirname(__file__), "test_questions.json")
-VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
+BASE_DIR = os.path.dirname(__file__)
+sys.path.insert(0, BASE_DIR)
+
+RAGAS_RESULTS_PATH = os.path.join(BASE_DIR, "ragas_evaluation_results.csv")
+TEST_QUESTIONS_PATH = os.path.join(BASE_DIR, "test_questions.json")
+VECTOR_DB_PATH = os.path.join(BASE_DIR, "vector_db")
 
 BOOK_NAME_LABELS = {
     "os": "操作系统",
@@ -64,6 +69,27 @@ def inject_custom_styles():
         [data-testid="stSidebar"] .block-container {
             padding-top: 2rem;
             padding-bottom: 1.25rem;
+        }
+
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            color: var(--ink);
+            margin-bottom: 0.45rem;
+        }
+
+        .sidebar-brand__icon {
+            font-size: 1.55rem;
+            line-height: 1;
+        }
+
+        .sidebar-brand__text {
+            font-size: 1.55rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            line-height: 1.05;
+            white-space: nowrap;
         }
 
         .block-container {
@@ -245,6 +271,10 @@ def inject_custom_styles():
             .hero h1 {
                 font-size: 1.6rem;
             }
+
+            .sidebar-brand__text {
+                font-size: 1.35rem;
+            }
         }
         </style>
         """,
@@ -321,6 +351,28 @@ def render_answer_block(answer: str, sources: list[dict]):
     render_sources_expander(sources)
 
 
+def load_ragas_results():
+    if os.path.exists(RAGAS_RESULTS_PATH):
+        return pd.read_csv(RAGAS_RESULTS_PATH, encoding="utf-8-sig")
+    return None
+
+
+def run_ragas_evaluation():
+    from ragas_evaluation import RAGASEvaluator
+
+    engine = load_engine()
+    with open(TEST_QUESTIONS_PATH, encoding="utf-8") as f:
+        test_questions = json.load(f)
+
+    evaluator = RAGASEvaluator()
+    dataset = evaluator.prepare_evaluation_data(engine, test_questions)
+    result = evaluator.evaluate(dataset)
+    df = evaluator.print_results(result)
+    if df is not None:
+        df.to_csv(RAGAS_RESULTS_PATH, index=False, encoding="utf-8-sig")
+    return load_ragas_results()
+
+
 @st.cache_data(show_spinner=False)
 def load_available_books():
     """从 ChromaDB 中读取当前已向量化的教材列表。"""
@@ -350,10 +402,6 @@ def load_available_books():
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="正在加载 RAG 引擎，请稍候…")
 def load_engine():
-    # Keep the import local so Streamlit does not load the full RAG stack until needed.
-    import sys
-
-    sys.path.insert(0, os.path.dirname(__file__))
     from rag_engine import RAGEngine
     return RAGEngine(db_path="./vector_db", verbose=False)
 
@@ -365,7 +413,15 @@ inject_custom_styles()
 # Sidebar
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("📚 CS 教材智能问答系统")
+    st.markdown(
+        """
+        <div class="sidebar-brand">
+            <div class="sidebar-brand__icon">📚</div>
+            <div class="sidebar-brand__text">CS 教材智能问答系统</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
 
     st.subheader("教材选择")
@@ -375,8 +431,9 @@ with st.sidebar:
     default_index = len(book_labels) - 1 if len(book_labels) == 1 else 0
     book_label = st.radio("选择教材", book_labels, index=default_index)
     book_id = book_mapping[book_label]
+    book_count = max(0, len(book_options) - 1)
 
-    st.caption(f"当前可检索教材：{max(0, len(book_options) - 1)} 本")
+    st.caption(f"当前可检索教材：{book_count} 本")
 
     with st.expander("高级参数", expanded=False):
         top_k = st.slider("检索条数 (top_k)", min_value=1, max_value=10, value=5)
@@ -404,8 +461,7 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────
 # Session state
 # ─────────────────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+st.session_state.setdefault("messages", [])
 
 selected_book_text = "全教材检索" if book_id is None else format_book_label(book_id)
 st.markdown(
@@ -421,7 +477,7 @@ st.markdown(
         </div>
         <div class="status-card">
             <div class="status-label">已加载教材</div>
-            <div class="status-value">{max(0, len(book_options) - 1)} 本</div>
+            <div class="status-value">{book_count} 本</div>
         </div>
         <div class="status-card">
             <div class="status-label">当前检索条数</div>
@@ -465,33 +521,27 @@ with tab_chat:
     # Chat input
     user_question = st.chat_input("请输入您的问题…")
     if user_question:
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(user_question)
         st.session_state.messages.append({"role": "user", "content": user_question})
 
-        # Get answer from RAG engine
         engine = load_engine()
-        with st.chat_message("assistant"):
-            with st.spinner("正在检索和生成答案…"):
-                result = engine.ask(
-                    query=user_question,
-                    book_name=book_id,
-                    top_k=top_k,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+        with st.spinner("正在检索和生成答案…"):
+            result = engine.ask(
+                query=user_question,
+                book_name=book_id,
+                top_k=top_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
-            answer = result.get("answer") or "抱歉，未能生成答案。"
-            sources = result.get("results", [])
-
-            render_answer_block(answer, sources)
+        answer = result.get("answer") or "抱歉，未能生成答案。"
+        sources = result.get("results", [])
 
         st.session_state.messages.append({
             "role": "assistant",
             "content": answer,
             "sources": sources,
         })
+        st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -508,25 +558,6 @@ RAGAS_METRIC_LABELS = {
 
 with tab_eval:
     st.header("RAGAS 评估结果")
-
-    import pandas as pd
-
-    def load_ragas_results():
-        if os.path.exists(RAGAS_RESULTS_PATH):
-            return pd.read_csv(RAGAS_RESULTS_PATH, encoding="utf-8-sig")
-        return None
-
-    def run_ragas_evaluation():
-        from ragas_evaluation import RAGASEvaluator
-        engine = load_engine()
-        test_questions = json.load(open(TEST_QUESTIONS_PATH, encoding="utf-8"))
-        evaluator = RAGASEvaluator()
-        dataset = evaluator.prepare_evaluation_data(engine, test_questions)
-        result = evaluator.evaluate(dataset)
-        df = evaluator.print_results(result)
-        if df is not None:
-            df.to_csv(RAGAS_RESULTS_PATH, index=False, encoding="utf-8-sig")
-        return load_ragas_results()
 
     df_existing = load_ragas_results()
 

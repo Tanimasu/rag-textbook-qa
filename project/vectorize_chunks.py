@@ -34,6 +34,13 @@ class MultiBookVectorizer:
         self.client = chromadb.PersistentClient(path=db_path)
         print("数据库初始化完成\n")
 
+    def _collection_exists(self, collection_name: str) -> bool:
+        """判断集合是否存在，避免用异常做正常流程控制。"""
+        return any(
+            collection.name == collection_name
+            for collection in self.client.list_collections()
+        )
+
     def vectorize_book(
             self,
             chunks_path: str,
@@ -58,12 +65,9 @@ class MultiBookVectorizer:
         collection_name = f"textbook_{book_name}"
 
         # 清空旧数据
-        if clear_existing:
-            try:
-                self.client.delete_collection(collection_name)
-                print(f"🗑已清空旧数据: {collection_name}")
-            except:
-                pass
+        if clear_existing and self._collection_exists(collection_name):
+            self.client.delete_collection(collection_name)
+            print(f"🗑已清空旧数据: {collection_name}")
 
         # 创建新集合
         collection = self.client.get_or_create_collection(
@@ -158,12 +162,11 @@ class MultiBookVectorizer:
         """
         collection_name = f"textbook_{book_name}"
 
-        try:
-            collection = self.client.get_collection(collection_name)
-        except:
+        if not self._collection_exists(collection_name):
             print(f"   找不到集合: {collection_name}")
             print(f"   请先运行 vectorize_book() 向量化该教材")
             return
+        collection = self.client.get_collection(collection_name)
 
         print(f"\n 搜索教材: 《{book_name}》")
         print(f" 查询内容: '{query}'")

@@ -191,12 +191,14 @@ class LLMClient:
             )
 
             for chunk in stream:
-                # ⭐ 关键修复：检查 choices 是否存在且非空
-                if hasattr(chunk, 'choices') and chunk.choices:
-                    if len(chunk.choices) > 0:
-                        delta = chunk.choices[0].delta
-                        if hasattr(delta, 'content') and delta.content:
-                            yield delta.content
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+
+                delta = choices[0].delta
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
 
         except Exception as e:
             error_msg = f"\n\n❌ 流式生成错误：{str(e)}"
