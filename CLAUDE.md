@@ -70,13 +70,11 @@ The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a
 
 **Cross-Encoder reranking** in `rag_engine.py`: enabled by default (`enable_reranker=True`) using `BAAI/bge-reranker-base`. First-pass retrieval is widened to `top_k * 3` candidates; the reranker scores each `(query, content)` pair and returns the true top_k. Controlled by `RAGEngine(enable_reranker=True/False)`. Falls back gracefully if model unavailable.
 
-**LLM client** (`llm_client.py`) uses an OpenAI-compatible API. The API key and base URL are currently hardcoded in the source (both in `llm_client.py::create_llm_client` and `rag_engine.py::RAGEngine.__init__`). The default LLM model is `gemini-3.1-flash-lite-preview`.
+**LLM client** (`llm_client.py`) uses an OpenAI-compatible API configured via `project/.env` (`LLM_API_KEY`, `LLM_API_BASE`, `LLM_MODEL`). Per-script overrides: `RAG_API_KEY/BASE/MODEL` for rag_engine, `RAGAS_API_KEY/BASE/MODEL` for ragas_evaluation. Default model: `gemini-3.1-flash-lite-preview`.
 
-**Evaluation dataset** is `project/eval_dataset.json` with structure `{"questions": [{"question": ..., "ground_truth": ..., "book_name": ...}]}`.
+**Evaluation dataset** is `project/test_questions.json` — a list of `{"question", "ground_truth", "book_name"}` objects used by `ragas_evaluation.py`. Falls back to the built-in `create_test_dataset()` if the file is missing.
 
-**`simple_evaluation.py`** scoring: overall = similarity×0.4 + keyword_coverage×0.4 + length_score×0.2. All paths (`DB_PATH`, `EVAL_DATASET`, output files) are top-level constants in the file.
-
-**`ragas_evaluation.py`** uses LangChain's `ChatOpenAI` to drive RAGAS metrics. Embeddings fall back to a local `paraphrase-multilingual-MiniLM-L12-v2` model if the API embedding endpoint is unavailable. API config is in top-level constants (`API_KEY`, `BASE_URL`, `MODEL`).
+**`ragas_evaluation.py`** uses LangChain's `ChatOpenAI` to drive RAGAS metrics (faithfulness, answer_relevancy, context_precision, context_recall). Controlled by top-level constants: `RUN_BASELINE` (default `False`) enables an optional no-RAG baseline comparison that calls the LLM directly without retrieval — set to `True` only when needed to avoid wasting tokens. Results saved to `ragas_evaluation_results.csv` (RAG) and `ragas_baseline_results.csv` (baseline). Embeddings fall back to a local `paraphrase-multilingual-MiniLM-L12-v2` model if the API embedding endpoint is unavailable.
 
 ## Key Files
 
@@ -88,11 +86,26 @@ The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a
 | `chunk_textbooks.py` | SmartTextbookChunker - Markdown to JSON chunks |
 | `clean_markdown.py` | SmartMarkdownCleaner - heading normalization |
 | `parsingPDF_mineru.py` | MinerU-based PDF parser (alternative to parsingPDF.py); outputs `*_mineru.md` |
-| `ragas_evaluation.py` | Evaluation with RAGAS metrics (faithfulness, relevancy, precision, recall) + no-RAG baseline comparison |
-| `eval_dataset.json` | Ground-truth Q&A pairs for evaluation |
+| `ragas_evaluation.py` | RAGAS evaluation (faithfulness, relevancy, precision, recall) + optional no-RAG baseline (`RUN_BASELINE`) |
+| `test_questions.json` | Ground-truth Q&A pairs for RAGAS evaluation |
 | `project/vector_db/` | Persisted ChromaDB vector store |
 | `project/output/` | Intermediate Markdown and chunk files |
 | `project/data/` | Source PDF textbooks |
+
+### Streamlit UI (`app.py` + submodules)
+
+`app.py` is the entry point (~55 lines, pure assembly). Functionality is split across:
+
+| File | Purpose |
+|------|---------|
+| `app.py` | Entry point: page config, session state, tab layout |
+| `config/constants.py` | Path constants (`BASE_DIR`, `VECTOR_DB_PATH`, `RAGAS_RESULTS_PATH`, `TEST_QUESTIONS_PATH`), `BOOK_NAME_LABELS` (book_id → Chinese name), `RAGAS_METRIC_LABELS` (metric key → Chinese label) |
+| `services/app_services.py` | `load_available_books()` (reads ChromaDB SQLite), `load_engine()` (`@cache_resource`), `load_ragas_results()`, `run_ragas_evaluation()` |
+| `ui/styles.py` | `inject_custom_styles()` — hero banner, status grid, source card CSS |
+| `ui/layout.py` | `render_sidebar()` (returns dict of params), `render_hero()` (3-cell status grid) |
+| `ui/chat_page.py` | `render_chat_tab()` — chat input, session_state message history |
+| `ui/eval_page.py` | `render_eval_tab()` — bar chart, sortable/searchable results table |
+| `ui/helpers.py` | `format_book_label()`, `format_section_label()`, `render_answer_block()`, `render_sources_expander()`, `render_source_preview()` |
 
 ## Utility Scripts
 
