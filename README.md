@@ -13,15 +13,42 @@
 
 ---
 
+## 项目亮点
+
+- **面向教材问答的完整 RAG 流水线**：覆盖 PDF 解析、Markdown 清洗、分块、向量化、检索、生成与评估
+- **混合检索策略**：融合语义向量检索与 BM25 关键词匹配，兼顾语义相关性与术语命中率
+- **HyDE 查询增强**：先由 LLM 生成假设性教材原文，再进行向量检索，提升复杂问题的召回效果
+- **Cross-Encoder 重排序**：使用 `BAAI/bge-reranker-base` 对候选片段精排，提升最终上下文质量
+- **多教材独立向量库**：支持操作系统、计算机组成原理、计算机网络、数据结构、数据库原理及应用等多本教材
+- **评估闭环完整**：集成 RAGAS 指标评估，并支持无 RAG baseline 对比
+- **可视化交互界面**：基于 Streamlit 提供教材选择、参数调节、问答对话和评估结果查看
+
+---
+
+## 技术栈
+
+- **语言与应用层**：Python、Streamlit
+- **文本解析与预处理**：Docling、MinerU、EasyOCR
+- **向量化与检索**：ChromaDB、sentence-transformers、`BAAI/bge-large-zh-v1.5`
+- **关键词检索**：rank-bm25、jieba
+- **重排序模型**：`BAAI/bge-reranker-base`
+- **大语言模型接入**：OpenAI-compatible API、openai SDK
+- **评估框架**：RAGAS、LangChain OpenAI、datasets
+- **数据处理**：pandas、openpyxl、tqdm
+
+---
+
 ## 系统架构
 
 ```
 PDF
- └─ parsingPDF.py       # Docling + EasyOCR → Markdown
-     └─ clean_markdown.py    # 标题层级规范化 → *_cleaned.md
-         └─ chunk_textbooks.py   # 按标题结构分块 → *_chunks.json
-             └─ vectorize_chunks.py  # BAAI/bge-large-zh-v1.5 → ChromaDB
-                 └─ rag_engine.py        # 混合检索 + HyDE + Reranker + LLM
+ ├─ parsingPDF.py         # Docling + EasyOCR → Markdown
+ └─ parsingPDF_mineru.py  # MinerU (推荐，扫描页更完整) → *_mineru.md
+     └─ clean_markdown.py     # 标题层级规范化 → *_cleaned.md
+         └─ chunk_textbooks.py    # 按标题结构分块 → *_chunks.json
+             └─ vectorize_chunks.py   # BAAI/bge-large-zh-v1.5 → ChromaDB
+                 └─ rag_engine.py         # 混合检索 + HyDE + Reranker + LLM
+                     └─ app.py                # Streamlit 问答界面
 ```
 
 **检索流程**
@@ -30,6 +57,33 @@ PDF
 2. **混合检索**：向量相似度（权重 1.0）与 BM25 关键词匹配（权重 0.3）融合排序
 3. **Cross-Encoder 重排序**：`BAAI/bge-reranker-base` 对候选结果精排，取最优 top-k
 4. **LLM 生成**：将检索上下文与问题拼接为 Prompt，调用 LLM 生成结构化答案
+
+---
+
+## 目录结构
+
+```text
+Graduation_project/
+├─ README.md
+├─ CLAUDE.md
+└─ project/
+   ├─ app.py                    # Streamlit 入口
+   ├─ rag_engine.py             # RAG 核心引擎：混合检索 / HyDE / 重排序 / 生成
+   ├─ vectorize_chunks.py       # 文本分块向量化并写入 ChromaDB
+   ├─ chunk_textbooks.py        # Markdown 分块
+   ├─ clean_markdown.py         # Markdown 清洗与标题规范化
+   ├─ parsingPDF.py             # Docling + EasyOCR 解析 PDF
+   ├─ parsingPDF_mineru.py      # MinerU 解析 PDF（推荐）
+   ├─ llm_client.py             # OpenAI-compatible LLM 客户端
+   ├─ ragas_evaluation.py       # RAGAS 评估与 baseline 对比
+   ├─ test_questions.json       # 评估问题集
+   ├─ config/                   # 常量配置
+   ├─ services/                 # 页面使用的数据加载与服务函数
+   ├─ ui/                       # Streamlit 页面与样式模块
+   ├─ data/                     # 原始教材 PDF
+   ├─ output/                   # 解析、清洗、分块后的中间产物
+   └─ vector_db/                # ChromaDB 持久化向量库
+```
 
 ---
 
@@ -80,10 +134,11 @@ python check_env.py
 ### Step 1 — PDF 转 Markdown
 
 ```bash
-python parsingPDF.py
+python parsingPDF_mineru.py   # 推荐：MinerU，逐页自动判断是否 OCR，扫描页内容更完整
+python parsingPDF.py          # 备选：Docling + EasyOCR
 ```
 
-使用 Docling + EasyOCR 将 `data/` 目录下的 PDF 转换为 Markdown，输出至 `output/*.md`。
+MinerU 版本输出 `output/*_mineru.md`，Docling 版本输出 `output/*.md`。运行前在脚本顶部修改 PDF 路径。
 解析完成后可运行 `check_parsing_quality.py` 检查解析质量。
 
 ### Step 2 — 清洗 Markdown
@@ -121,23 +176,21 @@ python rag_engine.py
 
 ### Step 6 — 评估
 
-**选项 A：轻量评估**（无需外部服务）
-
-```bash
-python simple_evaluation.py
-```
-
-基于关键词重叠计算综合得分（Jaccard 相似度 × 0.4 + 关键词覆盖率 × 0.4 + 长度得分 × 0.2），结果保存为 `simple_eval_results.json` 和 `.xlsx`。
-
-**选项 B：RAGAS 评估**（需要 LLM API）
-
 ```bash
 python ragas_evaluation.py
 ```
 
-使用 RAGAS 框架计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall 四项指标，结果保存为 `ragas_evaluation_results.csv`。
+使用 RAGAS 框架计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall 四项指标，结果保存为 `ragas_evaluation_results.csv`。评估数据集来自 `test_questions.json`（16 条，覆盖五本教材）。
 
-> 如需使用难度更高的 `test_questions.json`（16 条），在脚本底部取消对应注释即可。
+如需同时运行无 RAG 基线对比，在脚本顶部将 `RUN_BASELINE = False` 改为 `True`（会额外消耗 token）。
+
+### Step 7 — 启动 Web 界面
+
+```bash
+streamlit run app.py
+```
+
+在浏览器中打开问答界面，支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
 ---
 
@@ -156,5 +209,4 @@ python ragas_evaluation.py
 
 | 文件 | 题数 | 说明 |
 |------|------|------|
-| `eval_dataset.json` | ~10 条 | 基础题，`simple_evaluation.py` 默认使用 |
-| `test_questions.json` | 16 条 | 难度较高，覆盖操作系统与计算机组成原理 |
+| `test_questions.json` | 16 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
