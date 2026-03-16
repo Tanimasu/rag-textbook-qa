@@ -209,4 +209,4 @@ streamlit run app.py
 
 | 文件 | 题数 | 说明 |
 |------|------|------|
-| `test_questions.json` | 16 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
+| `test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
