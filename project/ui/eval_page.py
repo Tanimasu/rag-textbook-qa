@@ -40,21 +40,31 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
 
     if metric_cols:
         st.subheader("逐题得分")
-        chart_controls = st.columns([1.2, 1.2, 0.8])
+        chart_controls = st.columns([1.15, 1.15, 1.05, 0.8])
+        chart_metric_options = ["全部指标", "平均分", *metric_cols]
         with chart_controls[0]:
-            selected_metric = st.selectbox(
-                "查看指标",
-                metric_cols,
-                format_func=lambda x: RAGAS_METRIC_LABELS[x],
-                key="eval_chart_metric",
+            selected_chart_metric = st.selectbox(
+                "显示指标",
+                chart_metric_options,
+                format_func=lambda x: (
+                    x if x in {"全部指标", "平均分"} else RAGAS_METRIC_LABELS[x]
+                ),
+                key="eval_chart_metric_mode",
             )
         with chart_controls[1]:
+            sort_metric = st.selectbox(
+                "排序依据",
+                ["平均分", *metric_cols],
+                format_func=lambda x: "平均分" if x == "平均分" else RAGAS_METRIC_LABELS[x],
+                key="eval_chart_sort_metric",
+            )
+        with chart_controls[2]:
             sort_mode = st.selectbox(
                 "排序方式",
                 ["原始顺序", "最低分优先", "最高分优先"],
                 key="eval_chart_sort",
             )
-        with chart_controls[2]:
+        with chart_controls[3]:
             limit_options = [10, 20, 30, 50]
             valid_options = [value for value in limit_options if value < len(df_existing)]
             valid_options.append(len(df_existing))
@@ -69,25 +79,31 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
 
         chart_df = df_existing.copy()
         chart_df["题号"] = [f"Q{i+1}" for i in range(len(chart_df))]
+        chart_df["平均分"] = chart_df[metric_cols].mean(axis=1).round(3)
         if question_col:
             chart_df["问题"] = chart_df[question_col]
-            chart_df["问题简称"] = chart_df[question_col].str.slice(0, 22)
-            chart_df["问题简称"] = chart_df["问题简称"].where(
-                chart_df[question_col].str.len() <= 22,
-                chart_df["问题简称"] + "…",
-            )
         else:
             chart_df["问题"] = chart_df["题号"]
-            chart_df["问题简称"] = chart_df["题号"]
 
-        if sort_mode == "最低分优先":
-            chart_df = chart_df.sort_values(selected_metric, ascending=True)
-        elif sort_mode == "最高分优先":
-            chart_df = chart_df.sort_values(selected_metric, ascending=False)
+        if sort_mode != "原始顺序":
+            ascending = sort_mode == "最低分优先"
+            chart_df = chart_df.sort_values(sort_metric, ascending=ascending)
 
         chart_df = chart_df.head(int(display_limit))
-        chart_plot = chart_df.set_index("题号")[[selected_metric]]
-        st.bar_chart(chart_plot, height=340)
+
+        if selected_chart_metric == "全部指标":
+            chart_columns = ["平均分", *metric_cols]
+            chart_plot = chart_df.set_index("题号")[chart_columns].rename(
+                columns={"平均分": "平均分", **RAGAS_METRIC_LABELS}
+            )
+        elif selected_chart_metric == "平均分":
+            chart_plot = chart_df.set_index("题号")[["平均分"]]
+        else:
+            chart_plot = chart_df.set_index("题号")[[selected_chart_metric]].rename(
+                columns=RAGAS_METRIC_LABELS
+            )
+
+        st.line_chart(chart_plot, height=340)
 
         with st.expander("题号对照表", expanded=False):
             question_legend = chart_df[["题号", "问题"]].copy()
