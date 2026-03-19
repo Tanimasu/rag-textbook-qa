@@ -2,14 +2,16 @@
 
 > 面向计算机课程教材的检索增强生成（RAG）问答系统
 
-基于混合检索策略（语义向量 + BM25）与大语言模型，实现对操作系统、计算机组成原理等教材内容的精准问答。系统采用 HyDE 查询增强与 Cross-Encoder 重排序，在 RAGAS 标准评估集上取得如下结果：
+基于混合检索策略（语义向量 + BM25）与大语言模型，实现对操作系统、计算机组成原理等教材内容的精准问答。系统采用 HyDE 查询增强与 Cross-Encoder 重排序，在 50 题 RAGAS 评估集（5 本教材各 10 题）上取得如下结果：
 
-| 指标 | 得分 |
-|------|------|
-| Faithfulness | 0.9409 |
-| Answer Relevancy | 0.9335 |
-| Context Recall | 0.8456 |
-| Context Precision | 0.7290 |
+> 生成模型：`gemini-3-flash-preview`（Google）；评判模型：`claude-sonnet-4-6`（Anthropic）—— 跨厂商配对以规避自我偏好偏差
+
+| 指标 | 得分 | 评级 |
+|------|------|------|
+| Answer Relevancy | 0.8908 | 优秀 |
+| Faithfulness | 0.7984 | 良好 |
+| Context Recall | 0.7450 | 良好 |
+| Context Precision | 0.6827 | 及格 |
 
 ---
 
@@ -109,11 +111,11 @@ cp project/.env.example project/.env
 # 共享配置（所有脚本默认使用）
 LLM_API_KEY=your_api_key_here
 LLM_API_BASE=https://api.ohmygpt.com/v1
-LLM_MODEL=gemini-3.1-flash-lite-preview
+LLM_MODEL=gemini-3-flash-preview
 
 # 可选：为 RAG 引擎和评估器单独指定模型（不设则使用上方共享值）
-# RAG_MODEL=
-# RAGAS_MODEL=
+# RAG_MODEL=gemini-3-flash-preview
+# RAGAS_MODEL=claude-sonnet-4-6   # 建议与生成模型使用不同厂商，避免自我偏好偏差
 ```
 
 ### 3. 验证环境
@@ -180,7 +182,7 @@ python rag_engine.py
 python ragas_evaluation.py
 ```
 
-使用 RAGAS 框架计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall 四项指标，结果保存为 `ragas_evaluation_results.csv`。评估数据集来自 `test_questions.json`（16 条，覆盖五本教材）。
+使用 RAGAS 框架计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall 四项指标，结果保存为 `ragas_evaluation_results.csv`。评估数据集来自 `test_questions.json`（50 条，覆盖五本教材，每本 10 题）。
 
 如需同时运行无 RAG 基线对比，在脚本顶部将 `RUN_BASELINE = False` 改为 `True`（会额外消耗 token）。
 

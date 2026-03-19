@@ -22,7 +22,7 @@ BASE_URL = os.getenv("RAGAS_API_BASE") or os.getenv("LLM_API_BASE", "https://api
 MODEL    = os.getenv("RAGAS_MODEL")    or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite-preview")
 
 DB_PATH      = "./vector_db"
-RUN_BASELINE = False   # 设为 True 才运行无 RAG 的 baseline 对比（费 token）
+RUN_BASELINE = True   # 设为 True 才运行无 RAG 的 baseline 对比（费 token）
 
 
 class RAGASEvaluator:
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     # ── 2. Baseline 评估（无 RAG，直接 LLM）──────────────────
     if RUN_BASELINE:
         baseline_dataset = evaluator.prepare_baseline_data(rag, test_questions)
-        baseline_result  = evaluator.evaluate(baseline_dataset, metrics=[faithfulness, answer_relevancy, context_precision, context_recall])
+        baseline_result  = evaluator.evaluate(baseline_dataset, metrics=[answer_relevancy])
         print("\n【Baseline 评估结果（无 RAG）】")
         base_df = evaluator.print_results(baseline_result)
         if base_df is not None:
@@ -313,7 +313,7 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("RAG vs Baseline 对比摘要")
         print("=" * 60)
-        for metric in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+        for metric in ["answer_relevancy"]:
             rag_score  = float(rag_df[metric].mean())  if rag_df  is not None and metric in rag_df.columns  else float("nan")
             base_score = float(base_df[metric].mean()) if base_df is not None and metric in base_df.columns else float("nan")
             delta = rag_score - base_score

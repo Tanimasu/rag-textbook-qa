@@ -25,7 +25,7 @@ CANDIDATE_CONFIGS = [
     {"name": "nloli + gpt-4",            "base_url": "https://chatapi.nloli.xyz/v1","model": "gpt-4"},
     {"name": "nloli + gpt-5.1",          "base_url": "https://chatapi.nloli.xyz/v1","model": "gpt-5.1-chat-latest"},
 ]
-TEST_PROMPT = "请只回复"测试成功"这四个字，不要加其他内容。"
+TEST_PROMPT = "请只回复\"测试成功\"这四个字，不要加其他内容。"
 
 
 # -----------------------------------------------------------------------
