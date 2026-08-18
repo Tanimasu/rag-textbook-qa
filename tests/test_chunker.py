@@ -11,7 +11,6 @@ from rag_textbook_qa.ingestion.chunker import (
     chunk_markdown,
 )
 
-
 SAMPLE_MARKDOWN = """# 第1章 导论
 这是第一章的导论内容，它用来验证章节上下文。
 ## 1.1 基本概念
@@ -84,9 +83,10 @@ class ChunkerTests(unittest.TestCase):
             source.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
             output.write_text("preserved", encoding="utf-8")
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaises(FileExistsError):
-                    chunk_markdown(source, output)
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(
+                FileExistsError
+            ):
+                chunk_markdown(source, output)
 
             self.assertEqual(output.read_text(encoding="utf-8"), "preserved")
 
@@ -109,9 +109,8 @@ class ChunkerTests(unittest.TestCase):
             {"overlap_size": -1},
         )
         for options in invalid_options:
-            with self.subTest(options=options):
-                with self.assertRaises(ValueError):
-                    SmartTextbookChunker(**options)
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                SmartTextbookChunker(**options)
 
     def test_batch_api_rejects_an_empty_input_directory(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -2,7 +2,6 @@
 
 from types import MappingProxyType
 
-
 BOOK_LABELS = MappingProxyType(
     {
         "os": "操作系统",

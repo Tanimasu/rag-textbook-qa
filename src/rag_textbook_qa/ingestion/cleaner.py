@@ -52,10 +52,7 @@ class SmartMarkdownCleaner:
         if len(text) < 2:
             return False
 
-        if re.match(r"^[\W\d\s]+$", text):
-            return False
-
-        return True
+        return re.match(r"^[\W\d\s]+$", text) is None
 
     def detect_title_level(self, text: str) -> tuple[int, str]:
         """智能检测标题层级，返回层级和清理后的文本。"""

@@ -5,7 +5,6 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPOSITORY_ROOT / "tests" / "fixtures" / "legacy_assets.sha256"
 SOURCE_COMMIT = "13b84805ae16971ced68c444b820b55f020f6c58"
@@ -124,11 +123,10 @@ class LegacyAssetBaselineTests(unittest.TestCase):
         self.assertEqual(len(qa), 50)
 
         for name in ("ragas_evaluation_results.csv", "ragas_baseline_results.csv"):
-            with self.subTest(path=name):
-                with (REPOSITORY_ROOT / "artifacts" / "evaluations" / name).open(
-                    encoding="utf-8-sig", newline=""
-                ) as stream:
-                    self.assertEqual(len(list(csv.DictReader(stream))), 50)
+            with self.subTest(path=name), (
+                REPOSITORY_ROOT / "artifacts" / "evaluations" / name
+            ).open(encoding="utf-8-sig", newline="") as stream:
+                self.assertEqual(len(list(csv.DictReader(stream))), 50)
 
 
 if __name__ == "__main__":

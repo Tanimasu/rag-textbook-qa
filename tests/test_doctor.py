@@ -9,7 +9,6 @@ from rag_textbook_qa.cli import main
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.diagnostics.doctor import collect_diagnostics
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 HEAVY_MODULES = {
     "chromadb",
@@ -57,6 +56,18 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(by_name[name].status, "ok")
         self.assertIn(by_name["artifact:vector-db"].status, {"ok", "optional"})
         self.assertEqual(by_name["artifact:evaluations"].status, "ok")
+
+    def test_doctor_distinguishes_required_and_optional_dependencies(self):
+        checks = collect_diagnostics(Settings.load(REPOSITORY_ROOT))
+        by_name = {check.name: check for check in checks}
+
+        for import_name in ("chromadb", "dotenv", "jieba", "openai", "rank_bm25", "tqdm"):
+            with self.subTest(import_name=import_name):
+                self.assertIn(by_name[f"module:{import_name}"].status, {"ok", "missing"})
+        self.assertIn(
+            by_name["module:sentence_transformers"].status,
+            {"ok", "optional"},
+        )
 
 
 if __name__ == "__main__":

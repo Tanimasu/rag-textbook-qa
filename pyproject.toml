@@ -41,6 +41,8 @@ mineru = [
     "mineru",
     "pymupdf",
 ]
+
+[dependency-groups]
 dev = [
     "pytest",
     "pytest-cov",

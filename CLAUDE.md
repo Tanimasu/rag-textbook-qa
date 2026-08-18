@@ -130,4 +130,12 @@ The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a
 
 Key Python packages: `docling`, `mineru`, `chromadb`, `sentence-transformers`, `rank-bm25`, `jieba`, `openai`, `pandas`, `openpyxl`, `tqdm`, `ragas`, `langchain-openai`, `langchain-community`, `datasets`
 
+Use the dedicated Conda environment from `environment.yml`. After activation, synchronize the lockfile into that environment without creating `.venv`:
+
+```bash
+UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact
+```
+
+Do not install heavyweight extras unless the task requires them. Development tools are declared in the standard `dependency-groups.dev` group; model, UI, parser, and evaluation runtimes remain optional extras.
+
 MinerU configuration and model-cache locations are machine-specific. Do not commit absolute Windows, macOS, or Linux paths; use the tool's environment/configuration on each machine.

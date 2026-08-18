@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from rag_textbook_qa.config import Settings, WorkspaceNotFoundError, resolve_workspace
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -15,9 +14,10 @@ class WorkspaceResolutionTests(unittest.TestCase):
         self.assertEqual(resolve_workspace(REPOSITORY_ROOT), REPOSITORY_ROOT)
 
     def test_invalid_explicit_workspace_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(WorkspaceNotFoundError):
-                resolve_workspace(tmp)
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(
+            WorkspaceNotFoundError
+        ):
+            resolve_workspace(tmp)
 
     def test_environment_override_is_supported(self):
         with patch.dict(os.environ, {"RAG_QA_HOME": str(REPOSITORY_ROOT)}):

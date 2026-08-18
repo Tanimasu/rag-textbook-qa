@@ -8,7 +8,6 @@ from pathlib import Path
 
 from rag_textbook_qa.ingestion.cleaner import SmartMarkdownCleaner, clean_markdown
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 COMPATIBILITY_SCRIPT = REPOSITORY_ROOT / "project" / "clean_markdown.py"
 

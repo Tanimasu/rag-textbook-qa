@@ -8,7 +8,6 @@ from pathlib import Path
 
 from rag_textbook_qa.cli import main
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_MARKDOWN = """# 第1章 导论
 这是用于命令行回归测试的章节导论，内容长度足以形成一个文本块。
@@ -91,18 +90,19 @@ class IngestCliTests(unittest.TestCase):
             original = source.read_bytes()
             error = io.StringIO()
 
-            with contextlib.redirect_stderr(error):
-                with self.assertRaises(SystemExit) as raised:
-                    main(
-                        [
-                            "ingest",
-                            "chunk",
-                            str(source),
-                            "--output",
-                            str(source),
-                            "--force",
-                        ]
-                    )
+            with contextlib.redirect_stderr(error), self.assertRaises(
+                SystemExit
+            ) as raised:
+                main(
+                    [
+                        "ingest",
+                        "chunk",
+                        str(source),
+                        "--output",
+                        str(source),
+                        "--force",
+                    ]
+                )
 
             self.assertEqual(raised.exception.code, 1)
             self.assertIn("不能是同一个文件", error.getvalue())

@@ -88,20 +88,28 @@ rag-textbook-qa/
 
 ### 1. 安装依赖
 
-项目要求 Python 3.11 或 3.12。基础功能与可选重依赖已在 `pyproject.toml` 中分组：
+项目要求 Python 3.11 或 3.12。推荐由 Conda 管理 Python 环境、uv 管理项目锁文件和 Python 依赖。请先在各自系统安装 Conda 和 uv，然后运行：
 
 ```bash
-python -m pip install -e .
-python -m pip install -e ".[ui,local-models]"  # 需要界面和本地模型时
+conda env create -f environment.yml
+conda activate rag-textbook-qa
+UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact
 ```
 
-PDF 解析和评估依赖按需安装：
+`UV_PROJECT_ENVIRONMENT` 让 uv 直接使用当前 Conda 环境，不创建第二个 `.venv`；`--inexact` 保留 Conda 管理的 Python 基础包。Windows PowerShell 对应写法：
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
+uv sync --inexact
+```
+
+UI、本地模型、PDF 解析和评估依赖通过 `--extra ui`、`--extra local-models`、`--extra docling`、`--extra mineru`、`--extra eval` 按需安装。例如，本地运行旧版 Streamlit RAG 界面时使用：
 
 ```bash
-python -m pip install -e ".[docling]"
-python -m pip install -e ".[mineru]"
-python -m pip install -e ".[eval]"
+UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact --extra ui --extra local-models
 ```
+
+基础开发环境不会安装 PyTorch，也不会下载模型权重。
 
 ### 2. 配置 API
 
@@ -128,7 +136,7 @@ LLM_MODEL=gemini-3-flash-preview
 rag-qa doctor
 ```
 
-验证 PyTorch、CUDA 与 GPU 是否可用。GPU 不可用时，后续 OCR 解析会显著变慢。
+该命令检查 Python、工作目录、基础依赖和可选组件，且不会加载模型或访问网络。安装本地模型组件后，可另外用 `project/check_env.py` 检查 PyTorch、CUDA 与 GPU。
 
 ---
 

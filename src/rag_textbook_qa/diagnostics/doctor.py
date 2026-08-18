@@ -27,6 +27,15 @@ def _module_status(import_name: str, extra: str) -> Diagnostic:
     )
 
 
+def _required_module_status(import_name: str) -> Diagnostic:
+    installed = importlib.util.find_spec(import_name) is not None
+    return Diagnostic(
+        name=f"module:{import_name}",
+        status="ok" if installed else "missing",
+        detail="已安装" if installed else "基础依赖缺失；运行 uv sync",
+    )
+
+
 def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
     """Collect cheap diagnostics without importing any optional dependency."""
 
@@ -89,6 +98,12 @@ def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
 
     diagnostics.extend(
         [
+            _required_module_status("chromadb"),
+            _required_module_status("dotenv"),
+            _required_module_status("jieba"),
+            _required_module_status("openai"),
+            _required_module_status("rank_bm25"),
+            _required_module_status("tqdm"),
             _module_status("sentence_transformers", "local-models"),
             _module_status("streamlit", "ui"),
             _module_status("ragas", "eval"),

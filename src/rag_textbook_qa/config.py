@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 WORKSPACE_ENV_VAR = "RAG_QA_HOME"
 
 
@@ -81,7 +80,7 @@ class WorkspacePaths:
     evaluations: Path
 
     @classmethod
-    def from_root(cls, root: Path) -> "WorkspacePaths":
+    def from_root(cls, root: Path) -> WorkspacePaths:
         data = root / "data"
         artifacts = root / "artifacts"
         return cls(
@@ -107,5 +106,5 @@ class Settings:
     paths: WorkspacePaths
 
     @classmethod
-    def load(cls, workspace: str | Path | None = None) -> "Settings":
+    def load(cls, workspace: str | Path | None = None) -> Settings:
         return cls(paths=WorkspacePaths.from_root(resolve_workspace(workspace)))
