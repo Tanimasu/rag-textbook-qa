@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from rag_textbook_qa import __version__
@@ -13,6 +15,7 @@ from rag_textbook_qa.diagnostics.doctor import (
     diagnostics_as_dict,
     render_diagnostics,
 )
+from rag_textbook_qa.providers.config import ComputeSettings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="检查类型；auto 根据 .json 后缀判断",
     )
     check.add_argument("--json", action="store_true", help="输出结构化 JSON")
+
+    worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
+    worker_commands = worker.add_subparsers(dest="worker_command", required=True)
+    serve = worker_commands.add_parser("serve", help="启动模型 Worker HTTP 服务")
+    serve.add_argument("--host", default="127.0.0.1", help="监听 IP；远程时建议使用 Tailscale IP")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--embedding-model")
+    serve.add_argument("--reranker-model")
+    serve.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"))
     return parser
 
 
@@ -113,6 +125,33 @@ def _run_ingest(args: argparse.Namespace) -> int:
     raise ValueError(f"未知 ingest 命令: {args.ingest_command}")
 
 
+def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
+    if args.worker_command != "serve":
+        raise ValueError(f"未知 worker 命令: {args.worker_command}")
+
+    from dotenv import load_dotenv
+
+    from rag_textbook_qa.worker import run_worker_server
+
+    load_dotenv(settings.paths.root / "project" / ".env")
+    compute = ComputeSettings.from_env()
+    compute = replace(
+        compute,
+        embedding_model=args.embedding_model or compute.embedding_model,
+        reranker_model=args.reranker_model or compute.reranker_model,
+        device=args.device or compute.device,
+    )
+    run_worker_server(
+        host=args.host,
+        port=args.port,
+        embedding_model=compute.embedding_model,
+        reranker_model=compute.reranker_model,
+        device=compute.device,
+        token=os.getenv("RAG_QA_WORKER_TOKEN", "").strip() or None,
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -126,6 +165,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = Settings.load(args.workspace)
         except WorkspaceNotFoundError as exc:
             parser.error(str(exc))
+        from dotenv import load_dotenv
+
+        load_dotenv(settings.paths.root / "project" / ".env")
         if args.json:
             print(json.dumps(diagnostics_as_dict(settings), ensure_ascii=False, indent=2))
         else:
@@ -136,6 +178,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return _run_ingest(args)
         except (KeyError, OSError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "worker":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_worker(args, settings)
+        except (OSError, RuntimeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
     parser.error(f"未知命令: {args.command}")

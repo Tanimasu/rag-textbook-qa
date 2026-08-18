@@ -5,13 +5,20 @@ RAG 问答系统核心引擎（已集成 BM25 + 向量语义混合检索 + LLM�
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from vectorize_chunks import MultiBookVectorizer
+from rag_textbook_qa.providers import (
+    ComputeSettings,
+    EmbeddingProvider,
+    RerankerProvider,
+)
+from rag_textbook_qa.providers.factory import create_reranker_provider
 
 # 关键词检索（BM25）
 from rank_bm25 import BM25Okapi
@@ -29,15 +36,18 @@ class RAGEngine:
     def __init__(
             self,
             db_path: str | Path = DEFAULT_VECTOR_DB_PATH,
-            model_name: str = "BAAI/bge-large-zh-v1.5",
+            model_name: str | None = None,
             enable_llm: bool = True,
             api_key: str = _API_KEY,
             api_base: str = _API_BASE,
             llm_model: str = _LLM_MODEL,
             verbose: bool = True,
             enable_reranker: bool = True,
-            reranker_model: str = "BAAI/bge-reranker-base",
-            enable_hyde: bool = True
+            reranker_model: str | None = None,
+            enable_hyde: bool = True,
+            embedding_provider: EmbeddingProvider | None = None,
+            reranker_provider: RerankerProvider | None = None,
+            compute_settings: ComputeSettings | None = None,
     ):
         """
         初始化 RAG 引擎
@@ -57,11 +67,21 @@ class RAGEngine:
 
         self.verbose = verbose
         self.enable_hyde = enable_hyde
+        if compute_settings is None:
+            providers_fully_injected = embedding_provider is not None and (
+                reranker_provider is not None or not enable_reranker
+            )
+            compute_settings = (
+                ComputeSettings() if providers_fully_injected else ComputeSettings.from_env()
+            )
 
         # 向量数据库
         self.vectorizer = MultiBookVectorizer(
             model_name=model_name,
-            db_path=str(db_path)
+            db_path=str(db_path),
+            embedding_provider=embedding_provider,
+            compute_settings=compute_settings,
+            allow_query_fallback=True,
         )
 
         # BM25 索引
@@ -71,14 +91,18 @@ class RAGEngine:
         self._build_bm25_indexes()
 
         # Cross-Encoder 重排序
-        self.reranker = None
-        if enable_reranker:
-            try:
-                from sentence_transformers import CrossEncoder
-                self.reranker = CrossEncoder(reranker_model)
-                print("✅ Reranker 初始化完成")
-            except Exception as e:
-                print(f"⚠️  Reranker 初始化失败: {e}")
+        self.reranker = reranker_provider
+        if enable_reranker and self.reranker is None:
+            reranker_settings = replace(
+                compute_settings,
+                reranker_model=reranker_model or compute_settings.reranker_model,
+            )
+            self.reranker = create_reranker_provider(
+                reranker_settings,
+                allow_query_fallback=True,
+            )
+        if self.reranker is not None:
+            print(f"✅ Reranker 已配置: {self.reranker.identity.model}")
 
         # LLM 客户端
         self.llm = None
@@ -136,8 +160,7 @@ class RAGEngine:
         """使用 Cross-Encoder 对候选结果重排序"""
         if not self.reranker or not results:
             return results[:top_k]
-        pairs = [(query, r["content"]) for r in results]
-        scores = self.reranker.predict(pairs)
+        scores = self.reranker.rerank(query, [result["content"] for result in results])
         for r, s in zip(results, scores):
             r["rerank_score"] = float(s)
         results.sort(key=lambda x: x["rerank_score"], reverse=True)
@@ -221,18 +244,14 @@ class RAGEngine:
                 print(f"❌ 未找到教材集合: {collection_name}")
             return []
         collection = self.vectorizer.client.get_collection(collection_name)
+        self.vectorizer._validate_collection_embedding(collection)
 
-        # HyDE：用假设性文档 embedding；否则用 BGE instruction 前缀
+        # HyDE 结果按文档编码；普通问题按 query 编码并由 Provider 添加指令前缀。
         if self.enable_hyde and self.enable_llm and self.llm:
             encode_text = self._generate_hypothetical_doc(query)
+            query_emb = self.vectorizer.embedding_provider.embed_documents([encode_text])
         else:
-            encode_text = "为这个句子生成表示以用于检索相关文章：" + query
-
-        query_emb = self.vectorizer.model.encode(
-            [encode_text],
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        ).tolist()
+            query_emb = self.vectorizer.embedding_provider.embed_queries([query])
 
         results = collection.query(
             query_embeddings=query_emb,

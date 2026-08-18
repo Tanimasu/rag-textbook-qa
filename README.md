@@ -103,7 +103,7 @@ $env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
 uv sync --inexact
 ```
 
-UI、本地模型、PDF 解析和评估依赖通过 `--extra ui`、`--extra local-models`、`--extra docling`、`--extra mineru`、`--extra eval` 按需安装。例如，本地运行旧版 Streamlit RAG 界面时使用：
+UI、本地模型、远程 Worker、PDF 解析和评估依赖通过 `--extra ui`、`--extra local-models`、`--extra worker`、`--extra docling`、`--extra mineru`、`--extra eval` 按需安装。例如，本地运行旧版 Streamlit RAG 界面时使用：
 
 ```bash
 UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact --extra ui --extra local-models
@@ -137,6 +137,78 @@ rag-qa doctor
 ```
 
 该命令检查 Python、工作目录、基础依赖和可选组件，且不会加载模型或访问网络。安装本地模型组件后，可另外用 `project/check_env.py` 检查 PyTorch、CUDA 与 GPU。
+
+---
+
+## 本地与远程模型计算
+
+Embedding 和 Reranker 使用统一 Provider 接口，可在两种模式间切换：
+
+- `local`：模型运行在当前机器，可指定 `cpu`、`cuda` 或 `mps`。
+- `remote`：Mac 只通过 Tailscale 请求 Windows Worker；ChromaDB、BM25、LLM 和 UI 仍在 Mac 本地。
+
+向量化任务启动后会固定使用同一个后端，网络故障不会悄悄切换模型。查询可选择只在连接超时等瞬时故障时回退到相同的本地模型；认证失败和模型指纹不一致始终直接报错。
+
+### Mac 本地 CPU 模式
+
+先安装本地模型依赖：
+
+```bash
+UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact --extra local-models
+```
+
+在 `project/.env` 中设置：
+
+```env
+RAG_QA_COMPUTE_BACKEND=local
+RAG_QA_DEVICE=cpu
+RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
+```
+
+### Windows 4070 Super Worker
+
+Windows 拉取同一分支后，在 PowerShell 中创建环境并安装 Worker 与本地模型依赖：
+
+```powershell
+conda env create -f environment.yml
+conda activate rag-textbook-qa
+$env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
+uv sync --inexact --extra worker --extra local-models
+```
+
+用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一个随机 token，并写入 Windows 的 `project/.env`：
+
+```env
+RAG_QA_WORKER_TOKEN=替换为随机token
+RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
+RAG_QA_DEVICE=cuda
+```
+
+通过 `tailscale ip -4` 查看台式机 Tailscale IP，然后只监听该地址：
+
+```powershell
+rag-qa worker serve --host 100.x.y.z --port 8765 --device cuda
+```
+
+不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。
+
+### Mac 连接远程 Worker
+
+在 Mac 的 `project/.env` 写入相同 token 和 Windows Tailscale 地址：
+
+```env
+RAG_QA_COMPUTE_BACKEND=remote
+RAG_QA_REMOTE_URL=http://100.x.y.z:8765
+RAG_QA_WORKER_TOKEN=与Windows相同的随机token
+RAG_QA_REMOTE_TIMEOUT=120
+RAG_QA_QUERY_FALLBACK_TO_LOCAL=false
+RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
+```
+
+运行 `rag-qa doctor` 可检查当前选择的后端，但不会主动连接或加载模型。Worker 首次收到请求时才会加载并下载模型。若要启用查询回退，Mac 还需安装 `local-models`，并将 `RAG_QA_QUERY_FALLBACK_TO_LOCAL` 改为 `true`。
 
 ---
 

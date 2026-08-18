@@ -3205,9 +3205,14 @@ ui = [
     { name = "pandas" },
     { name = "streamlit" },
 ]
+worker = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastapi" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "requests" },
@@ -3220,6 +3225,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'eval'" },
     { name = "docling", marker = "extra == 'docling'" },
     { name = "easyocr", marker = "extra == 'docling'" },
+    { name = "fastapi", marker = "extra == 'worker'" },
     { name = "jieba" },
     { name = "langchain-community", marker = "extra == 'eval'" },
     { name = "langchain-openai", marker = "extra == 'eval'" },
@@ -3235,11 +3241,13 @@ requires-dist = [
     { name = "streamlit", marker = "extra == 'ui'" },
     { name = "torch", marker = "extra == 'local-models'" },
     { name = "tqdm" },
+    { name = "uvicorn", marker = "extra == 'worker'" },
 ]
-provides-extras = ["local-models", "ui", "eval", "docling", "mineru"]
+provides-extras = ["local-models", "ui", "eval", "docling", "mineru", "worker"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastapi" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "requests" },

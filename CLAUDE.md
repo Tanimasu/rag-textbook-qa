@@ -138,4 +138,8 @@ UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact
 
 Do not install heavyweight extras unless the task requires them. Development tools are declared in the standard `dependency-groups.dev` group; model, UI, parser, and evaluation runtimes remain optional extras.
 
+Embedding and reranking are selected through `rag_textbook_qa.providers`. `local` loads sentence-transformers lazily; `remote` calls only `/health`, `/v1/embeddings`, and `/v1/rerank` on the optional Worker. Keep ChromaDB and BM25 in the caller process. Vectorization must use one provider for the whole job; query fallback may catch only transient connection/server failures, never authentication or model-fingerprint errors.
+
+When exposing `rag-qa worker serve` beyond loopback, bind to the machine's Tailscale IP and require `RAG_QA_WORKER_TOKEN`. Do not add public port-forwarding instructions or log the token.
+
 MinerU configuration and model-cache locations are machine-specific. Do not commit absolute Windows, macOS, or Linux paths; use the tool's environment/configuration on each machine.

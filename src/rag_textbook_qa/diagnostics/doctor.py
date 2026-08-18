@@ -9,6 +9,7 @@ import sys
 from dataclasses import asdict, dataclass
 
 from rag_textbook_qa.config import Settings
+from rag_textbook_qa.providers import ComputeSettings, ProviderError
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,17 @@ def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
         ),
     ]
 
+    try:
+        compute = ComputeSettings.from_env()
+        target = (
+            f"{compute.backend} ({compute.remote_url})"
+            if compute.remote_url
+            else f"{compute.backend} (device={compute.device})"
+        )
+        diagnostics.append(Diagnostic("compute-backend", "ok", target))
+    except ProviderError as exc:
+        diagnostics.append(Diagnostic("compute-backend", "warning", str(exc)))
+
     for executable in ("uv", "tailscale"):
         location = shutil.which(executable)
         diagnostics.append(
@@ -109,6 +121,7 @@ def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
             _module_status("ragas", "eval"),
             _module_status("docling", "docling"),
             _module_status("mineru", "mineru"),
+            _module_status("fastapi", "worker"),
         ]
     )
     return diagnostics

@@ -41,9 +41,14 @@ mineru = [
     "mineru",
     "pymupdf",
 ]
+worker = [
+    "fastapi",
+    "uvicorn",
+]
 
 [dependency-groups]
 dev = [
+    "fastapi",
     "pytest",
     "pytest-cov",
     "requests",

@@ -4,6 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rag_textbook_qa.cli import main
 from rag_textbook_qa.config import Settings
@@ -68,6 +69,23 @@ class DoctorTests(unittest.TestCase):
             by_name["module:sentence_transformers"].status,
             {"ok", "optional"},
         )
+
+    def test_doctor_reports_compute_backend_without_network_access(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "RAG_QA_COMPUTE_BACKEND": "remote",
+                "RAG_QA_REMOTE_URL": "http://100.64.0.10:8765",
+                "RAG_QA_WORKER_TOKEN": "not-for-output",
+            },
+            clear=True,
+        ):
+            checks = collect_diagnostics(Settings.load(REPOSITORY_ROOT))
+
+        compute = next(check for check in checks if check.name == "compute-backend")
+        self.assertEqual(compute.status, "ok")
+        self.assertIn("http://100.64.0.10:8765", compute.detail)
+        self.assertNotIn("not-for-output", compute.detail)
 
 
 if __name__ == "__main__":

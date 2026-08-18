@@ -9,28 +9,45 @@
 所属模块: 向量化 / 检索
 """
 import json
-from pathlib import Path
-import chromadb
-from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 import time
+import uuid
+from dataclasses import replace
+from pathlib import Path
+
+import chromadb
+from dotenv import load_dotenv
+from tqdm import tqdm
+
+from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
+from rag_textbook_qa.providers.factory import create_embedding_provider
 
 DEFAULT_VECTOR_DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 class MultiBookVectorizer:
     def __init__(
             self,
-            model_name: str = "BAAI/bge-large-zh-v1.5",
+            model_name: str | None = None,
             db_path: str | Path = DEFAULT_VECTOR_DB_PATH,
+            embedding_provider: EmbeddingProvider | None = None,
+            compute_settings: ComputeSettings | None = None,
+            allow_query_fallback: bool = False,
     ):
         """初始化向量化器"""
         print("初始化向量化器...")
 
-        # 加载 embedding 模型y
-        print(f"加载模型: {model_name}")
-        self.model = SentenceTransformer(model_name)
-        print("模型加载完成")
+        if embedding_provider is not None:
+            self.embedding_provider = embedding_provider
+        else:
+            settings = compute_settings or ComputeSettings.from_env()
+            if model_name is not None:
+                settings = replace(settings, embedding_model=model_name)
+            self.embedding_provider = create_embedding_provider(
+                settings,
+                allow_query_fallback=allow_query_fallback,
+            )
+        print(f"Embedding 模型: {self.embedding_provider.identity.model}")
 
         # 初始化 Chroma 客户端
         print(f"初始化向量数据库: {db_path}")
@@ -67,71 +84,91 @@ class MultiBookVectorizer:
         # 为每本书创建独立的集合
         collection_name = f"textbook_{book_name}"
 
-        # 清空旧数据
-        if clear_existing and self._collection_exists(collection_name):
-            self.client.delete_collection(collection_name)
-            print(f"🗑已清空旧数据: {collection_name}")
+        if batch_size <= 0:
+            raise ValueError("batch_size 必须大于 0")
 
-        # 创建新集合
-        collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={
-                "description": f"{book_name} 教材分块",
-                "hnsw:space": "cosine"
-            }
-        )
-        print(f"集合创建: {collection_name}\n")
-
-        # 加载 chunks
+        # 在改动已有集合前先读取输入并验证 Provider，避免配置错误清空旧数据。
         print(f"加载 chunks: {chunks_path}")
-        with open(chunks_path, 'r', encoding='utf-8') as f:
-            chunks = json.load(f)
-
+        with open(chunks_path, encoding="utf-8") as stream:
+            chunks = json.load(stream)
+        if not isinstance(chunks, list) or not chunks:
+            raise ValueError("chunks 文件必须包含至少一个文本块")
         total = len(chunks)
         print(f"加载了 {total} 个 chunks\n")
+
+        first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
+        first_embeddings = self.embedding_provider.embed_documents(first_documents)
+
+        metadata = {
+            "description": f"{book_name} 教材分块",
+            "hnsw:space": "cosine",
+            "embedding_model": self.embedding_provider.identity.model,
+            "embedding_fingerprint": self.embedding_provider.identity.fingerprint,
+        }
+        if clear_existing:
+            write_collection_name = f"ragbuild_{uuid.uuid4().hex}"
+            collection = self.client.create_collection(
+                name=write_collection_name,
+                metadata=metadata,
+            )
+        else:
+            write_collection_name = collection_name
+            collection = self.client.get_or_create_collection(
+                name=collection_name,
+                metadata=metadata,
+            )
+            self._validate_collection_embedding(collection)
+        print(f"集合写入目标: {write_collection_name}\n")
 
         # 批量处理
         print(f"开始向量化（批大小={batch_size}）...")
         start_time = time.time()
 
-        for i in tqdm(range(0, total, batch_size), desc="向量化进度"):
-            batch_chunks = chunks[i:i + batch_size]
+        try:
+            for i in tqdm(range(0, total, batch_size), desc="向量化进度"):
+                batch_chunks = chunks[i:i + batch_size]
 
-            # 准备数据
-            ids = [chunk['chunk_id'] for chunk in batch_chunks]
-            documents = [chunk['content'] for chunk in batch_chunks]
+                # 准备数据
+                ids = [chunk['chunk_id'] for chunk in batch_chunks]
+                documents = [chunk['content'] for chunk in batch_chunks]
 
-            # 准备元数据（添加书籍标识）
-            metadatas = [
-                {
-                    'book_name': book_name,  # 添加书籍标识
-                    'chapter': chunk['chapter'],
-                    'section_h2': chunk['section_h2'],
-                    'section_h3': chunk.get('section_h3', ''),
-                    'section_h4': chunk.get('section_h4', ''),
-                    'level': chunk['level'],
-                    'char_count': chunk['char_count'],
-                    'has_code': chunk['has_code'],
-                    'has_image': chunk['has_image'],
-                }
-                for chunk in batch_chunks
-            ]
+                # 准备元数据（添加书籍标识）
+                metadatas = [
+                    {
+                        'book_name': book_name,  # 添加书籍标识
+                        'chapter': chunk['chapter'],
+                        'section_h2': chunk['section_h2'],
+                        'section_h3': chunk.get('section_h3', ''),
+                        'section_h4': chunk.get('section_h4', ''),
+                        'level': chunk['level'],
+                        'char_count': chunk['char_count'],
+                        'has_code': chunk['has_code'],
+                        'has_image': chunk['has_image'],
+                    }
+                    for chunk in batch_chunks
+                ]
 
-            # 生成 embeddings
-            embeddings = self.model.encode(
-                documents,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=True
-            ).tolist()
+                # 生成 embeddings
+                embeddings = (
+                    first_embeddings
+                    if i == 0
+                    else self.embedding_provider.embed_documents(documents)
+                )
 
-            # 存入数据库
-            collection.add(
-                ids=ids,
-                embeddings=embeddings,
-                documents=documents,
-                metadatas=metadatas
-            )
+                # 存入数据库
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=documents,
+                    metadatas=metadatas
+                )
+        except BaseException:
+            if clear_existing and self._collection_exists(write_collection_name):
+                self.client.delete_collection(write_collection_name)
+            raise
+
+        if clear_existing:
+            collection = self._promote_collection(collection, collection_name)
 
         elapsed_time = time.time() - start_time
 
@@ -148,6 +185,30 @@ class MultiBookVectorizer:
         print("=" * 70)
 
         return collection_name
+
+    def _promote_collection(self, staging_collection, collection_name: str):
+        """Replace the visible collection only after staging is complete."""
+
+        staging_name = staging_collection.name
+        backup_name = None
+        if self._collection_exists(collection_name):
+            backup_name = f"ragbackup_{uuid.uuid4().hex}"
+            existing = self.client.get_collection(collection_name)
+            existing.modify(name=backup_name)
+
+        try:
+            staging_collection.modify(name=collection_name)
+        except BaseException:
+            if backup_name and self._collection_exists(backup_name):
+                self.client.get_collection(backup_name).modify(name=collection_name)
+            if self._collection_exists(staging_name):
+                self.client.delete_collection(staging_name)
+            raise
+
+        if backup_name and self._collection_exists(backup_name):
+            self.client.delete_collection(backup_name)
+            print(f"🗑已替换旧数据: {collection_name}")
+        return self.client.get_collection(collection_name)
 
     def search_book(
             self,
@@ -170,17 +231,14 @@ class MultiBookVectorizer:
             print(f"   请先运行 vectorize_book() 向量化该教材")
             return
         collection = self.client.get_collection(collection_name)
+        self._validate_collection_embedding(collection)
 
         print(f"\n 搜索教材: 《{book_name}》")
         print(f" 查询内容: '{query}'")
         print("-" * 70)
 
         # 生成查询向量
-        query_embedding = self.model.encode(
-            [query],
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        ).tolist()
+        query_embedding = self.embedding_provider.embed_queries([query])
 
         # 搜索
         results = collection.query(
@@ -234,6 +292,17 @@ class MultiBookVectorizer:
                 print(f"  {i}. 《{book_name}》 - {count} 个chunks")
 
         print("-" * 70)
+
+    def _validate_collection_embedding(self, collection) -> None:
+        """Reject known-incompatible vectors while allowing legacy collections."""
+
+        metadata = collection.metadata or {}
+        fingerprint = metadata.get("embedding_fingerprint")
+        if fingerprint and fingerprint != self.embedding_provider.identity.fingerprint:
+            raise ValueError(
+                "向量库 embedding 模型与当前 Provider 不一致；"
+                "请使用同一模型或重新向量化该教材"
+            )
 
 
 def _parse_selection(raw: str, total: int) -> list[int]:
