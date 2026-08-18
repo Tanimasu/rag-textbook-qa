@@ -24,7 +24,7 @@ def test_pdf_extraction(pdf_path: str, max_pages: int = None, save_output: bool 
     Args:
         pdf_path:    PDF 文件路径
         max_pages:   最多转换的页数（None 表示全部）
-        save_output: 是否将结果保存到 output/ 目录
+        save_output: 是否将结果保存到 data/parsed/ 目录
 
     Returns:
         转换后的 Markdown 字符串，失败返回 None
@@ -89,8 +89,9 @@ def test_pdf_extraction(pdf_path: str, max_pages: int = None, save_output: bool 
 
         # 保存结果
         if save_output:
-            out_path = Path("output") / (pdf_file.stem + ".md")
-            out_path.parent.mkdir(exist_ok=True)
+            repository_root = Path(__file__).resolve().parents[1]
+            out_path = repository_root / "data" / "parsed" / (pdf_file.stem + ".md")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(markdown, encoding="utf-8")
             print(f"已保存: {out_path}")
 
@@ -104,8 +105,8 @@ def test_pdf_extraction(pdf_path: str, max_pages: int = None, save_output: bool 
 
 
 if __name__ == "__main__":
-    # 修改这里指定要测试的 PDF
-    PDF_PATH = "data/操作系统.pdf"
+    repository_root = Path(__file__).resolve().parents[1]
+    PDF_PATH = repository_root / "data" / "raw" / "操作系统.pdf"
     MAX_PAGES = 5  # 测试时只转换前5页，改为 None 则处理全部
 
     test_pdf_extraction(PDF_PATH, max_pages=MAX_PAGES)

@@ -12,10 +12,11 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOptions
 from docling.datamodel.base_models import InputFormat
 from pathlib import Path
-# 确保路径完全正确
-source = Path(r"D:\CodeField\Graduation_project\project\data\数据库原理及应用教程.pdf")
-output_path = Path(r"D:\CodeField\Graduation_project\project\output\数据库原理及应用教程.md")
-output_path.parent.mkdir(exist_ok=True)
+
+repository_root = Path(__file__).resolve().parents[1]
+source = repository_root / "data" / "raw" / "数据库原理及应用教程.pdf"
+output_path = repository_root / "data" / "parsed" / "数据库原理及应用教程.md"
+output_path.parent.mkdir(parents=True, exist_ok=True)
 if not source.exists():
     print(f"找不到文件: {source}")
 else:

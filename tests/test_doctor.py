@@ -46,6 +46,18 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(payload["workspace"]["root"], str(REPOSITORY_ROOT))
         self.assertGreater(len(payload["checks"]), 0)
 
+    def test_doctor_reports_the_current_data_layout(self):
+        checks = collect_diagnostics(Settings.load(REPOSITORY_ROOT))
+        by_name = {check.name: check for check in checks}
+
+        self.assertNotIn("legacy-assets", by_name)
+        self.assertIn(by_name["data:raw-pdfs"].status, {"ok", "optional"})
+        for name in ("data:parsed", "data:cleaned", "data:chunks", "data:evaluation"):
+            with self.subTest(name=name):
+                self.assertEqual(by_name[name].status, "ok")
+        self.assertIn(by_name["artifact:vector-db"].status, {"ok", "optional"})
+        self.assertEqual(by_name["artifact:evaluations"].status, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

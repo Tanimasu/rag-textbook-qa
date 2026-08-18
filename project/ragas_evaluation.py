@@ -14,6 +14,7 @@ from ragas import evaluate, RunConfig
 from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from config.constants import EVALUATIONS_DIR, TEST_QUESTIONS_PATH, VECTOR_DB_PATH
 from rag_engine import RAGEngine
 
 # 评估使用的 API 配置（与 RAG 引擎的 API 可以不同）
@@ -21,7 +22,7 @@ API_KEY  = os.getenv("RAGAS_API_KEY")  or os.getenv("LLM_API_KEY", "")
 BASE_URL = os.getenv("RAGAS_API_BASE") or os.getenv("LLM_API_BASE", "https://api.ohmygpt.com/v1")
 MODEL    = os.getenv("RAGAS_MODEL")    or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite-preview")
 
-DB_PATH      = "./vector_db"
+DB_PATH      = str(VECTOR_DB_PATH)
 RUN_BASELINE = True   # 设为 True 才运行无 RAG 的 baseline 对比（费 token）
 
 
@@ -122,7 +123,8 @@ class RAGASEvaluator:
             raise ValueError("没有成功处理任何问题，无法评估。")
 
         # 将问题、回答、标准答案写入对比文件
-        qa_out = "ragas_qa_comparison.json"
+        EVALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        qa_out = EVALUATIONS_DIR / "ragas_qa_comparison.json"
         with open(qa_out, "w", encoding="utf-8") as f:
             json.dump(qa_records, f, ensure_ascii=False, indent=2)
         print(f"问答对比已保存到: {qa_out}")
@@ -284,10 +286,10 @@ if __name__ == "__main__":
 
     # 加载测试题（优先读文件，否则用内置集）
     try:
-        with open("test_questions.json", encoding="utf-8") as f:
+        with TEST_QUESTIONS_PATH.open(encoding="utf-8") as f:
             test_questions = json.load(f)
     except FileNotFoundError:
-        print("test_questions.json 不存在，使用内置测试集")
+        print(f"{TEST_QUESTIONS_PATH} 不存在，使用内置测试集")
         test_questions = create_test_dataset()
 
     # ── 1. RAG 评估 ──────────────────────────────────────────
@@ -296,8 +298,10 @@ if __name__ == "__main__":
     print("\n【RAG 系统评估结果】")
     rag_df = evaluator.print_results(rag_result)
     if rag_df is not None:
-        rag_df.to_csv("ragas_evaluation_results.csv", index=False, encoding="utf-8-sig")
-        print("结果已保存到: ragas_evaluation_results.csv")
+        EVALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        rag_output = EVALUATIONS_DIR / "ragas_evaluation_results.csv"
+        rag_df.to_csv(rag_output, index=False, encoding="utf-8-sig")
+        print(f"结果已保存到: {rag_output}")
 
     # ── 2. Baseline 评估（无 RAG，直接 LLM）──────────────────
     if RUN_BASELINE:
@@ -306,8 +310,10 @@ if __name__ == "__main__":
         print("\n【Baseline 评估结果（无 RAG）】")
         base_df = evaluator.print_results(baseline_result)
         if base_df is not None:
-            base_df.to_csv("ragas_baseline_results.csv", index=False, encoding="utf-8-sig")
-            print("结果已保存到: ragas_baseline_results.csv")
+            EVALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
+            baseline_output = EVALUATIONS_DIR / "ragas_baseline_results.csv"
+            base_df.to_csv(baseline_output, index=False, encoding="utf-8-sig")
+            print(f"结果已保存到: {baseline_output}")
 
         # ── 3. 对比摘要 ──────────────────────────────────────
         print("\n" + "=" * 60)

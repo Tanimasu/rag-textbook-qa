@@ -14,10 +14,11 @@ venv/
 env/
 
 # ── 向量数据库（二进制 + 体积大，可本地重建）────────────────
-project/vector_db/
+artifacts/vector_db/
 
 # ── PDF 原书（体积大 + 版权）────────────────────────────────
-project/data/
+data/raw/*
+!data/raw/README.md
 
 # ── IDE ──────────────────────────────────────────────────────
 .idea/

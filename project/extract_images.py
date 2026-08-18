@@ -34,8 +34,8 @@ def extract_images_from_pdf(pdf_path: str, output_dir: str):
 
 
 if __name__ == "__main__":
-    # 修改这里指定要提取的 PDF 和输出目录
-    PDF_PATH   = "./data/操作系统.pdf"
-    OUTPUT_DIR = "./output/images"
+    repository_root = Path(__file__).resolve().parents[1]
+    PDF_PATH = repository_root / "data" / "raw" / "操作系统.pdf"
+    OUTPUT_DIR = repository_root / "artifacts" / "images" / "操作系统"
 
-    extract_images_from_pdf(PDF_PATH, OUTPUT_DIR)
+    extract_images_from_pdf(str(PDF_PATH), str(OUTPUT_DIR))

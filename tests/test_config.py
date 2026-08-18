@@ -35,10 +35,31 @@ class WorkspaceResolutionTests(unittest.TestCase):
 
     def test_settings_paths_are_absolute_and_stable(self):
         settings = Settings.load(REPOSITORY_ROOT)
+        self.assertEqual(settings.paths.raw_data, REPOSITORY_ROOT / "data" / "raw")
+        self.assertEqual(
+            settings.paths.parsed_data,
+            REPOSITORY_ROOT / "data" / "parsed",
+        )
+        self.assertEqual(
+            settings.paths.cleaned_data,
+            REPOSITORY_ROOT / "data" / "cleaned",
+        )
         self.assertEqual(settings.paths.chunks, REPOSITORY_ROOT / "data" / "chunks")
+        self.assertEqual(
+            settings.paths.chunk_previews,
+            REPOSITORY_ROOT / "data" / "chunks" / "previews",
+        )
+        self.assertEqual(
+            settings.paths.evaluation_data,
+            REPOSITORY_ROOT / "data" / "evaluation",
+        )
         self.assertEqual(
             settings.paths.vector_db,
             REPOSITORY_ROOT / "artifacts" / "vector_db",
+        )
+        self.assertEqual(
+            settings.paths.evaluations,
+            REPOSITORY_ROOT / "artifacts" / "evaluations",
         )
 
 

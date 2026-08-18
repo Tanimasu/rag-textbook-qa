@@ -4,13 +4,14 @@ clean_db.py
 运行方式：python clean_db.py
 """
 import chromadb
+from pathlib import Path
 
-DB_PATH = "./vector_db"
+DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 
 
-def clean_collections(db_path: str = DB_PATH):
+def clean_collections(db_path: str | Path = DB_PATH):
     """列出所有集合并提示用户选择删除。"""
-    client = chromadb.PersistentClient(path=db_path)
+    client = chromadb.PersistentClient(path=str(db_path))
     collections = client.list_collections()
 
     if not collections:

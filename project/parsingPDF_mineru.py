@@ -19,10 +19,9 @@ import fitz  # pymupdf（MinerU 依赖，无需额外安装）
 from mineru.cli.common import do_parse, read_fn
 
 
-# ===================== 配置路径（每次修改这里）=====================
-source = Path(r"D:\CodeField\Graduation_project\project\data\数据库原理及应用教程.pdf")
-output_path = Path(r"D:\CodeField\Graduation_project\project\output\数据库原理及应用教程_mineru.md")
-# =================================================================
+repository_root = Path(__file__).resolve().parents[1]
+source = repository_root / "data" / "raw" / "数据库原理及应用教程.pdf"
+output_path = repository_root / "data" / "parsed" / "数据库原理及应用教程_mineru.md"
 
 # 每段最多处理的页数
 CHUNK_PAGES = 100
@@ -104,7 +103,7 @@ def parse_pdf(pdf_path: Path, dest: Path, backend: str = "pipeline"):
 
     doc.close()
 
-    dest.parent.mkdir(exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(md_text, encoding="utf-8")
     print(f"\n转换成功！保存至: {dest}")
     print(f"结果字符数: {len(md_text):,}")

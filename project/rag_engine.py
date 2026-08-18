@@ -5,6 +5,7 @@ RAG 问答系统核心引擎（已集成 BM25 + 向量语义混合检索 + LLM�
 
 import json
 import os
+from pathlib import Path
 from typing import List, Dict, Optional
 
 from dotenv import load_dotenv
@@ -19,6 +20,7 @@ import jieba
 _API_KEY   = os.getenv("RAG_API_KEY")  or os.getenv("LLM_API_KEY", "")
 _API_BASE  = os.getenv("RAG_API_BASE") or os.getenv("LLM_API_BASE", "https://api.ohmygpt.com/v1")
 _LLM_MODEL = os.getenv("RAG_MODEL")   or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite-preview")
+DEFAULT_VECTOR_DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 
 
 class RAGEngine:
@@ -26,7 +28,7 @@ class RAGEngine:
 
     def __init__(
             self,
-            db_path: str = "./vector_db",
+            db_path: str | Path = DEFAULT_VECTOR_DB_PATH,
             model_name: str = "BAAI/bge-large-zh-v1.5",
             enable_llm: bool = True,
             api_key: str = _API_KEY,
@@ -59,7 +61,7 @@ class RAGEngine:
         # 向量数据库
         self.vectorizer = MultiBookVectorizer(
             model_name=model_name,
-            db_path=db_path
+            db_path=str(db_path)
         )
 
         # BM25 索引
@@ -554,7 +556,7 @@ class RAGEngine:
 def main():
     """主函数：测试 RAG + LLM 完整流程"""
 
-    db_path = r"./vector_db"
+    db_path = DEFAULT_VECTOR_DB_PATH
 
     # 初始化 RAG 引擎（可选择是否启用 LLM）
     # enable_llm=True：启用 LLM 生成答案

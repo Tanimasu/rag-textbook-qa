@@ -1,10 +1,19 @@
-import os
+from pathlib import Path
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-RAGAS_RESULTS_PATH = os.path.join(BASE_DIR, "ragas_evaluation_results.csv")
-TEST_QUESTIONS_PATH = os.path.join(BASE_DIR, "test_questions.json")
-VECTOR_DB_PATH = os.path.join(BASE_DIR, "vector_db")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+BASE_DIR = str(REPOSITORY_ROOT / "project")
+DATA_DIR = REPOSITORY_ROOT / "data"
+RAW_DATA_DIR = DATA_DIR / "raw"
+PARSED_DATA_DIR = DATA_DIR / "parsed"
+CLEANED_DATA_DIR = DATA_DIR / "cleaned"
+CHUNKS_DIR = DATA_DIR / "chunks"
+EVALUATION_DATA_DIR = DATA_DIR / "evaluation"
+ARTIFACTS_DIR = REPOSITORY_ROOT / "artifacts"
+EVALUATIONS_DIR = ARTIFACTS_DIR / "evaluations"
+VECTOR_DB_PATH = ARTIFACTS_DIR / "vector_db"
+TEST_QUESTIONS_PATH = EVALUATION_DATA_DIR / "test_questions.json"
+RAGAS_RESULTS_PATH = EVALUATIONS_DIR / "ragas_evaluation_results.csv"
 
 BOOK_NAME_LABELS = {
     "os": "操作系统",

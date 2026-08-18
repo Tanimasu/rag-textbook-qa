@@ -65,26 +65,21 @@ PDF
 ## 目录结构
 
 ```text
-Graduation_project/
-├─ README.md
-├─ CLAUDE.md
-└─ project/
-   ├─ app.py                    # Streamlit 入口
-   ├─ rag_engine.py             # RAG 核心引擎：混合检索 / HyDE / 重排序 / 生成
-   ├─ vectorize_chunks.py       # 文本分块向量化并写入 ChromaDB
-   ├─ chunk_textbooks.py        # Markdown 分块
-   ├─ clean_markdown.py         # Markdown 清洗与标题规范化
-   ├─ parsingPDF.py             # Docling + EasyOCR 解析 PDF
-   ├─ parsingPDF_mineru.py      # MinerU 解析 PDF（推荐）
-   ├─ llm_client.py             # OpenAI-compatible LLM 客户端
-   ├─ ragas_evaluation.py       # RAGAS 评估与 baseline 对比
-   ├─ test_questions.json       # 评估问题集
-   ├─ config/                   # 常量配置
-   ├─ services/                 # 页面使用的数据加载与服务函数
-   ├─ ui/                       # Streamlit 页面与样式模块
-   ├─ data/                     # 原始教材 PDF
-   ├─ output/                   # 解析、清洗、分块后的中间产物
-   └─ vector_db/                # ChromaDB 持久化向量库
+rag-textbook-qa/
+├─ pyproject.toml               # Python 版本、依赖分组和命令入口
+├─ src/rag_textbook_qa/         # 新的跨平台包
+├─ project/                     # 尚在迁移的 RAG、评估和 Streamlit 兼容入口
+├─ data/
+│  ├─ raw/                      # 本地 PDF 原书，不提交 Git
+│  ├─ parsed/                   # PDF 解析后的 Markdown
+│  ├─ cleaned/                  # 清洗后的 Markdown
+│  ├─ chunks/                   # 分块 JSON
+│  │  └─ previews/              # 分块文本预览
+│  └─ evaluation/               # 评估问题集
+├─ artifacts/
+│  ├─ vector_db/                # 本地 ChromaDB，可重建且不提交 Git
+│  └─ evaluations/              # RAGAS 和 baseline 评估结果
+└─ tests/                       # 无网络回归与历史资产基线
 ```
 
 ---
@@ -93,10 +88,19 @@ Graduation_project/
 
 ### 1. 安装依赖
 
+项目要求 Python 3.11 或 3.12。基础功能与可选重依赖已在 `pyproject.toml` 中分组：
+
 ```bash
-pip install docling chromadb sentence-transformers rank-bm25 jieba \
-            openai python-dotenv pandas openpyxl tqdm \
-            ragas langchain-openai langchain-community datasets
+python -m pip install -e .
+python -m pip install -e ".[ui,local-models]"  # 需要界面和本地模型时
+```
+
+PDF 解析和评估依赖按需安装：
+
+```bash
+python -m pip install -e ".[docling]"
+python -m pip install -e ".[mineru]"
+python -m pip install -e ".[eval]"
 ```
 
 ### 2. 配置 API
@@ -121,8 +125,7 @@ LLM_MODEL=gemini-3-flash-preview
 ### 3. 验证环境
 
 ```bash
-cd project/
-python check_env.py
+rag-qa doctor
 ```
 
 验证 PyTorch、CUDA 与 GPU 是否可用。GPU 不可用时，后续 OCR 解析会显著变慢。
@@ -131,47 +134,49 @@ python check_env.py
 
 ## 完整流程
 
-所有脚本均在 `project/` 目录下运行。
+以下命令默认从仓库根目录运行，输入和输出路径不依赖当前操作系统。
 
 ### Step 1 — PDF 转 Markdown
 
+将 PDF 放入 `data/raw/`。当前兼容脚本默认处理“数据库原理及应用教程.pdf”：
+
 ```bash
-python parsingPDF_mineru.py   # 推荐：MinerU，逐页自动判断是否 OCR，扫描页内容更完整
-python parsingPDF.py          # 备选：Docling + EasyOCR
+python project/parsingPDF_mineru.py   # 推荐：MinerU
+python project/parsingPDF.py          # 备选：Docling + EasyOCR
 ```
 
-MinerU 版本输出 `output/*_mineru.md`，Docling 版本输出 `output/*.md`。运行前在脚本顶部修改 PDF 路径。
-解析完成后可运行 `check_parsing_quality.py` 检查解析质量。
+MinerU 版本输出到 `data/parsed/*_mineru.md`，Docling 版本输出到 `data/parsed/*.md`。
 
 ### Step 2 — 清洗 Markdown
 
 ```bash
-python clean_markdown.py
+rag-qa ingest clean data/parsed/教材.md --output data/cleaned/教材_cleaned.md
 ```
 
-通过 SmartMarkdownCleaner 规范化标题层级，输出 `output/*_cleaned.md`。
+通过 SmartMarkdownCleaner 规范化标题层级，显式写入 `data/cleaned/`。
 
 ### Step 3 — 文本分块
 
 ```bash
-python chunk_textbooks.py
+rag-qa ingest chunk data/cleaned/教材_cleaned.md \
+  --output data/chunks/教材_chunks.json
+rag-qa ingest check data/chunks/教材_chunks.json
 ```
 
-按标题结构将清洗后的 Markdown 切分为 JSON 块（最大 800 字符），输出 `output/*_chunks.json`。
-分块完成后可运行 `check_quality.py` 检查分块质量。
+按标题结构切分 Markdown，并将 JSON 写入 `data/chunks/`。
 
 ### Step 4 — 向量化
 
 ```bash
-python vectorize_chunks.py
+python project/vectorize_chunks.py
 ```
 
-使用 `BAAI/bge-large-zh-v1.5` 生成嵌入向量并存入 ChromaDB（`vector_db/`）。交互式运行，每本教材单独询问是否处理。完成后可运行 `test_vector_db.py` 核查各集合的向量数量。
+脚本扫描 `data/chunks/*_chunks.json`，并将向量写入 `artifacts/vector_db/`。
 
 ### Step 5 — 问答
 
 ```bash
-python rag_engine.py
+python project/rag_engine.py
 ```
 
 启动交互式问答。输入 `test` 可运行内置测试用例，输入 `quit` 退出。
@@ -179,17 +184,17 @@ python rag_engine.py
 ### Step 6 — 评估
 
 ```bash
-python ragas_evaluation.py
+python project/ragas_evaluation.py
 ```
 
-使用 RAGAS 框架计算 Faithfulness、Answer Relevancy、Context Precision、Context Recall 四项指标，结果保存为 `ragas_evaluation_results.csv`。评估数据集来自 `test_questions.json`（50 条，覆盖五本教材，每本 10 题）。
+评估问题来自 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。
 
 如需同时运行无 RAG 基线对比，在脚本顶部将 `RUN_BASELINE = False` 改为 `True`（会额外消耗 token）。
 
 ### Step 7 — 启动 Web 界面
 
 ```bash
-streamlit run app.py
+streamlit run project/app.py
 ```
 
 在浏览器中打开问答界面，支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
@@ -211,4 +216,4 @@ streamlit run app.py
 
 | 文件 | 题数 | 说明 |
 |------|------|------|
-| `test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
+| `data/evaluation/test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |

@@ -71,8 +71,10 @@ class WorkspacePaths:
     root: Path
     data: Path
     raw_data: Path
-    processed_data: Path
+    parsed_data: Path
+    cleaned_data: Path
     chunks: Path
+    chunk_previews: Path
     evaluation_data: Path
     artifacts: Path
     vector_db: Path
@@ -86,8 +88,10 @@ class WorkspacePaths:
             root=root,
             data=data,
             raw_data=data / "raw",
-            processed_data=data / "processed",
+            parsed_data=data / "parsed",
+            cleaned_data=data / "cleaned",
             chunks=data / "chunks",
+            chunk_previews=data / "chunks" / "previews",
             evaluation_data=data / "evaluation",
             artifacts=artifacts,
             vector_db=artifacts / "vector_db",

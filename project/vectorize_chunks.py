@@ -9,17 +9,20 @@
 所属模块: 向量化 / 检索
 """
 import json
+from pathlib import Path
 import chromadb
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 import time
+
+DEFAULT_VECTOR_DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 
 
 class MultiBookVectorizer:
     def __init__(
             self,
             model_name: str = "BAAI/bge-large-zh-v1.5",
-            db_path: str = "./chroma_db"
+            db_path: str | Path = DEFAULT_VECTOR_DB_PATH,
     ):
         """初始化向量化器"""
         print("初始化向量化器...")
@@ -31,7 +34,7 @@ class MultiBookVectorizer:
 
         # 初始化 Chroma 客户端
         print(f"初始化向量数据库: {db_path}")
-        self.client = chromadb.PersistentClient(path=db_path)
+        self.client = chromadb.PersistentClient(path=str(db_path))
         print("数据库初始化完成\n")
 
     def _collection_exists(self, collection_name: str) -> bool:
@@ -253,12 +256,12 @@ def _parse_selection(raw: str, total: int) -> list[int]:
 
 
 def main():
-    """主函数：自动扫描 output/ 下所有 *_chunks.json，交互选择后向量化"""
-    from pathlib import Path
+    """主函数：自动扫描 data/chunks 下所有 *_chunks.json，交互选择后向量化"""
     import re
 
-    output_dir = Path(r"D:\CodeField\Graduation_project\project\output")
-    db_path    = r"D:\CodeField\Graduation_project\project\vector_db"
+    repository_root = Path(__file__).resolve().parents[1]
+    output_dir = repository_root / "data" / "chunks"
+    db_path = DEFAULT_VECTOR_DB_PATH
 
     # ── 文件 stem → ChromaDB 集合名映射表 ───────────────────────────────
     # ChromaDB 只允许 [a-zA-Z0-9._-]，且首尾必须是字母或数字

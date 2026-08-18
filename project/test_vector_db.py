@@ -4,13 +4,14 @@ test_vector_db.py
 运行方式：python test_vector_db.py
 """
 import chromadb
+from pathlib import Path
 
-DB_PATH = "./vector_db"
+DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 
 
-def check_vector_db(db_path: str = DB_PATH):
+def check_vector_db(db_path: str | Path = DB_PATH):
     """列出数据库中所有教材集合，并打印每个集合的基本信息和一条样本记录。"""
-    client = chromadb.PersistentClient(path=db_path)
+    client = chromadb.PersistentClient(path=str(db_path))
     collections = client.list_collections()
 
     if not collections:

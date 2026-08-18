@@ -41,19 +41,39 @@ def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
         ),
         Diagnostic("workspace", "ok", str(paths.root)),
         Diagnostic(
-            "legacy-assets",
-            "ok" if (paths.root / "project" / "output").is_dir() else "optional",
-            str(paths.root / "project" / "output"),
+            "data:raw-pdfs",
+            "ok" if any(paths.raw_data.glob("*.pdf")) else "optional",
+            str(paths.raw_data),
         ),
         Diagnostic(
-            "data-layout",
-            "ok" if paths.data.is_dir() else "pending",
-            str(paths.data),
+            "data:parsed",
+            "ok" if paths.parsed_data.is_dir() else "pending",
+            str(paths.parsed_data),
         ),
         Diagnostic(
-            "artifacts-layout",
-            "ok" if paths.artifacts.is_dir() else "pending",
-            str(paths.artifacts),
+            "data:cleaned",
+            "ok" if paths.cleaned_data.is_dir() else "pending",
+            str(paths.cleaned_data),
+        ),
+        Diagnostic(
+            "data:chunks",
+            "ok" if paths.chunks.is_dir() else "pending",
+            str(paths.chunks),
+        ),
+        Diagnostic(
+            "data:evaluation",
+            "ok" if paths.evaluation_data.is_dir() else "pending",
+            str(paths.evaluation_data),
+        ),
+        Diagnostic(
+            "artifact:vector-db",
+            "ok" if paths.vector_db.is_dir() else "optional",
+            str(paths.vector_db),
+        ),
+        Diagnostic(
+            "artifact:evaluations",
+            "ok" if paths.evaluations.is_dir() else "pending",
+            str(paths.evaluations),
         ),
     ]
 

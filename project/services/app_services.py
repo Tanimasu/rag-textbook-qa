@@ -36,7 +36,7 @@ def load_available_books():
 def load_engine():
     from rag_engine import RAGEngine
 
-    return RAGEngine(db_path="./vector_db", verbose=False)
+    return RAGEngine(db_path=str(VECTOR_DB_PATH), verbose=False)
 
 
 def load_ragas_results():
@@ -57,5 +57,6 @@ def run_ragas_evaluation():
     result = evaluator.evaluate(dataset)
     df = evaluator.print_results(result)
     if df is not None:
+        RAGAS_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(RAGAS_RESULTS_PATH, index=False, encoding="utf-8-sig")
     return load_ragas_results()
