@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.llm import create_llm_client
 from rag_textbook_qa.providers import (
     ComputeSettings,
     EmbeddingProvider,
@@ -110,7 +111,6 @@ class RAGEngine:
 
         if enable_llm:
             try:
-                from llm_client import create_llm_client
                 self.llm = create_llm_client(
                     api_key=api_key,
                     base_url=api_base,

@@ -16,7 +16,7 @@ The processing pipeline runs in sequence:
 2. **Clean Markdown** — `clean_markdown.py`: Normalizes heading hierarchy (SmartMarkdownCleaner), outputs `*_cleaned.md`
 3. **Chunk** — `chunk_textbooks.py`: Splits cleaned Markdown into JSON chunks (`*_chunks.json`) using SmartTextbookChunker (max 800 chars, min 100 chars, 50 char overlap). HTML tables (MinerU output) are kept as single chunks regardless of size to preserve table integrity.
 4. **Vectorize** — `rag_textbook_qa.indexing`: Embeds `data/chunks/` files with `BAAI/bge-large-zh-v1.5` and stores them in `artifacts/vector_db/`. Each book gets its own collection named `textbook_{book_name}`. `project/vectorize_chunks.py` is a compatibility entry point.
-5. **Query/RAG** — `rag_engine.py`: Hybrid retrieval (embedding + BM25/jieba) → Cross-Encoder reranking (`BAAI/bge-reranker-base`) → prompt construction → LLM call via `llm_client.py`. Optional HyDE (`enable_hyde=True`) generates a hypothetical document via LLM before embedding the query.
+5. **Query/RAG** — `rag_engine.py`: Hybrid retrieval (embedding + BM25/jieba) → Cross-Encoder reranking (`BAAI/bge-reranker-base`) → prompt construction → LLM call via `rag_textbook_qa.llm`. Optional HyDE (`enable_hyde=True`) generates a hypothetical document via LLM before embedding the query.
 6. **Evaluate** — `ragas_evaluation.py`: full RAGAS metrics (faithfulness, answer relevancy, context precision/recall) via LangChain + LLM. Also runs a **no-RAG baseline** (direct LLM, no retrieval) and prints a side-by-side comparison. Falls back to local HuggingFace embeddings if API embeddings are unavailable.
 
 ## Running Scripts
@@ -72,7 +72,7 @@ The mapping lives in `rag_textbook_qa.catalog::CHUNK_STEM_TO_BOOK_ID`. Unknown n
 
 **Cross-Encoder reranking** in `rag_engine.py`: enabled by default (`enable_reranker=True`) using `BAAI/bge-reranker-base`. First-pass retrieval is widened to `top_k * 3` candidates; the reranker scores each `(query, content)` pair and returns the true top_k. Controlled by `RAGEngine(enable_reranker=True/False)`. Falls back gracefully if model unavailable.
 
-**LLM client** (`llm_client.py`) uses an OpenAI-compatible API configured via `project/.env` (`LLM_API_KEY`, `LLM_API_BASE`, `LLM_MODEL`). Per-script overrides: `RAG_API_KEY/BASE/MODEL` for rag_engine, `RAGAS_API_KEY/BASE/MODEL` for ragas_evaluation. Default model: `gemini-3.1-flash-lite-preview`.
+**LLM client** (`src/rag_textbook_qa/llm/client.py`) uses an OpenAI-compatible API configured via `project/.env` (`LLM_API_KEY`, `LLM_API_BASE`, `LLM_MODEL`). Configuration is resolved when the client is created, not when the module is imported. Per-script overrides: `RAG_API_KEY/BASE/MODEL` for rag_engine, `RAGAS_API_KEY/BASE/MODEL` for ragas_evaluation. Default model: `gemini-3.1-flash-lite-preview`.
 
 **Evaluation dataset** is `data/evaluation/test_questions.json` — a list of `{"question", "ground_truth", "book_name"}` objects used by `ragas_evaluation.py`. Falls back to the built-in `create_test_dataset()` if the file is missing.
 
@@ -83,7 +83,8 @@ The mapping lives in `rag_textbook_qa.catalog::CHUNK_STEM_TO_BOOK_ID`. Unknown n
 | File | Purpose |
 |------|---------|
 | `rag_engine.py` | Core RAGEngine class - entry point for Q&A |
-| `llm_client.py` | LLMClient wrapping OpenAI-compatible API |
+| `src/rag_textbook_qa/llm/client.py` | LLMClient wrapping OpenAI-compatible APIs |
+| `project/llm_client.py` | Compatibility exports; does not make test API calls |
 | `src/rag_textbook_qa/indexing/vectorizer.py` | MultiBookVectorizer - ChromaDB + local/remote embedding Provider |
 | `project/vectorize_chunks.py` | Thin compatibility entry point for interactive indexing |
 | `chunk_textbooks.py` | SmartTextbookChunker - Markdown to JSON chunks |
