@@ -15,7 +15,7 @@ The processing pipeline runs in sequence:
    - `parsingPDF_mineru.py`: Uses MinerU 2.7.6 (pipeline backend). `parse_method="auto"` detects per page whether OCR is needed. Produces ~50% more content than Docling on mixed digital/scanned PDFs. Output files are named `*_mineru.md` to distinguish from Docling output. Always uses `formula_enable=True`; for long PDFs that would OOM, automatically splits into `CHUNK_PAGES`-page segments (default 100) using pymupdf, processes each segment separately, then merges the Markdown. **Do NOT set `formula_enable=False`** — MinerU will treat formula regions as images (`![](images/...)`) which are useless for RAG.
 2. **Clean Markdown** — `clean_markdown.py`: Normalizes heading hierarchy (SmartMarkdownCleaner), outputs `*_cleaned.md`
 3. **Chunk** — `chunk_textbooks.py`: Splits cleaned Markdown into JSON chunks (`*_chunks.json`) using SmartTextbookChunker (max 800 chars, min 100 chars, 50 char overlap). HTML tables (MinerU output) are kept as single chunks regardless of size to preserve table integrity.
-4. **Vectorize** — `vectorize_chunks.py`: Embeds `data/chunks/` files with `BAAI/bge-large-zh-v1.5` and stores them in `artifacts/vector_db/`. Each book gets its own collection named `textbook_{book_name}`.
+4. **Vectorize** — `rag_textbook_qa.indexing`: Embeds `data/chunks/` files with `BAAI/bge-large-zh-v1.5` and stores them in `artifacts/vector_db/`. Each book gets its own collection named `textbook_{book_name}`. `project/vectorize_chunks.py` is a compatibility entry point.
 5. **Query/RAG** — `rag_engine.py`: Hybrid retrieval (embedding + BM25/jieba) → Cross-Encoder reranking (`BAAI/bge-reranker-base`) → prompt construction → LLM call via `llm_client.py`. Optional HyDE (`enable_hyde=True`) generates a hypothetical document via LLM before embedding the query.
 6. **Evaluate** — `ragas_evaluation.py`: full RAGAS metrics (faithfulness, answer relevancy, context precision/recall) via LangChain + LLM. Also runs a **no-RAG baseline** (direct LLM, no retrieval) and prints a side-by-side comparison. Falls back to local HuggingFace embeddings if API embeddings are unavailable.
 
@@ -34,7 +34,11 @@ rag-qa ingest clean INPUT.md --output data/cleaned/BOOK_cleaned.md
 # Step 3: Chunk a textbook
 rag-qa ingest chunk data/cleaned/BOOK_cleaned.md --output data/chunks/BOOK_chunks.json
 
-# Step 4: Vectorize (interactive - prompts per book)
+# Step 4: Vectorize one book and inspect local collections
+rag-qa index build data/chunks/BOOK_chunks.json
+rag-qa index list
+
+# Compatibility: interactive multi-book selection
 python project/vectorize_chunks.py
 
 # Step 5: Interactive Q&A (type 'test' for built-in test cases)
@@ -46,7 +50,7 @@ python project/ragas_evaluation.py
 
 ## Key Architecture Decisions
 
-**Book identifiers** (used as ChromaDB collection suffixes) — defined in `vectorize_chunks.py::BOOK_NAME_MAP` and referenced in `rag_engine.py` test queries:
+**Book identifiers** (used as ChromaDB collection suffixes) — defined in `rag_textbook_qa.catalog::CHUNK_STEM_TO_BOOK_ID` and referenced in `rag_engine.py` test queries:
 
 | 教材 | Docling 标识 | MinerU 标识 |
 |------|-------------|-------------|
@@ -56,7 +60,7 @@ python project/ragas_evaluation.py
 | 数据结构 | `data_structure` | `data_structure_mineru` |
 | 数据库原理及应用教程 | `database` | `database_mineru` |
 
-The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a-zA-Z0-9._-]` for collection names.
+The mapping lives in `rag_textbook_qa.catalog::CHUNK_STEM_TO_BOOK_ID`. Unknown non-ASCII stems use a deterministic SHA-256-derived ID. ChromaDB enforces `[a-zA-Z0-9._-]` for collection names.
 
 **ChromaDB collections** follow the naming pattern `textbook_{book_name}`. The RAGEngine and MultiBookVectorizer both rely on this convention.
 
@@ -80,7 +84,8 @@ The mapping lives in `vectorize_chunks.py::BOOK_NAME_MAP`. ChromaDB enforces `[a
 |------|---------|
 | `rag_engine.py` | Core RAGEngine class - entry point for Q&A |
 | `llm_client.py` | LLMClient wrapping OpenAI-compatible API |
-| `vectorize_chunks.py` | MultiBookVectorizer - ChromaDB + sentence-transformers |
+| `src/rag_textbook_qa/indexing/vectorizer.py` | MultiBookVectorizer - ChromaDB + local/remote embedding Provider |
+| `project/vectorize_chunks.py` | Thin compatibility entry point for interactive indexing |
 | `chunk_textbooks.py` | SmartTextbookChunker - Markdown to JSON chunks |
 | `clean_markdown.py` | SmartMarkdownCleaner - heading normalization |
 | `parsingPDF_mineru.py` | MinerU-based PDF parser (alternative to parsingPDF.py); outputs `*_mineru.md` |

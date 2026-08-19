@@ -68,6 +68,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
+    index = commands.add_parser("index", help="构建和检查本地 Chroma 教材索引")
+    index_commands = index.add_subparsers(dest="index_command", required=True)
+    index_build = index_commands.add_parser("build", help="向量化一个 chunks JSON")
+    index_build.add_argument("input", type=Path, help="输入 *_chunks.json")
+    index_build.add_argument(
+        "--book",
+        help="稳定教材标识，如 database；默认根据文件名推断",
+    )
+    index_build.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    index_build.add_argument("--batch-size", type=int, default=32)
+    index_build.add_argument("--model", help="覆盖 embedding 模型")
+    index_build.add_argument(
+        "--append",
+        action="store_true",
+        help="追加到现有集合；默认完成后原子替换",
+    )
+    index_list = index_commands.add_parser("list", help="列出已索引教材，不加载模型")
+    index_list.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    index_list.add_argument("--json", action="store_true", help="输出结构化 JSON")
+
     worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     serve = worker_commands.add_parser("serve", help="启动模型 Worker HTTP 服务")
@@ -160,6 +180,43 @@ def _load_project_environment(env_path: Path) -> None:
             file=sys.stderr,
         )
     load_dotenv(env_path, override=False)
+
+
+def _run_index(args: argparse.Namespace, settings: Settings) -> int:
+    from rag_textbook_qa.catalog import book_id_from_chunk_stem
+    from rag_textbook_qa.indexing import MultiBookVectorizer, list_indexed_books
+
+    db_path = args.db_path or settings.paths.vector_db
+    if args.index_command == "build":
+        _load_project_environment(settings.paths.root / "project" / ".env")
+        compute = ComputeSettings.from_env()
+        vectorizer = MultiBookVectorizer(
+            model_name=args.model,
+            db_path=db_path,
+            compute_settings=compute,
+        )
+        collection_name = vectorizer.vectorize_book(
+            args.input,
+            args.book or book_id_from_chunk_stem(args.input.stem),
+            batch_size=args.batch_size,
+            clear_existing=not args.append,
+        )
+        print(f"索引已就绪: {collection_name}")
+        return 0
+
+    if args.index_command == "list":
+        books = list_indexed_books(db_path)
+        if args.json:
+            print(json.dumps(books, ensure_ascii=False, indent=2))
+        elif not books:
+            print(f"尚无教材索引: {Path(db_path).expanduser().resolve()}")
+        else:
+            for book in books:
+                model = book["embedding_model"] or "未知模型"
+                print(f"{book['book_name']}: {book['count']} chunks ({model})")
+        return 0
+
+    raise ValueError(f"未知 index 命令: {args.index_command}")
 
 
 def _validated_health_summary(
@@ -298,6 +355,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return _run_ingest(args)
         except (KeyError, OSError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "index":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_index(args, settings)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
     if args.command == "worker":

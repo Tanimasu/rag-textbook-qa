@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from vectorize_chunks import MultiBookVectorizer
+from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import (
     ComputeSettings,
     EmbeddingProvider,

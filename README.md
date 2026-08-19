@@ -256,10 +256,11 @@ rag-qa ingest check data/chunks/教材_chunks.json
 ### Step 4 — 向量化
 
 ```bash
-python project/vectorize_chunks.py
+rag-qa index build data/chunks/教材_chunks.json
+rag-qa index list
 ```
 
-脚本扫描 `data/chunks/*_chunks.json`，并将向量写入 `artifacts/vector_db/`。
+`index build` 根据 `project/.env` 选择本地或远程 embedding Provider，将向量写入 `artifacts/vector_db/`；默认先完整构建临时集合，成功后再替换旧集合。已知教材会根据文件名推断稳定 ID，也可用 `--book database` 显式指定。原来的 `python project/vectorize_chunks.py` 仍保留为批量交互式兼容入口。
 
 ### Step 5 — 问答
 

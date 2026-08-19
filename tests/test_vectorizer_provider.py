@@ -1,17 +1,13 @@
 import contextlib
 import io
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from rag_textbook_qa.indexing import MultiBookVectorizer, list_indexed_books
 from rag_textbook_qa.providers import ModelIdentity, TransientProviderError
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
-
-PROJECT_DIR = Path(__file__).resolve().parents[1] / "project"
-sys.path.insert(0, str(PROJECT_DIR))
-from vectorize_chunks import MultiBookVectorizer
 
 
 class FakeEmbeddingProvider:
@@ -96,6 +92,10 @@ class VectorizerProviderTests(unittest.TestCase):
             )
             self.assertEqual(provider.document_calls, 1)
             self.assertEqual(provider.query_calls, 1)
+            self.assertEqual(
+                list_indexed_books(root / "db")[0]["collection_name"],
+                "textbook_os",
+            )
 
     def test_provider_failure_does_not_clear_existing_collection(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -133,6 +133,26 @@ class VectorizerProviderTests(unittest.TestCase):
                     for collection in vectorizer.client.list_collections()
                 )
             )
+
+    def test_invalid_chunks_fail_before_embedding_or_collection_creation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chunks = _chunks()
+            chunks[1]["chunk_id"] = chunks[0]["chunk_id"]
+            chunks_path = root / "chunks.json"
+            chunks_path.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+            provider = FakeEmbeddingProvider()
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                vectorizer = MultiBookVectorizer(
+                    db_path=root / "db",
+                    embedding_provider=provider,
+                )
+                with self.assertRaisesRegex(ValueError, "重复 chunk_id"):
+                    vectorizer.vectorize_book(chunks_path, "os")
+
+            self.assertEqual(provider.document_calls, 0)
+            self.assertEqual(vectorizer.client.list_collections(), [])
 
 
 if __name__ == "__main__":
