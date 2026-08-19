@@ -1,17 +1,16 @@
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import ModelIdentity
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
-
-PROJECT_DIR = Path(__file__).resolve().parents[1] / "project"
-sys.path.insert(0, str(PROJECT_DIR))
-from rag_engine import RAGEngine
+from rag_textbook_qa.rag import RAGEngine
 
 
 class FakeEmbeddingProvider:
@@ -34,6 +33,48 @@ class FakeRerankerProvider:
 
     def rerank(self, query, documents):
         return [float(index) for index, _ in enumerate(documents)]
+
+
+class FakeLLMClient:
+    def __init__(self):
+        self.prompts = []
+
+    def generate_answer(self, prompt, **kwargs):
+        self.prompts.append((prompt, kwargs))
+        return {
+            "success": True,
+            "answer": "测试回答",
+            "model": "fake-llm",
+            "tokens": {"prompt": 1, "completion": 1, "total": 2},
+            "time": 0,
+        }
+
+
+def chunks():
+    return [
+        {
+            "chunk_id": "chunk-1",
+            "content": "进程是操作系统进行资源分配和管理的基本单位。" * 5,
+            "chapter": "第一章",
+            "section_h2": "进程",
+            "section_h3": "",
+            "level": 2,
+            "char_count": 125,
+            "has_code": False,
+            "has_image": False,
+        },
+        {
+            "chunk_id": "chunk-2",
+            "content": "线程是处理器进行调度和执行的基本单位。" * 5,
+            "chapter": "第一章",
+            "section_h2": "线程",
+            "section_h3": "",
+            "level": 2,
+            "char_count": 120,
+            "has_code": False,
+            "has_image": False,
+        },
+    ]
 
 
 class RagProviderIntegrationTests(unittest.TestCase):
@@ -60,6 +101,43 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(results[0]["content"], "second")
         self.assertEqual(results[0]["rerank_score"], 1.0)
+
+    def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chunks_path = root / "chunks.json"
+            chunks_path.write_text(
+                json.dumps(chunks(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                vectorizer = MultiBookVectorizer(
+                    db_path=root / "db",
+                    embedding_provider=FakeEmbeddingProvider(),
+                )
+                vectorizer.vectorize_book(chunks_path, "os")
+
+                llm = FakeLLMClient()
+                engine = RAGEngine(
+                    db_path=root / "db",
+                    embedding_provider=FakeEmbeddingProvider(),
+                    reranker_provider=FakeRerankerProvider(),
+                    llm_client=llm,
+                    enable_hyde=True,
+                    verbose=False,
+                )
+                semantic = engine.search_embedding("os", "什么是线程？", top_k=1)
+                result = engine.ask("什么是线程？", book_name="os", top_k=1)
+
+            self.assertEqual(len(semantic), 1)
+            self.assertEqual(semantic[0]["method"], "embedding")
+            self.assertTrue(result["success"])
+            self.assertEqual(result["answer"], "测试回答")
+            self.assertIn("相关教材内容", result["prompt"])
+            self.assertEqual(len(llm.prompts), 3)
 
 
 if __name__ == "__main__":

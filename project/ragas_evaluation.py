@@ -7,15 +7,21 @@ import json
 import os
 from typing import List, Dict
 from dotenv import load_dotenv
-load_dotenv()
 
 from datasets import Dataset
 from ragas import evaluate, RunConfig
 from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from config.constants import EVALUATIONS_DIR, TEST_QUESTIONS_PATH, VECTOR_DB_PATH
-from rag_engine import RAGEngine
+from config.constants import (
+    EVALUATIONS_DIR,
+    REPOSITORY_ROOT,
+    TEST_QUESTIONS_PATH,
+    VECTOR_DB_PATH,
+)
+from rag_textbook_qa.rag import RAGEngine
+
+load_dotenv(REPOSITORY_ROOT / "project" / ".env", override=False)
 
 # 评估使用的 API 配置（与 RAG 引擎的 API 可以不同）
 API_KEY  = os.getenv("RAGAS_API_KEY")  or os.getenv("LLM_API_KEY", "")

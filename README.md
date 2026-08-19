@@ -265,10 +265,10 @@ rag-qa index list
 ### Step 5 — 问答
 
 ```bash
-python project/rag_engine.py
+rag-qa chat
 ```
 
-启动交互式问答。输入 `test` 可运行内置测试用例，输入 `quit` 退出。
+启动交互式问答。输入 `test` 可运行内置测试用例，输入 `quit` 退出；仅检查检索流程时可使用 `rag-qa chat --no-llm --no-hyde`。`RAGEngine` 正式实现位于 `src/rag_textbook_qa/rag/`，原来的 `python project/rag_engine.py` 保留为兼容入口。
 
 ### Step 6 — 评估
 

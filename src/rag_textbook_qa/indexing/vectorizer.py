@@ -192,7 +192,7 @@ class MultiBookVectorizer:
                 name=collection_name,
                 metadata=collection_metadata,
             )
-            self._validate_collection_embedding(collection)
+            self.validate_collection_embedding(collection)
         print(f"集合写入目标: {write_collection_name}\n")
 
         print(f"开始向量化（批大小={batch_size}）...")
@@ -278,7 +278,7 @@ class MultiBookVectorizer:
             return
 
         collection = self.client.get_collection(collection_name)
-        self._validate_collection_embedding(collection)
+        self.validate_collection_embedding(collection)
         print(f"\n搜索教材: 《{book_name}》")
         print(f"查询内容: {query!r}")
         print("-" * 70)
@@ -320,7 +320,7 @@ class MultiBookVectorizer:
             print(f"{index}. 《{book['book_name']}》 - {book['count']} 个 chunks")
         print("-" * 70)
 
-    def _validate_collection_embedding(self, collection: Any) -> None:
+    def validate_collection_embedding(self, collection: Any) -> None:
         metadata = collection.metadata or {}
         fingerprint = metadata.get("embedding_fingerprint")
         if fingerprint and fingerprint != self.embedding_provider.identity.fingerprint:
@@ -328,6 +328,11 @@ class MultiBookVectorizer:
                 "向量库 embedding 模型与当前 Provider 不一致；"
                 "请使用同一模型或重新向量化该教材"
             )
+
+    def _validate_collection_embedding(self, collection: Any) -> None:
+        """Compatibility alias for the former private method."""
+
+        self.validate_collection_embedding(collection)
 
 
 def parse_selection(raw: str, total: int) -> list[int]:

@@ -4,8 +4,13 @@ import sqlite3
 
 import pandas as pd
 import streamlit as st
-
-from config.constants import RAGAS_RESULTS_PATH, TEST_QUESTIONS_PATH, VECTOR_DB_PATH
+from config.constants import (
+    RAGAS_RESULTS_PATH,
+    REPOSITORY_ROOT,
+    TEST_QUESTIONS_PATH,
+    VECTOR_DB_PATH,
+)
+from dotenv import load_dotenv
 from ui.helpers import format_book_label
 
 
@@ -34,8 +39,9 @@ def load_available_books():
 
 @st.cache_resource(show_spinner="正在加载 RAG 引擎，请稍候…")
 def load_engine():
-    from rag_engine import RAGEngine
+    from rag_textbook_qa.rag import RAGEngine
 
+    load_dotenv(REPOSITORY_ROOT / "project" / ".env", override=False)
     return RAGEngine(db_path=str(VECTOR_DB_PATH), verbose=False)
 
 

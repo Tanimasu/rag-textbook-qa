@@ -88,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     index_list.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
     index_list.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
+    chat = commands.add_parser("chat", help="启动交互式教材问答")
+    chat.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    chat.add_argument("--no-llm", action="store_true", help="只检索，不调用 LLM")
+    chat.add_argument("--no-reranker", action="store_true", help="禁用重排序")
+    chat.add_argument("--no-hyde", action="store_true", help="禁用 HyDE")
+
     worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     serve = worker_commands.add_parser("serve", help="启动模型 Worker HTTP 服务")
@@ -217,6 +223,20 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
         return 0
 
     raise ValueError(f"未知 index 命令: {args.index_command}")
+
+
+def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
+    from rag_textbook_qa.rag import interactive_main
+
+    _load_project_environment(settings.paths.root / "project" / ".env")
+    interactive_main(
+        workspace=settings.paths.root,
+        db_path=args.db_path or settings.paths.vector_db,
+        enable_llm=not args.no_llm,
+        enable_reranker=not args.no_reranker,
+        enable_hyde=not args.no_hyde,
+    )
+    return 0
 
 
 def _validated_health_summary(
@@ -361,6 +381,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             settings = Settings.load(args.workspace)
             return _run_index(args, settings)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "chat":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_chat(args, settings)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
