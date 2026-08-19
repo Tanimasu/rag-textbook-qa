@@ -177,7 +177,7 @@ $env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
 uv sync --inexact --extra worker --extra local-models
 ```
 
-用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一个随机 token，并写入 Windows 的 `project/.env`：
+用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一个随机 token，并写入 Windows 的 `project/.env`。Worker token 必须是非空 ASCII 字符串，且不能包含首尾空格、内部空白或控制字符：
 
 ```env
 RAG_QA_WORKER_TOKEN=替换为随机token
@@ -192,7 +192,7 @@ RAG_QA_DEVICE=cuda
 rag-qa worker serve --host 100.x.y.z --port 8765 --device cuda
 ```
 
-不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。
+不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。如果 PowerShell 或终端进程中的 token 与 `project/.env` 不同，进程环境变量优先，命令会给出不含 token 内容的警告；修改 token 后应重启 Worker。
 
 ### Mac 连接远程 Worker
 
@@ -208,7 +208,15 @@ RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
 ```
 
-运行 `rag-qa doctor` 可检查当前选择的后端，但不会主动连接或加载模型。Worker 首次收到请求时才会加载并下载模型。若要启用查询回退，Mac 还需安装 `local-models`，并将 `RAG_QA_QUERY_FALLBACK_TO_LOCAL` 改为 `true`。
+先执行安全健康检查：
+
+```bash
+rag-qa worker check
+# 或输出结构化结果
+rag-qa worker check --json
+```
+
+该命令只请求 `/health`，校验认证、协议版本、设备以及 embedding/reranker 模型指纹，不会调用推理接口，也不会输出 token。`rag-qa doctor` 则只检查当前选择的后端配置，不会连接 Worker。Worker 首次收到 embedding 或 rerank 请求时才会加载并下载模型。若要启用查询回退，Mac 还需安装 `local-models`，并将 `RAG_QA_QUERY_FALLBACK_TO_LOCAL` 改为 `true`。
 
 ---
 

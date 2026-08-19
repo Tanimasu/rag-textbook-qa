@@ -12,17 +12,28 @@ from rag_textbook_qa.providers.base import (
     ProviderError,
     RerankerProvider,
 )
-from rag_textbook_qa.providers.config import is_loopback_host
+from rag_textbook_qa.providers.config import (
+    is_loopback_host,
+    validate_worker_token,
+)
 from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalRerankerProvider
 
 MAX_BATCH_ITEMS = 128
 MAX_BATCH_CHARACTERS = 250_000
 
 
+def _validated_worker_token(token: str | None) -> str | None:
+    try:
+        return validate_worker_token(token)
+    except ProviderError as exc:
+        raise AuthenticationError(str(exc)) from exc
+
+
 def validate_worker_bind(host: str, token: str | None) -> None:
     """Require application authentication whenever the worker leaves loopback."""
 
-    if not is_loopback_host(host) and not token:
+    validated_token = _validated_worker_token(token)
+    if not is_loopback_host(host) and validated_token is None:
         raise AuthenticationError("Worker 监听非本机地址时必须设置 RAG_QA_WORKER_TOKEN")
 
 
@@ -37,7 +48,7 @@ class WorkerRuntime:
     ) -> None:
         self.embedding_provider = embedding_provider
         self.reranker_provider = reranker_provider
-        self.token = token
+        self.token = _validated_worker_token(token)
         self.device = device
 
     def authorize(self, authorization: str | None) -> None:
@@ -47,7 +58,11 @@ class WorkerRuntime:
         if not authorization or not authorization.startswith(prefix):
             raise AuthenticationError("缺少 Bearer token")
         supplied = authorization[len(prefix) :]
-        if not secrets.compare_digest(supplied, self.token):
+        try:
+            valid_supplied = validate_worker_token(supplied)
+        except ProviderError as exc:
+            raise AuthenticationError("Bearer token 无效") from exc
+        if valid_supplied is None or not secrets.compare_digest(valid_supplied, self.token):
             raise AuthenticationError("Bearer token 无效")
 
     def health(self) -> dict[str, Any]:

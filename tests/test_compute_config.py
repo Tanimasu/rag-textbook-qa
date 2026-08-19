@@ -47,6 +47,17 @@ class ComputeSettingsTests(unittest.TestCase):
 
         self.assertIsNone(settings.remote_token)
 
+    def test_worker_token_rejects_non_ascii_and_whitespace(self):
+        base = {
+            "RAG_QA_COMPUTE_BACKEND": "remote",
+            "RAG_QA_REMOTE_URL": "http://100.64.0.10:8765",
+        }
+        for token in ("中文-token", " leading", "trailing ", "two words"):
+            with self.subTest(token=token), self.assertRaisesRegex(
+                ProviderError, "RAG_QA_WORKER_TOKEN"
+            ):
+                ComputeSettings.from_env({**base, "RAG_QA_WORKER_TOKEN": token})
+
 
 if __name__ == "__main__":
     unittest.main()

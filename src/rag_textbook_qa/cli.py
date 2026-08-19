@@ -5,15 +5,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from rag_textbook_qa import __version__
 from rag_textbook_qa.config import Settings, WorkspaceNotFoundError
 from rag_textbook_qa.diagnostics.doctor import (
     diagnostics_as_dict,
     render_diagnostics,
+)
+from rag_textbook_qa.providers.base import (
+    DEFAULT_QUERY_INSTRUCTION,
+    PROTOCOL_VERSION,
+    ModelIdentity,
+    ModelMismatchError,
+    ProviderError,
+    ProviderProtocolError,
 )
 from rag_textbook_qa.providers.config import ComputeSettings
 
@@ -66,6 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--embedding-model")
     serve.add_argument("--reranker-model")
     serve.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"))
+    worker_check = worker_commands.add_parser(
+        "check",
+        help="只请求 /health，安全检查远程 Worker 配置",
+    )
+    worker_check.add_argument("--url", help="覆盖 RAG_QA_REMOTE_URL")
+    worker_check.add_argument("--timeout", type=float, help="覆盖连接超时秒数")
+    worker_check.add_argument("--json", action="store_true", help="输出结构化 JSON")
     return parser
 
 
@@ -125,15 +142,118 @@ def _run_ingest(args: argparse.Namespace) -> int:
     raise ValueError(f"未知 ingest 命令: {args.ingest_command}")
 
 
+def _load_project_environment(env_path: Path) -> None:
+    """Load project configuration while making dotenv precedence visible."""
+
+    from dotenv import dotenv_values, load_dotenv
+
+    process_token = os.environ.get("RAG_QA_WORKER_TOKEN")
+    file_token = dotenv_values(env_path).get("RAG_QA_WORKER_TOKEN")
+    if (
+        process_token is not None
+        and file_token is not None
+        and process_token != file_token
+    ):
+        print(
+            "警告: 进程环境变量 RAG_QA_WORKER_TOKEN 与 project/.env 不一致；"
+            "本次将使用进程环境变量。",
+            file=sys.stderr,
+        )
+    load_dotenv(env_path, override=False)
+
+
+def _validated_health_summary(
+    payload: dict[str, Any],
+    *,
+    compute: ComputeSettings,
+) -> dict[str, Any]:
+    if payload.get("status") != "ok":
+        raise ProviderProtocolError("远程 Worker /health 状态不是 ok")
+    if payload.get("protocol_version") != PROTOCOL_VERSION:
+        raise ProviderProtocolError("远程 Worker 协议版本与客户端不一致")
+
+    device = payload.get("device")
+    models = payload.get("models")
+    if not isinstance(device, str) or not device:
+        raise ProviderProtocolError("远程 Worker /health 缺少 device")
+    if not isinstance(models, dict):
+        raise ProviderProtocolError("远程 Worker /health 缺少 models")
+
+    expected = {
+        "embedding": ModelIdentity(
+            task="embedding",
+            model=compute.embedding_model,
+            normalized=True,
+            query_instruction=DEFAULT_QUERY_INSTRUCTION,
+        ),
+        "reranker": ModelIdentity(task="reranker", model=compute.reranker_model),
+    }
+    model_names: dict[str, str] = {}
+    for task, identity in expected.items():
+        remote_identity = models.get(task)
+        if not isinstance(remote_identity, dict):
+            raise ModelMismatchError(f"远程 Worker 未提供 {task} 模型")
+        remote_model = remote_identity.get("model")
+        if remote_identity.get("fingerprint") != identity.fingerprint:
+            raise ModelMismatchError(
+                f"远程 Worker {task} 模型不一致："
+                f"期望 {identity.model}，实际 {remote_model or '未知'}"
+            )
+        model_names[task] = str(remote_model)
+
+    return {
+        "remote_url": compute.remote_url,
+        "http_status": 200,
+        "status": "ok",
+        "protocol_version": PROTOCOL_VERSION,
+        "device": device,
+        "models": model_names,
+        "token_configured": compute.remote_token is not None,
+    }
+
+
+def _run_worker_check(args: argparse.Namespace) -> int:
+    from rag_textbook_qa.providers.remote import RemoteWorkerClient
+
+    environment = dict(os.environ)
+    environment["RAG_QA_COMPUTE_BACKEND"] = "remote"
+    if args.url:
+        environment["RAG_QA_REMOTE_URL"] = args.url
+    compute = ComputeSettings.from_env(environment)
+    if args.timeout is not None:
+        if args.timeout <= 0:
+            raise ProviderError("--timeout 必须大于 0")
+        compute = replace(compute, remote_timeout_seconds=args.timeout)
+
+    client = RemoteWorkerClient(
+        compute.remote_url or "",
+        token=compute.remote_token,
+        timeout=compute.remote_timeout_seconds,
+    )
+    summary = _validated_health_summary(client.request("/health"), compute=compute)
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print("远程 Worker 健康检查通过")
+        print(f"URL: {summary['remote_url']}")
+        print(f"HTTP: {summary['http_status']}")
+        print(f"device: {summary['device']}")
+        print(f"embedding: {summary['models']['embedding']}")
+        print(f"reranker: {summary['models']['reranker']}")
+        print("token: 已配置" if summary["token_configured"] else "token: 未配置")
+    return 0
+
+
 def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
+    _load_project_environment(settings.paths.root / "project" / ".env")
+
+    if args.worker_command == "check":
+        return _run_worker_check(args)
     if args.worker_command != "serve":
         raise ValueError(f"未知 worker 命令: {args.worker_command}")
 
-    from dotenv import load_dotenv
-
     from rag_textbook_qa.worker import run_worker_server
 
-    load_dotenv(settings.paths.root / "project" / ".env")
     compute = ComputeSettings.from_env()
     compute = replace(
         compute,
@@ -147,7 +267,7 @@ def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
         embedding_model=compute.embedding_model,
         reranker_model=compute.reranker_model,
         device=compute.device,
-        token=os.getenv("RAG_QA_WORKER_TOKEN", "").strip() or None,
+        token=compute.remote_token,
     )
     return 0
 

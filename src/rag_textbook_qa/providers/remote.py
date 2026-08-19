@@ -18,6 +18,7 @@ from rag_textbook_qa.providers.base import (
     validate_embeddings,
     validate_scores,
 )
+from rag_textbook_qa.providers.config import validate_worker_token
 
 
 class RemoteWorkerClient:
@@ -25,7 +26,7 @@ class RemoteWorkerClient:
 
     def __init__(self, base_url: str, *, token: str | None, timeout: float) -> None:
         self.base_url = base_url.rstrip("/")
-        self.token = token
+        self.token = validate_worker_token(token)
         self.timeout = timeout
 
     def request(

@@ -46,6 +46,23 @@ def validate_remote_url(value: str) -> str:
     return url
 
 
+def validate_worker_token(value: str | None) -> str | None:
+    """Validate a Worker bearer token without ever including it in errors."""
+
+    if value is None or value == "":
+        return None
+    if value != value.strip():
+        raise ProviderError("RAG_QA_WORKER_TOKEN 不能包含首尾空白")
+    if not value.isascii():
+        raise ProviderError("RAG_QA_WORKER_TOKEN 必须只包含 ASCII 字符")
+    if any(
+        character.isspace() or ord(character) < 0x21 or ord(character) == 0x7F
+        for character in value
+    ):
+        raise ProviderError("RAG_QA_WORKER_TOKEN 不能包含空白或控制字符")
+    return value
+
+
 @dataclass(frozen=True)
 class ComputeSettings:
     backend: str = "local"
@@ -66,7 +83,7 @@ class ComputeSettings:
 
         remote_url_value = values.get("RAG_QA_REMOTE_URL", "").strip()
         remote_url = validate_remote_url(remote_url_value) if remote_url_value else None
-        token = values.get("RAG_QA_WORKER_TOKEN", "").strip() or None
+        token = validate_worker_token(values.get("RAG_QA_WORKER_TOKEN"))
         try:
             timeout = float(values.get("RAG_QA_REMOTE_TIMEOUT", "120"))
         except ValueError as exc:

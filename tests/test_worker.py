@@ -59,6 +59,27 @@ class WorkerRuntimeTests(unittest.TestCase):
             self.runtime.authorize("Bearer wrong")
         self.runtime.authorize("Bearer worker-secret")
 
+    def test_non_ascii_or_whitespace_tokens_fail_without_leaking_values(self):
+        invalid_tokens = ("中文-token", " leading", "trailing ", "two words")
+        for token in invalid_tokens:
+            with self.subTest(token=token), self.assertRaises(
+                AuthenticationError
+            ) as raised:
+                validate_worker_bind("100.64.0.10", token)
+            self.assertNotIn(token, str(raised.exception))
+
+        with self.assertRaises(AuthenticationError) as raised:
+            self.runtime.authorize("Bearer 中文-token")
+        self.assertNotIn("中文-token", str(raised.exception))
+
+        with self.assertRaises(AuthenticationError):
+            WorkerRuntime(
+                FakeEmbeddingProvider(),
+                FakeRerankerProvider(),
+                token="中文-token",
+                device="cuda",
+            )
+
     def test_embedding_and_rerank_contracts(self):
         embedded = self.runtime.embeddings(
             {"model": "embed-model", "input_type": "query", "texts": ["问题"]}
@@ -79,6 +100,10 @@ class WorkerRuntimeTests(unittest.TestCase):
         client = TestClient(create_worker_app(self.runtime))
 
         self.assertEqual(client.get("/health").status_code, 401)
+        malformed = client.get(
+            "/health",
+            headers=[(b"authorization", b"Bearer \xff")],
+        )
         headers = {"Authorization": "Bearer worker-secret"}
         health = client.get("/health", headers=headers)
         embedded = client.post(
@@ -92,6 +117,7 @@ class WorkerRuntimeTests(unittest.TestCase):
             json={"model": "wrong", "query": "q", "documents": ["doc"]},
         )
 
+        self.assertEqual(malformed.status_code, 401)
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["device"], "cuda")
         self.assertEqual(embedded.json()["embeddings"], [[1.0, 0.0]])

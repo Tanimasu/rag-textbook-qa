@@ -7,6 +7,7 @@ from rag_textbook_qa.providers import (
     AuthenticationError,
     ModelIdentity,
     ModelMismatchError,
+    ProviderError,
     ProviderProtocolError,
     TransientProviderError,
 )
@@ -89,6 +90,10 @@ class ProviderTests(unittest.TestCase):
             self.assertRaises(TransientProviderError),
         ):
             client.request("/health")
+
+    def test_http_client_rejects_non_ascii_token_before_building_request(self):
+        with self.assertRaisesRegex(ProviderError, "ASCII"):
+            RemoteWorkerClient("http://worker", token="中文-token", timeout=1)
 
     def test_remote_embedding_checks_health_once_and_preserves_input_type(self):
         client = FakeRemoteClient()
