@@ -99,6 +99,7 @@ class RAGEngine:
 
         self.llm = llm_client
         self.enable_llm = enable_llm
+        self.llm_initialization_error: str | None = None
         if enable_llm and self.llm is None:
             resolved_api_key = (
                 api_key
@@ -127,6 +128,7 @@ class RAGEngine:
                     verbose=verbose,
                 )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                self.llm_initialization_error = str(exc)
                 if self.verbose:
                     print(f"LLM 初始化失败: {exc}")
                     print("将只提供检索功能，不生成答案")
@@ -441,6 +443,7 @@ class RAGEngine:
                 "prompt": "",
                 "answer": "❌ 没有找到相关内容",
                 "llm_response": None,
+                "error": "没有找到相关内容",
                 "success": False,
             }
 
@@ -448,6 +451,7 @@ class RAGEngine:
         prompt = self.build_prompt(query, context)
         llm_response = None
         answer = None
+        generation_error = None
         if use_llm and self.enable_llm and self.llm:
             llm_response = self.llm.generate_answer(
                 prompt,
@@ -455,6 +459,8 @@ class RAGEngine:
                 max_tokens=max_tokens,
             )
             answer = llm_response["answer"]
+            if not llm_response["success"]:
+                generation_error = llm_response.get("error") or "LLM 生成失败"
             if self.verbose and llm_response["success"]:
                 print(f"\n{answer}\n")
                 print(
@@ -465,9 +471,13 @@ class RAGEngine:
             elif self.verbose:
                 print(f"生成失败: {llm_response.get('error', '未知错误')}")
                 self.display_results({"results": results})
-        elif self.verbose:
-            self.display_results({"results": results})
-            print(prompt[:800] + ("..." if len(prompt) > 800 else ""))
+        else:
+            if use_llm:
+                detail = self.llm_initialization_error or "LLM 未启用"
+                generation_error = f"LLM 不可用：{detail}"
+            if self.verbose:
+                self.display_results({"results": results})
+                print(prompt[:800] + ("..." if len(prompt) > 800 else ""))
 
         return {
             "query": query,
@@ -476,6 +486,7 @@ class RAGEngine:
             "prompt": prompt,
             "answer": answer,
             "llm_response": llm_response,
+            "error": generation_error,
             "success": llm_response["success"] if llm_response else False,
         }
 

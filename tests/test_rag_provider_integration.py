@@ -50,6 +50,20 @@ class FakeLLMClient:
         }
 
 
+def build_test_vector_db(root: Path) -> Path:
+    chunks_path = root / "chunks.json"
+    chunks_path.write_text(
+        json.dumps(chunks(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    vectorizer = MultiBookVectorizer(
+        db_path=root / "db",
+        embedding_provider=FakeEmbeddingProvider(),
+    )
+    vectorizer.vectorize_book(chunks_path, "os")
+    return root / "db"
+
+
 def chunks():
     return [
         {
@@ -105,24 +119,14 @@ class RagProviderIntegrationTests(unittest.TestCase):
     def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            chunks_path = root / "chunks.json"
-            chunks_path.write_text(
-                json.dumps(chunks(), ensure_ascii=False),
-                encoding="utf-8",
-            )
             with (
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                vectorizer = MultiBookVectorizer(
-                    db_path=root / "db",
-                    embedding_provider=FakeEmbeddingProvider(),
-                )
-                vectorizer.vectorize_book(chunks_path, "os")
-
+                db_path = build_test_vector_db(root)
                 llm = FakeLLMClient()
                 engine = RAGEngine(
-                    db_path=root / "db",
+                    db_path=db_path,
                     embedding_provider=FakeEmbeddingProvider(),
                     reranker_provider=FakeRerankerProvider(),
                     llm_client=llm,
@@ -138,6 +142,30 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertEqual(result["answer"], "测试回答")
             self.assertIn("相关教材内容", result["prompt"])
             self.assertEqual(len(llm.prompts), 3)
+
+    def test_engine_reports_missing_llm_configuration_without_hiding_retrieval(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                db_path = build_test_vector_db(root)
+                engine = RAGEngine(
+                    db_path=db_path,
+                    embedding_provider=FakeEmbeddingProvider(),
+                    reranker_provider=FakeRerankerProvider(),
+                    enable_hyde=False,
+                    verbose=False,
+                )
+                result = engine.ask("什么是进程？", book_name="os", top_k=1)
+
+            self.assertFalse(result["success"])
+            self.assertIsNone(result["answer"])
+            self.assertEqual(len(result["results"]), 1)
+            self.assertIn("LLM 不可用", result["error"])
+            self.assertIn("LLM_API_KEY", result["error"])
 
 
 if __name__ == "__main__":

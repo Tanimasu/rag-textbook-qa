@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.web.helpers import render_answer_block
+from rag_textbook_qa.web.messages import answer_message
 
 
 def render_chat_tab(
@@ -50,7 +51,7 @@ def render_chat_tab(
             max_tokens=max_tokens,
         )
 
-    answer = result.get("answer") or "抱歉，未能生成答案。"
+    answer = answer_message(result)
     sources = result.get("results", [])
     st.session_state.messages.append(
         {
