@@ -1,5 +1,4 @@
 import importlib.util
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,22 +21,14 @@ class WebPackageTests(unittest.TestCase):
         self.assertNotIn("streamlit as st", source)
         self.assertNotIn("sys.path", source)
 
-    @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
-    def test_legacy_evaluator_bridge_loads_only_the_requested_workspace(self):
-        from rag_textbook_qa.web.services import _load_legacy_ragas_evaluator
+    def test_web_services_use_the_packaged_evaluator(self):
+        source = (
+            REPOSITORY_ROOT / "src" / "rag_textbook_qa" / "web" / "services.py"
+        ).read_text(encoding="utf-8")
 
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            project = root / "project"
-            project.mkdir()
-            (project / "ragas_evaluation.py").write_text(
-                "class RAGASEvaluator:\n    pass\n",
-                encoding="utf-8",
-            )
-
-            evaluator = _load_legacy_ragas_evaluator(root)
-
-        self.assertEqual(evaluator.__name__, "RAGASEvaluator")
+        self.assertIn("rag_textbook_qa.evaluation", source)
+        self.assertNotIn("spec_from_file_location", source)
+        self.assertNotIn("project/ragas_evaluation.py", source)
 
     @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
     def test_packaged_and_legacy_entrypoints_render_without_exceptions(self):

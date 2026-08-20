@@ -70,8 +70,8 @@ PDF
 ```text
 rag-textbook-qa/
 ├─ pyproject.toml               # Python 版本、依赖分组和命令入口
-├─ src/rag_textbook_qa/         # 跨平台包（含 RAG、Provider、CLI 和 Web UI）
-├─ project/                     # 尚在迁移的解析、评估和兼容入口
+├─ src/rag_textbook_qa/         # 跨平台包（含 RAG、Provider、评估、CLI 和 Web UI）
+├─ project/                     # 尚在迁移的解析工具和兼容入口
 ├─ data/
 │  ├─ raw/                      # 本地 PDF 原书，不提交 Git
 │  ├─ parsed/                   # PDF 解析后的 Markdown
@@ -276,12 +276,12 @@ rag-qa chat
 ### Step 6 — 评估
 
 ```bash
-python project/ragas_evaluation.py
+rag-qa evaluate
 ```
 
-评估问题来自 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。
+评估问题来自 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。评估依赖按需安装：`uv sync --inexact --extra eval`。
 
-如需同时运行无 RAG 基线对比，在脚本顶部将 `RUN_BASELINE = False` 改为 `True`（会额外消耗 token）。
+如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
 ### Step 7 — 启动 Web 界面
 

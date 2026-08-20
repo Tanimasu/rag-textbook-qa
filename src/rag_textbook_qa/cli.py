@@ -96,6 +96,15 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--no-reranker", action="store_true", help="禁用重排序")
     chat.add_argument("--no-hyde", action="store_true", help="禁用 HyDE")
 
+    evaluate = commands.add_parser("evaluate", help="运行 RAGAS 质量评估")
+    evaluate.add_argument("--questions", type=Path, help="覆盖评估问题 JSON")
+    evaluate.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    evaluate.add_argument(
+        "--baseline",
+        action="store_true",
+        help="同时运行无 RAG baseline（会增加 API 调用）",
+    )
+
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
         "--backend",
@@ -256,6 +265,38 @@ def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
         enable_reranker=not args.no_reranker,
         enable_hyde=not args.no_hyde,
     )
+    return 0
+
+
+def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
+    _load_project_environment(settings.paths.root / "project" / ".env")
+    from rag_textbook_qa.evaluation import (
+        create_test_dataset,
+        load_test_questions,
+        run_evaluation,
+    )
+    from rag_textbook_qa.rag import RAGEngine
+
+    questions_path = args.questions or (
+        settings.paths.evaluation_data / "test_questions.json"
+    )
+    if args.questions is None and not questions_path.is_file():
+        print(f"{questions_path} 不存在，使用内置测试集")
+        questions = create_test_dataset()
+    else:
+        questions = load_test_questions(questions_path)
+    with RAGEngine(
+        db_path=args.db_path or settings.paths.vector_db,
+        enable_llm=True,
+        verbose=False,
+        enable_hyde=True,
+    ) as engine:
+        run_evaluation(
+            engine,
+            questions,
+            settings.paths.evaluations,
+            include_baseline=args.baseline,
+        )
     return 0
 
 
@@ -490,6 +531,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             settings = Settings.load(args.workspace)
             return _run_chat(args, settings)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "evaluate":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_evaluate(args, settings)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 

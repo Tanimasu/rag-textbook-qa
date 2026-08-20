@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-import json
 import sqlite3
-import sys
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -59,50 +55,13 @@ def load_ragas_results() -> Any | None:
     return pd.read_csv(results_path, encoding="utf-8-sig")
 
 
-def _load_legacy_ragas_evaluator(workspace: Path) -> type[Any]:
-    """Load the still-legacy evaluator only when the user starts an evaluation."""
-
-    project_path = workspace / "project"
-    module_path = project_path / "ragas_evaluation.py"
-    if not module_path.is_file():
-        raise RuntimeError(f"找不到 RAGAS 兼容入口: {module_path}")
-
-    spec = importlib.util.spec_from_file_location(
-        "_rag_textbook_qa_legacy_ragas_evaluation",
-        module_path,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 RAGAS 兼容入口: {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    project_directory = str(project_path)
-    added_to_path = project_directory not in sys.path
-    if added_to_path:
-        sys.path.insert(0, project_directory)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if added_to_path:
-            sys.path.remove(project_directory)
-    return module.RAGASEvaluator
-
-
 def run_ragas_evaluation() -> Any | None:
-    paths = _settings().paths
-    evaluator_type = _load_legacy_ragas_evaluator(paths.root)
-    engine = load_engine()
-    with (paths.evaluation_data / "test_questions.json").open(encoding="utf-8") as file:
-        test_questions = json.load(file)
+    from rag_textbook_qa.evaluation import load_test_questions, run_evaluation
 
-    evaluator = evaluator_type()
-    dataset = evaluator.prepare_evaluation_data(engine, test_questions)
-    result = evaluator.evaluate(dataset)
-    dataframe = evaluator.print_results(result)
-    if dataframe is not None:
-        paths.evaluations.mkdir(parents=True, exist_ok=True)
-        dataframe.to_csv(
-            paths.evaluations / "ragas_evaluation_results.csv",
-            index=False,
-            encoding="utf-8-sig",
-        )
+    paths = _settings().paths
+    engine = load_engine()
+    test_questions = load_test_questions(
+        paths.evaluation_data / "test_questions.json"
+    )
+    run_evaluation(engine, test_questions, paths.evaluations)
     return load_ragas_results()
