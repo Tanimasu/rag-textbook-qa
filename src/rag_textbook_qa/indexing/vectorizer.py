@@ -9,7 +9,7 @@ import traceback
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import chromadb
 from tqdm import tqdm
@@ -88,21 +88,24 @@ def list_indexed_books(db_path: str | Path) -> list[dict[str, Any]]:
     """Return safe collection summaries without creating a model provider."""
 
     client = chromadb.PersistentClient(path=str(Path(db_path).expanduser().resolve()))
-    summaries = []
-    for collection in sorted(client.list_collections(), key=lambda item: item.name):
-        if not collection.name.startswith("textbook_"):
-            continue
-        metadata = collection.metadata or {}
-        summaries.append(
-            {
-                "book_name": collection.name.removeprefix("textbook_"),
-                "collection_name": collection.name,
-                "count": collection.count(),
-                "embedding_model": metadata.get("embedding_model"),
-                "embedding_fingerprint": metadata.get("embedding_fingerprint"),
-            }
-        )
-    return summaries
+    try:
+        summaries = []
+        for collection in sorted(client.list_collections(), key=lambda item: item.name):
+            if not collection.name.startswith("textbook_"):
+                continue
+            metadata = collection.metadata or {}
+            summaries.append(
+                {
+                    "book_name": collection.name.removeprefix("textbook_"),
+                    "collection_name": collection.name,
+                    "count": collection.count(),
+                    "embedding_model": metadata.get("embedding_model"),
+                    "embedding_fingerprint": metadata.get("embedding_fingerprint"),
+                }
+            )
+        return summaries
+    finally:
+        client.close()
 
 
 class MultiBookVectorizer:
@@ -142,6 +145,17 @@ class MultiBookVectorizer:
         self.db_path = resolved_db_path
         self.client = chromadb.PersistentClient(path=str(resolved_db_path))
         print("数据库初始化完成\n")
+
+    def close(self) -> None:
+        """Release Chroma resources, including Windows file handles."""
+
+        self.client.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def _collection_exists(self, collection_name: str) -> bool:
         return any(

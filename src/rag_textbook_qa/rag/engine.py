@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 
 import jieba
 from rank_bm25 import BM25Okapi
@@ -136,6 +136,17 @@ class RAGEngine:
 
         if self.verbose:
             print("RAG 引擎初始化完成\n")
+
+    def close(self) -> None:
+        """Release the underlying Chroma client and its file handles."""
+
+        self.vectorizer.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def _build_bm25_indexes(self) -> None:
         if self.verbose:

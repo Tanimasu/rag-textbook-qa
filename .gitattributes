@@ -1,0 +1,4 @@
+# Historical fixtures are guarded by byte-level SHA-256 checks. Keep their
+# committed bytes unchanged even when Git is configured to use CRLF on Windows.
+data/** -text
+artifacts/evaluations/** -text

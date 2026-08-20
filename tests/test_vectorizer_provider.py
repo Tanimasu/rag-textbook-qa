@@ -80,22 +80,25 @@ class VectorizerProviderTests(unittest.TestCase):
             with (
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
+                MultiBookVectorizer(
+                    db_path=root / "db", embedding_provider=provider
+                ) as vectorizer,
             ):
-                vectorizer = MultiBookVectorizer(db_path=root / "db", embedding_provider=provider)
                 vectorizer.vectorize_book(str(chunks_path), "os")
                 vectorizer.search_book("os", "什么是进程？", top_k=1)
 
-            collection = vectorizer.client.get_collection("textbook_os")
-            self.assertEqual(collection.count(), 2)
-            self.assertEqual(
-                collection.metadata["embedding_fingerprint"], provider.identity.fingerprint
-            )
-            self.assertEqual(provider.document_calls, 1)
-            self.assertEqual(provider.query_calls, 1)
-            self.assertEqual(
-                list_indexed_books(root / "db")[0]["collection_name"],
-                "textbook_os",
-            )
+                collection = vectorizer.client.get_collection("textbook_os")
+                self.assertEqual(collection.count(), 2)
+                self.assertEqual(
+                    collection.metadata["embedding_fingerprint"],
+                    provider.identity.fingerprint,
+                )
+                self.assertEqual(provider.document_calls, 1)
+                self.assertEqual(provider.query_calls, 1)
+                self.assertEqual(
+                    list_indexed_books(root / "db")[0]["collection_name"],
+                    "textbook_os",
+                )
 
     def test_provider_failure_does_not_clear_existing_collection(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -106,33 +109,32 @@ class VectorizerProviderTests(unittest.TestCase):
             with (
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
-            ):
-                vectorizer = MultiBookVectorizer(
+                MultiBookVectorizer(
                     db_path=root / "db", embedding_provider=FakeEmbeddingProvider()
-                )
+                ) as vectorizer,
+            ):
                 vectorizer.vectorize_book(str(chunks_path), "os")
-                failing = MultiBookVectorizer(
+                with MultiBookVectorizer(
                     db_path=root / "db",
                     embedding_provider=FakeEmbeddingProvider(
                         error=TransientProviderError("worker offline"),
                         fail_on_call=2,
                     ),
-                )
-                with self.assertRaises(TransientProviderError):
+                ) as failing, self.assertRaises(TransientProviderError):
                     failing.vectorize_book(
                         str(chunks_path), "os", batch_size=1, clear_existing=True
                     )
 
-            self.assertEqual(
-                vectorizer.client.get_collection("textbook_os").count(),
-                2,
-            )
-            self.assertFalse(
-                any(
-                    collection.name.startswith("ragbuild_")
-                    for collection in vectorizer.client.list_collections()
+                self.assertEqual(
+                    vectorizer.client.get_collection("textbook_os").count(),
+                    2,
                 )
-            )
+                self.assertFalse(
+                    any(
+                        collection.name.startswith("ragbuild_")
+                        for collection in vectorizer.client.list_collections()
+                    )
+                )
 
     def test_invalid_chunks_fail_before_embedding_or_collection_creation(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -143,16 +145,18 @@ class VectorizerProviderTests(unittest.TestCase):
             chunks_path.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
             provider = FakeEmbeddingProvider()
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                vectorizer = MultiBookVectorizer(
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                MultiBookVectorizer(
                     db_path=root / "db",
                     embedding_provider=provider,
-                )
+                ) as vectorizer,
+            ):
                 with self.assertRaisesRegex(ValueError, "重复 chunk_id"):
                     vectorizer.vectorize_book(chunks_path, "os")
 
-            self.assertEqual(provider.document_calls, 0)
-            self.assertEqual(vectorizer.client.list_collections(), [])
+                self.assertEqual(provider.document_calls, 0)
+                self.assertEqual(vectorizer.client.list_collections(), [])
 
 
 if __name__ == "__main__":

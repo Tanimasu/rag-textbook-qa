@@ -60,6 +60,7 @@ class IndexCliTests(unittest.TestCase):
                 batch_size=16,
                 clear_existing=True,
             )
+            vectorizer.close.assert_called_once_with()
             self.assertIn("textbook_database", output.getvalue())
 
     def test_list_does_not_load_model_or_require_valid_worker_config(self):

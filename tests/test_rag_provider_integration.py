@@ -56,11 +56,11 @@ def build_test_vector_db(root: Path) -> Path:
         json.dumps(chunks(), ensure_ascii=False),
         encoding="utf-8",
     )
-    vectorizer = MultiBookVectorizer(
+    with MultiBookVectorizer(
         db_path=root / "db",
         embedding_provider=FakeEmbeddingProvider(),
-    )
-    vectorizer.vectorize_book(chunks_path, "os")
+    ) as vectorizer:
+        vectorizer.vectorize_book(chunks_path, "os")
     return root / "db"
 
 
@@ -98,13 +98,13 @@ class RagProviderIntegrationTests(unittest.TestCase):
             patch.dict("os.environ", {"RAG_QA_COMPUTE_BACKEND": "invalid"}),
             tempfile.TemporaryDirectory() as temporary_directory,
             contextlib.redirect_stdout(io.StringIO()),
-        ):
-            engine = RAGEngine(
+            RAGEngine(
                 db_path=temporary_directory,
                 enable_llm=False,
                 embedding_provider=FakeEmbeddingProvider(),
                 reranker_provider=FakeRerankerProvider(),
-            )
+            ) as engine,
+        ):
             results = engine._rerank(
                 "query",
                 [{"content": "first"}, {"content": "second"}],
@@ -125,16 +125,16 @@ class RagProviderIntegrationTests(unittest.TestCase):
             ):
                 db_path = build_test_vector_db(root)
                 llm = FakeLLMClient()
-                engine = RAGEngine(
+                with RAGEngine(
                     db_path=db_path,
                     embedding_provider=FakeEmbeddingProvider(),
                     reranker_provider=FakeRerankerProvider(),
                     llm_client=llm,
                     enable_hyde=True,
                     verbose=False,
-                )
-                semantic = engine.search_embedding("os", "什么是线程？", top_k=1)
-                result = engine.ask("什么是线程？", book_name="os", top_k=1)
+                ) as engine:
+                    semantic = engine.search_embedding("os", "什么是线程？", top_k=1)
+                    result = engine.ask("什么是线程？", book_name="os", top_k=1)
 
             self.assertEqual(len(semantic), 1)
             self.assertEqual(semantic[0]["method"], "embedding")
@@ -152,14 +152,14 @@ class RagProviderIntegrationTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 db_path = build_test_vector_db(root)
-                engine = RAGEngine(
+                with RAGEngine(
                     db_path=db_path,
                     embedding_provider=FakeEmbeddingProvider(),
                     reranker_provider=FakeRerankerProvider(),
                     enable_hyde=False,
                     verbose=False,
-                )
-                result = engine.ask("什么是进程？", book_name="os", top_k=1)
+                ) as engine:
+                    result = engine.ask("什么是进程？", book_name="os", top_k=1)
 
             self.assertFalse(result["success"])
             self.assertIsNone(result["answer"])

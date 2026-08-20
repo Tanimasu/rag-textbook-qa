@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,8 @@ if（ready），return；
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             )
 
             self.assertEqual(completed.returncode, 2)

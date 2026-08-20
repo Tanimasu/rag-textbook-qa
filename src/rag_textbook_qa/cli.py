@@ -218,12 +218,15 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
             db_path=db_path,
             compute_settings=compute,
         )
-        collection_name = vectorizer.vectorize_book(
-            args.input,
-            args.book or book_id_from_chunk_stem(args.input.stem),
-            batch_size=args.batch_size,
-            clear_existing=not args.append,
-        )
+        try:
+            collection_name = vectorizer.vectorize_book(
+                args.input,
+                args.book or book_id_from_chunk_stem(args.input.stem),
+                batch_size=args.batch_size,
+                clear_existing=not args.append,
+            )
+        finally:
+            vectorizer.close()
         print(f"索引已就绪: {collection_name}")
         return 0
 
