@@ -281,6 +281,10 @@ def _require_app_dependencies(compute: ComputeSettings) -> None:
     )
 
 
+def _web_app_path() -> Path:
+    return Path(__file__).resolve().parent / "web" / "app.py"
+
+
 def _run_app(args: argparse.Namespace, settings: Settings) -> int:
     if not 1 <= args.port <= 65535:
         raise ValueError("--port 必须在 1 到 65535 之间")
@@ -299,7 +303,7 @@ def _run_app(args: argparse.Namespace, settings: Settings) -> int:
     compute = ComputeSettings.from_env(environment)
     _require_app_dependencies(compute)
 
-    app_path = settings.paths.root / "project" / "app.py"
+    app_path = _web_app_path()
     if not app_path.is_file():
         raise RuntimeError(f"找不到 Streamlit 入口: {app_path}")
 

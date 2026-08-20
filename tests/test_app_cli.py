@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from rag_textbook_qa.cli import main
+from rag_textbook_qa.cli import _web_app_path, main
 
 
 class AppCliTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class AppCliTests(unittest.TestCase):
                     "-m",
                     "streamlit",
                     "run",
-                    str(root.resolve() / "project" / "app.py"),
+                    str(_web_app_path()),
                 ],
             )
             self.assertIn("--server.address=0.0.0.0", command)
@@ -142,6 +142,10 @@ class AppCliTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 1)
             run.assert_not_called()
+
+    def test_packaged_web_entrypoint_is_installed_with_the_package(self):
+        self.assertTrue(_web_app_path().is_file())
+        self.assertEqual(_web_app_path().parent.name, "web")
 
 
 if __name__ == "__main__":

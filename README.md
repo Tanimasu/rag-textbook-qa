@@ -67,8 +67,8 @@ PDF
 ```text
 rag-textbook-qa/
 ├─ pyproject.toml               # Python 版本、依赖分组和命令入口
-├─ src/rag_textbook_qa/         # 新的跨平台包
-├─ project/                     # 尚在迁移的 RAG、评估和 Streamlit 兼容入口
+├─ src/rag_textbook_qa/         # 跨平台包（含 RAG、Provider、CLI 和 Web UI）
+├─ project/                     # 尚在迁移的解析、评估和兼容入口
 ├─ data/
 │  ├─ raw/                      # 本地 PDF 原书，不提交 Git
 │  ├─ parsed/                   # PDF 解析后的 Markdown
@@ -300,6 +300,8 @@ rag-qa app --no-browser --host 127.0.0.1 --port 8501
 ```
 
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
+
+Web 界面的正式实现位于 `src/rag_textbook_qa/web/`；`project/app.py` 与原来的 `project/ui/`、`project/services/app_services.py` 仅保留为兼容入口。
 
 ---
 
