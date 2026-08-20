@@ -17,6 +17,10 @@ from rag_textbook_qa.web.styles import inject_custom_styles
 
 
 def main() -> None:
+    # Present the packaged app as an end-user UI. This hides Streamlit's
+    # developer menu and prevents its bare "C" clear-cache shortcut from
+    # colliding with Command+C on macOS.
+    st.set_option("client.toolbarMode", "viewer")
     st.set_page_config(
         page_title="CS 教材智能问答系统",
         page_icon="📚",

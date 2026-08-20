@@ -41,6 +41,7 @@ class WebPackageTests(unittest.TestCase):
 
     @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
     def test_packaged_and_legacy_entrypoints_render_without_exceptions(self):
+        from streamlit import config
         from streamlit.testing.v1 import AppTest
 
         entrypoints = [
@@ -51,6 +52,7 @@ class WebPackageTests(unittest.TestCase):
             with self.subTest(entrypoint=entrypoint):
                 app = AppTest.from_file(str(entrypoint)).run(timeout=20)
                 self.assertFalse([exception.value for exception in app.exception])
+                self.assertEqual(config.get_option("client.toolbarMode"), "viewer")
 
 
 if __name__ == "__main__":
