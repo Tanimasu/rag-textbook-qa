@@ -103,7 +103,7 @@ $env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
 uv sync --inexact
 ```
 
-UI、本地模型、远程 Worker、PDF 解析和评估依赖通过 `--extra ui`、`--extra local-models`、`--extra worker`、`--extra docling`、`--extra mineru`、`--extra eval` 按需安装。例如，本地运行旧版 Streamlit RAG 界面时使用：
+UI、本地模型、远程 Worker、PDF 解析和评估依赖通过 `--extra ui`、`--extra local-models`、`--extra worker`、`--extra docling`、`--extra mineru`、`--extra eval` 按需安装。例如，在 Mac 本地运行 Streamlit 与模型时使用：
 
 ```bash
 UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact --extra ui --extra local-models
@@ -283,10 +283,23 @@ python project/ragas_evaluation.py
 ### Step 7 — 启动 Web 界面
 
 ```bash
-streamlit run project/app.py
+rag-qa app
 ```
 
-在浏览器中打开问答界面，支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
+`rag-qa app` 会自动定位工作区并读取 `project/.env`，因此不要求终端当前位于仓库根目录。也可以只对本次启动覆盖计算后端，不会改写 `.env`：
+
+```bash
+# Mac 本地 CPU
+rag-qa app --backend local --device cpu
+
+# Windows 远程 GPU Worker
+rag-qa app --backend remote
+
+# 不自动打开浏览器，并覆盖监听地址与端口
+rag-qa app --no-browser --host 127.0.0.1 --port 8501
+```
+
+启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
 ---
 

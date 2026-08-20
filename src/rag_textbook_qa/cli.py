@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
@@ -93,6 +95,21 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--no-llm", action="store_true", help="只检索，不调用 LLM")
     chat.add_argument("--no-reranker", action="store_true", help="禁用重排序")
     chat.add_argument("--no-hyde", action="store_true", help="禁用 HyDE")
+
+    app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
+    app.add_argument(
+        "--backend",
+        choices=("local", "remote"),
+        help="仅本次启动覆盖 RAG_QA_COMPUTE_BACKEND",
+    )
+    app.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        help="仅本次启动覆盖 RAG_QA_DEVICE",
+    )
+    app.add_argument("--host", default="127.0.0.1", help="Web 界面监听地址")
+    app.add_argument("--port", type=int, default=8501, help="Web 界面监听端口")
+    app.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
 
     worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
@@ -237,6 +254,84 @@ def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
         enable_hyde=not args.no_hyde,
     )
     return 0
+
+
+def _require_app_dependencies(compute: ComputeSettings) -> None:
+    required = {"streamlit": "ui"}
+    if compute.backend == "local" or compute.query_fallback_to_local:
+        required.update(
+            {
+                "sentence_transformers": "local-models",
+                "torch": "local-models",
+            }
+        )
+
+    missing = [
+        extra
+        for module, extra in required.items()
+        if importlib.util.find_spec(module) is None
+    ]
+    if not missing:
+        return
+
+    extras = " ".join(f"--extra {extra}" for extra in dict.fromkeys(missing))
+    raise RuntimeError(
+        "缺少 Web 启动依赖；请按 README 配置当前 Conda 环境后运行: "
+        f"uv sync --inexact {extras}"
+    )
+
+
+def _run_app(args: argparse.Namespace, settings: Settings) -> int:
+    if not 1 <= args.port <= 65535:
+        raise ValueError("--port 必须在 1 到 65535 之间")
+    if not args.host.strip():
+        raise ValueError("--host 不能为空")
+
+    env_path = settings.paths.root / "project" / ".env"
+    _load_project_environment(env_path)
+    environment = dict(os.environ)
+    if args.backend:
+        environment["RAG_QA_COMPUTE_BACKEND"] = args.backend
+    if args.device:
+        environment["RAG_QA_DEVICE"] = args.device
+    environment["RAG_QA_HOME"] = str(settings.paths.root)
+
+    compute = ComputeSettings.from_env(environment)
+    _require_app_dependencies(compute)
+
+    app_path = settings.paths.root / "project" / "app.py"
+    if not app_path.is_file():
+        raise RuntimeError(f"找不到 Streamlit 入口: {app_path}")
+
+    if compute.backend == "remote":
+        fallback = "local" if compute.query_fallback_to_local else "关闭"
+        print(
+            f"计算后端: remote ({compute.remote_url})；"
+            f"查询回退: {fallback}"
+        )
+    else:
+        print(f"计算后端: local；device: {compute.device}")
+    print(f"工作区: {settings.paths.root}")
+    print(f"Web 地址: http://{args.host}:{args.port}")
+
+    command = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app_path),
+        f"--server.address={args.host}",
+        f"--server.port={args.port}",
+        f"--server.headless={'true' if args.no_browser else 'false'}",
+        "--browser.gatherUsageStats=false",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=settings.paths.root,
+        env=environment,
+        check=False,
+    )
+    return completed.returncode
 
 
 def _validated_health_summary(
@@ -389,6 +484,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = Settings.load(args.workspace)
             return _run_chat(args, settings)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "app":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_app(args, settings)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
     if args.command == "worker":
