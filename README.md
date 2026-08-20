@@ -1,5 +1,7 @@
 # 计算机教材 RAG 问答系统
 
+[![CI](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml)
+
 > 面向计算机课程教材的检索增强生成（RAG）问答系统
 
 基于混合检索策略（语义向量 + BM25）与大语言模型，实现对操作系统、计算机组成原理等教材内容的精准问答。系统采用 HyDE 查询增强与 Cross-Encoder 重排序，在 50 题 RAGAS 评估集（5 本教材各 10 题）上取得如下结果：
@@ -302,6 +304,30 @@ rag-qa app --no-browser --host 127.0.0.1 --port 8501
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
 Web 界面的正式实现位于 `src/rag_textbook_qa/web/`；`project/app.py` 与原来的 `project/ui/`、`project/services/app_services.py` 仅保留为兼容入口。
+
+---
+
+## 持续集成
+
+GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
+
+- Windows、macOS、Linux 上的 Python 3.11 / 3.12 测试矩阵
+- `src/` 与 `tests/` 的 Ruff 静态检查
+- 完整的无模型、无外部 API 单元与集成测试
+- Python 源码编译检查
+- source distribution 与 wheel 构建
+- wheel 中 CLI、Worker 和 Web UI 文件的完整性检查
+
+本地可运行等价的核心检查：
+
+```bash
+python -m ruff check src tests
+python -m unittest discover -s tests -v
+python -m compileall -q src tests project
+python -m build
+```
+
+CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
 ---
 
