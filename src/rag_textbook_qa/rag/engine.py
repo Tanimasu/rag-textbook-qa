@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, Self
@@ -19,7 +20,10 @@ from rag_textbook_qa.llm import (
 from rag_textbook_qa.providers import (
     ComputeSettings,
     EmbeddingProvider,
+    ProviderCall,
+    ProviderTelemetry,
     RerankerProvider,
+    provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
 
@@ -37,6 +41,38 @@ class AnswerGenerator(Protocol):
 
 def _environment_value(primary: str, fallback: str, default: str) -> str:
     return os.getenv(primary) or os.getenv(fallback) or default
+
+
+def _telemetry_for_trace(provider: Any, trace_id: str) -> list[ProviderCall]:
+    telemetry = getattr(provider, "telemetry", None)
+    return telemetry.for_trace(trace_id) if isinstance(telemetry, ProviderTelemetry) else []
+
+
+def _single_or_mixed(values: set[str], *, unknown: str) -> str:
+    populated = {value for value in values if value}
+    if not populated:
+        return unknown
+    if len(populated) == 1:
+        return populated.pop()
+    return "mixed"
+
+
+def _summarize_provider_calls(calls: list[ProviderCall]) -> dict[str, Any] | None:
+    if not calls:
+        return None
+    return {
+        "backend": _single_or_mixed({call.backend for call in calls}, unknown="unknown"),
+        "device": _single_or_mixed({call.device for call in calls}, unknown="unknown"),
+        "platform": _single_or_mixed(
+            {call.platform for call in calls if call.platform},
+            unknown="unknown",
+        ),
+        "model": _single_or_mixed({call.model for call in calls}, unknown="unknown"),
+        "elapsed_seconds": round(sum(call.elapsed_seconds for call in calls), 3),
+        "calls": len(calls),
+        "fallback_used": any(call.fallback_used for call in calls),
+        "success": all(call.success for call in calls),
+    }
 
 
 class RAGEngine:
@@ -70,6 +106,7 @@ class RAGEngine:
             compute_settings = (
                 ComputeSettings() if providers_fully_injected else ComputeSettings.from_env()
             )
+        self.compute_settings = compute_settings
 
         self.vectorizer = MultiBookVectorizer(
             model_name=model_name,
@@ -432,21 +469,34 @@ class RAGEngine:
         if self.verbose:
             print(f"\n{'=' * 70}\n查询: {query}\n{'=' * 70}\n")
 
-        if book_name:
-            results = self.search_single_book(book_name, query, top_k)
-        else:
-            grouped = self.search_all_books(
-                query,
-                top_k_per_book=max(1, top_k // 2),
-            )
-            results = [result for group in grouped.values() for result in group]
-            results.sort(
-                key=lambda item: item.get("final_score", item["similarity"]),
-                reverse=True,
-            )
-            results = self._rerank(query, results, top_k)
+        total_started = time.monotonic()
+        embedding_provider = self.vectorizer.embedding_provider
+        retrieval_started = time.monotonic()
+
+        with provider_trace() as trace_id:
+            if book_name:
+                results = self.search_single_book(book_name, query, top_k)
+            else:
+                grouped = self.search_all_books(
+                    query,
+                    top_k_per_book=max(1, top_k // 2),
+                )
+                results = [result for group in grouped.values() for result in group]
+                results.sort(
+                    key=lambda item: item.get("final_score", item["similarity"]),
+                    reverse=True,
+                )
+                results = self._rerank(query, results, top_k)
+        retrieval_seconds = time.monotonic() - retrieval_started
 
         if not results:
+            execution = self._execution_summary(
+                embedding_provider=embedding_provider,
+                trace_id=trace_id,
+                retrieval_seconds=retrieval_seconds,
+                generation_seconds=0.0,
+                total_seconds=time.monotonic() - total_started,
+            )
             return {
                 "query": query,
                 "results": [],
@@ -456,6 +506,7 @@ class RAGEngine:
                 "llm_response": None,
                 "error": "没有找到相关内容",
                 "success": False,
+                "execution": execution,
             }
 
         context = self.build_context(results)
@@ -463,6 +514,7 @@ class RAGEngine:
         llm_response = None
         answer = None
         generation_error = None
+        generation_started = time.monotonic()
         if use_llm and self.enable_llm and self.llm:
             llm_response = self.llm.generate_answer(
                 prompt,
@@ -489,6 +541,14 @@ class RAGEngine:
             if self.verbose:
                 self.display_results({"results": results})
                 print(prompt[:800] + ("..." if len(prompt) > 800 else ""))
+        generation_seconds = time.monotonic() - generation_started
+        execution = self._execution_summary(
+            embedding_provider=embedding_provider,
+            trace_id=trace_id,
+            retrieval_seconds=retrieval_seconds,
+            generation_seconds=generation_seconds,
+            total_seconds=time.monotonic() - total_started,
+        )
 
         return {
             "query": query,
@@ -499,6 +559,32 @@ class RAGEngine:
             "llm_response": llm_response,
             "error": generation_error,
             "success": llm_response["success"] if llm_response else False,
+            "execution": execution,
+        }
+
+    def _execution_summary(
+        self,
+        *,
+        embedding_provider: Any,
+        trace_id: str,
+        retrieval_seconds: float,
+        generation_seconds: float,
+        total_seconds: float,
+    ) -> dict[str, Any]:
+        """Build a display-safe summary without inputs, URLs, or credentials."""
+
+        return {
+            "configured_backend": self.compute_settings.backend,
+            "fallback_enabled": self.compute_settings.query_fallback_to_local,
+            "embedding": _summarize_provider_calls(
+                _telemetry_for_trace(embedding_provider, trace_id)
+            ),
+            "reranker": _summarize_provider_calls(
+                _telemetry_for_trace(self.reranker, trace_id)
+            ),
+            "retrieval_seconds": round(retrieval_seconds, 3),
+            "generation_seconds": round(generation_seconds, 3),
+            "total_seconds": round(total_seconds, 3),
         }
 
     def answer(

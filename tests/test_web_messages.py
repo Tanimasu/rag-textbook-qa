@@ -1,6 +1,6 @@
 import unittest
 
-from rag_textbook_qa.web.messages import answer_message
+from rag_textbook_qa.web.messages import answer_message, compute_trace_items
 
 
 class WebMessageTests(unittest.TestCase):
@@ -34,6 +34,39 @@ class WebMessageTests(unittest.TestCase):
 
         self.assertLessEqual(len(message), 510)
         self.assertTrue(message.endswith("..."))
+
+    def test_compute_trace_labels_remote_cuda_and_local_mps_fallback(self):
+        remote = compute_trace_items(
+            {
+                "embedding": {
+                    "backend": "remote",
+                    "device": "cuda",
+                    "platform": "Windows",
+                    "elapsed_seconds": 0.14,
+                    "calls": 1,
+                    "fallback_used": False,
+                },
+                "reranker": {
+                    "backend": "local",
+                    "device": "mps",
+                    "platform": "Darwin",
+                    "elapsed_seconds": 1.23,
+                    "calls": 1,
+                    "fallback_used": True,
+                },
+                "retrieval_seconds": 1.5,
+                "generation_seconds": 2,
+                "total_seconds": 3.5,
+            }
+        )
+
+        self.assertIn("远程 Worker（Windows） · CUDA", remote[0]["text"])
+        self.assertIn("已回退到本地（macOS） · MPS", remote[1]["text"])
+        self.assertEqual(remote[1]["kind"], "fallback")
+        self.assertIn("总计 3.500 秒", remote[2]["text"])
+
+    def test_compute_trace_is_empty_for_legacy_messages(self):
+        self.assertEqual(compute_trace_items(None), [])
 
 
 if __name__ == "__main__":

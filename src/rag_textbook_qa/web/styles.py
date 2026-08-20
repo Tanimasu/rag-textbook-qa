@@ -182,6 +182,37 @@ def inject_custom_styles() -> None:
             line-height: 1;
         }
 
+        .compute-trace {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            margin: 0.8rem 0 0.4rem;
+        }
+
+        .compute-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.38rem 0.72rem;
+            border-radius: 999px;
+            background: #eef7ff;
+            border: 1px solid #cfe5f7;
+            color: #2c6688;
+            font-size: 0.8rem;
+            line-height: 1.2;
+        }
+
+        .compute-chip--fallback {
+            background: #fff7e8;
+            border-color: #f4d7a2;
+            color: #94631c;
+        }
+
+        .compute-chip--timing {
+            background: #f5f3ff;
+            border-color: #ded8f8;
+            color: #655b91;
+        }
+
         .source-card {
             background: var(--panel-alt);
             border: 1px solid var(--line);

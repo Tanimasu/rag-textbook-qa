@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.catalog import BOOK_LABELS
+from rag_textbook_qa.web.messages import compute_trace_items
 
 
 def format_book_label(book_id: str) -> str:
@@ -65,7 +66,28 @@ def render_sources_expander(sources: list[dict[str, Any]]) -> None:
             )
 
 
-def render_answer_block(answer: str, sources: list[dict[str, Any]]) -> None:
+def render_compute_trace(execution: dict[str, Any] | None) -> None:
+    items = compute_trace_items(execution)
+    if not items:
+        return
+    chips = "".join(
+        (
+            f"<span class='compute-chip compute-chip--{html.escape(item['kind'])}'>"
+            f"{html.escape(item['text'])}</span>"
+        )
+        for item in items
+    )
+    st.markdown(
+        f"<div class='compute-trace'>{chips}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_answer_block(
+    answer: str,
+    sources: list[dict[str, Any]],
+    execution: dict[str, Any] | None = None,
+) -> None:
     st.markdown(
         """
         <div class="answer-shell">
@@ -78,5 +100,6 @@ def render_answer_block(answer: str, sources: list[dict[str, Any]]) -> None:
         unsafe_allow_html=True,
     )
     st.markdown(answer)
+    render_compute_trace(execution)
     render_source_preview(sources)
     render_sources_expander(sources)

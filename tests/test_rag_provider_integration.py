@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
-from rag_textbook_qa.providers import ModelIdentity
+from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
 
@@ -21,17 +21,49 @@ class FakeEmbeddingProvider:
         query_instruction=DEFAULT_QUERY_INSTRUCTION,
     )
 
+    def __init__(self):
+        self.telemetry = ProviderTelemetry()
+
+    def _record(self):
+        self.telemetry.record(
+            ProviderCall(
+                task="embedding",
+                backend="remote",
+                model=self.identity.model,
+                device="cuda",
+                platform="Windows",
+                elapsed_seconds=0.01,
+                success=True,
+            )
+        )
+
     def embed_documents(self, texts):
+        self._record()
         return [[1.0, 0.0] for _ in texts]
 
     def embed_queries(self, texts):
+        self._record()
         return [[0.0, 1.0] for _ in texts]
 
 
 class FakeRerankerProvider:
     identity = ModelIdentity(task="reranker", model="fake-reranker")
 
+    def __init__(self):
+        self.telemetry = ProviderTelemetry()
+
     def rerank(self, query, documents):
+        self.telemetry.record(
+            ProviderCall(
+                task="reranker",
+                backend="remote",
+                model=self.identity.model,
+                device="cuda",
+                platform="Windows",
+                elapsed_seconds=0.02,
+                success=True,
+            )
+        )
         return [float(index) for index, _ in enumerate(documents)]
 
 
@@ -142,6 +174,13 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertEqual(result["answer"], "测试回答")
             self.assertIn("相关教材内容", result["prompt"])
             self.assertEqual(len(llm.prompts), 3)
+            execution = result["execution"]
+            self.assertEqual(execution["embedding"]["backend"], "remote")
+            self.assertEqual(execution["embedding"]["device"], "cuda")
+            self.assertEqual(execution["embedding"]["platform"], "Windows")
+            self.assertEqual(execution["reranker"]["backend"], "remote")
+            self.assertNotIn("remote_url", execution)
+            self.assertNotIn("token", repr(execution).lower())
 
     def test_engine_reports_missing_llm_configuration_without_hiding_retrieval(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

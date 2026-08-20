@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -13,7 +14,9 @@ from rag_textbook_qa.providers.base import (
     AuthenticationError,
     ModelIdentity,
     ModelMismatchError,
+    ProviderCall,
     ProviderProtocolError,
+    ProviderTelemetry,
     TransientProviderError,
     validate_embeddings,
     validate_scores,
@@ -88,6 +91,9 @@ class _RemoteProvider:
         self.client = client
         self._identity = identity
         self._health_verified = False
+        self.remote_device = "remote"
+        self.remote_platform: str | None = None
+        self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
@@ -107,7 +113,33 @@ class _RemoteProvider:
             raise ModelMismatchError(
                 f"本地期望 {self.identity.model}，远程配置为 {remote.get('model', '未知')}"
             )
+        device = health.get("device")
+        if isinstance(device, str) and device.strip():
+            self.remote_device = device.strip().lower()
+        remote_platform = health.get("platform")
+        if isinstance(remote_platform, str) and remote_platform.strip():
+            self.remote_platform = remote_platform.strip()
         self._health_verified = True
+
+    def _record_call(
+        self,
+        started: float,
+        *,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        self.telemetry.record(
+            ProviderCall(
+                task=self.identity.task,
+                backend="remote",
+                model=self.identity.model,
+                device=self.remote_device,
+                platform=self.remote_platform,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                error_category=error_category,
+            )
+        )
 
 
 class RemoteEmbeddingProvider(_RemoteProvider):
@@ -126,19 +158,26 @@ class RemoteEmbeddingProvider(_RemoteProvider):
         values = list(texts)
         if not values:
             return []
-        self._ensure_compatible()
-        response = self.client.request(
-            "/v1/embeddings",
-            method="POST",
-            payload={
-                "model": self.identity.model,
-                "input_type": input_type,
-                "texts": values,
-            },
-        )
-        if response.get("fingerprint") != self.identity.fingerprint:
-            raise ModelMismatchError("远程 embedding 响应指纹与配置不一致")
-        return validate_embeddings(response.get("embeddings"), len(values))
+        started = time.monotonic()
+        try:
+            self._ensure_compatible()
+            response = self.client.request(
+                "/v1/embeddings",
+                method="POST",
+                payload={
+                    "model": self.identity.model,
+                    "input_type": input_type,
+                    "texts": values,
+                },
+            )
+            if response.get("fingerprint") != self.identity.fingerprint:
+                raise ModelMismatchError("远程 embedding 响应指纹与配置不一致")
+            result = validate_embeddings(response.get("embeddings"), len(values))
+        except Exception as exc:
+            self._record_call(started, success=False, error_category=type(exc).__name__)
+            raise
+        self._record_call(started, success=True)
+        return result
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return self._embed(texts, "document")
@@ -155,19 +194,26 @@ class RemoteRerankerProvider(_RemoteProvider):
         values = list(documents)
         if not values:
             return []
-        self._ensure_compatible()
-        response = self.client.request(
-            "/v1/rerank",
-            method="POST",
-            payload={
-                "model": self.identity.model,
-                "query": query,
-                "documents": values,
-            },
-        )
-        if response.get("fingerprint") != self.identity.fingerprint:
-            raise ModelMismatchError("远程 reranker 响应指纹与配置不一致")
-        return validate_scores(response.get("scores"), len(values))
+        started = time.monotonic()
+        try:
+            self._ensure_compatible()
+            response = self.client.request(
+                "/v1/rerank",
+                method="POST",
+                payload={
+                    "model": self.identity.model,
+                    "query": query,
+                    "documents": values,
+                },
+            )
+            if response.get("fingerprint") != self.identity.fingerprint:
+                raise ModelMismatchError("远程 reranker 响应指纹与配置不一致")
+            result = validate_scores(response.get("scores"), len(values))
+        except Exception as exc:
+            self._record_call(started, success=False, error_category=type(exc).__name__)
+            raise
+        self._record_call(started, success=True)
+        return result
 
 
 class FallbackEmbeddingProvider:
@@ -178,22 +224,91 @@ class FallbackEmbeddingProvider:
             raise ModelMismatchError("embedding 回退模型必须与远程模型完全一致")
         self.primary = primary
         self.fallback = fallback
+        self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
         return self.primary.identity
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        try:
-            return self.primary.embed_documents(texts)
-        except TransientProviderError:
-            return self.fallback.embed_documents(texts)
+        return self._run("embed_documents", texts)
 
     def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        return self._run("embed_queries", texts)
+
+    def _run(self, method: str, texts: Sequence[str]) -> list[list[float]]:
+        values = list(texts)
+        if not values:
+            return []
+        started = time.monotonic()
+        primary_marker = _telemetry_marker(self.primary)
         try:
-            return self.primary.embed_queries(texts)
-        except TransientProviderError:
-            return self.fallback.embed_queries(texts)
+            result = getattr(self.primary, method)(values)
+        except TransientProviderError as remote_error:
+            fallback_marker = _telemetry_marker(self.fallback)
+            try:
+                result = getattr(self.fallback, method)(values)
+            except Exception as exc:
+                self._record_effective_call(
+                    started,
+                    _latest_call(self.fallback, fallback_marker),
+                    backend="local",
+                    fallback_used=True,
+                    success=False,
+                    error_category=type(exc).__name__,
+                )
+                raise
+            self._record_effective_call(
+                started,
+                _latest_call(self.fallback, fallback_marker),
+                backend="local",
+                fallback_used=True,
+                success=True,
+                error_category=type(remote_error).__name__,
+            )
+            return result
+        except Exception as exc:
+            self._record_effective_call(
+                started,
+                _latest_call(self.primary, primary_marker),
+                backend="remote",
+                fallback_used=False,
+                success=False,
+                error_category=type(exc).__name__,
+            )
+            raise
+        self._record_effective_call(
+            started,
+            _latest_call(self.primary, primary_marker),
+            backend="remote",
+            fallback_used=False,
+            success=True,
+        )
+        return result
+
+    def _record_effective_call(
+        self,
+        started: float,
+        effective: ProviderCall | None,
+        *,
+        backend: str,
+        fallback_used: bool,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        self.telemetry.record(
+            ProviderCall(
+                task="embedding",
+                backend=backend,
+                model=self.identity.model,
+                device=effective.device if effective else backend,
+                platform=effective.platform if effective else None,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                fallback_used=fallback_used,
+                error_category=error_category,
+            )
+        )
 
 
 class FallbackRerankerProvider:
@@ -202,13 +317,97 @@ class FallbackRerankerProvider:
             raise ModelMismatchError("reranker 回退模型必须与远程模型完全一致")
         self.primary = primary
         self.fallback = fallback
+        self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
         return self.primary.identity
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        values = list(documents)
+        if not values:
+            return []
+        started = time.monotonic()
+        primary_marker = _telemetry_marker(self.primary)
         try:
-            return self.primary.rerank(query, documents)
-        except TransientProviderError:
-            return self.fallback.rerank(query, documents)
+            result = self.primary.rerank(query, values)
+        except TransientProviderError as remote_error:
+            fallback_marker = _telemetry_marker(self.fallback)
+            try:
+                result = self.fallback.rerank(query, values)
+            except Exception as exc:
+                self._record_effective_call(
+                    started,
+                    _latest_call(self.fallback, fallback_marker),
+                    backend="local",
+                    fallback_used=True,
+                    success=False,
+                    error_category=type(exc).__name__,
+                )
+                raise
+            self._record_effective_call(
+                started,
+                _latest_call(self.fallback, fallback_marker),
+                backend="local",
+                fallback_used=True,
+                success=True,
+                error_category=type(remote_error).__name__,
+            )
+            return result
+        except Exception as exc:
+            self._record_effective_call(
+                started,
+                _latest_call(self.primary, primary_marker),
+                backend="remote",
+                fallback_used=False,
+                success=False,
+                error_category=type(exc).__name__,
+            )
+            raise
+        self._record_effective_call(
+            started,
+            _latest_call(self.primary, primary_marker),
+            backend="remote",
+            fallback_used=False,
+            success=True,
+        )
+        return result
+
+    def _record_effective_call(
+        self,
+        started: float,
+        effective: ProviderCall | None,
+        *,
+        backend: str,
+        fallback_used: bool,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        self.telemetry.record(
+            ProviderCall(
+                task="reranker",
+                backend=backend,
+                model=self.identity.model,
+                device=effective.device if effective else backend,
+                platform=effective.platform if effective else None,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                fallback_used=fallback_used,
+                error_category=error_category,
+            )
+        )
+
+
+def _telemetry_marker(provider: Any) -> int | None:
+    telemetry = getattr(provider, "telemetry", None)
+    return telemetry.mark() if isinstance(telemetry, ProviderTelemetry) else None
+
+
+def _latest_call(provider: Any, marker: int | None) -> ProviderCall | None:
+    if marker is None:
+        return None
+    telemetry = getattr(provider, "telemetry", None)
+    if not isinstance(telemetry, ProviderTelemetry):
+        return None
+    calls = telemetry.since(marker)
+    return calls[-1] if calls else None

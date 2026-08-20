@@ -1,5 +1,6 @@
 """GPU worker exposing only embedding and reranking over HTTP."""
 
+import platform
 import secrets
 from collections.abc import Mapping
 from typing import Any
@@ -70,6 +71,7 @@ class WorkerRuntime:
             "status": "ok",
             "protocol_version": "1",
             "device": self.device,
+            "platform": platform.system(),
             "models": {
                 "embedding": self.embedding_provider.identity.as_dict(),
                 "reranker": self.reranker_provider.identity.as_dict(),

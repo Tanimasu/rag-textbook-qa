@@ -1,3 +1,4 @@
+import platform
 import unittest
 import warnings
 from unittest.mock import patch
@@ -120,6 +121,7 @@ class WorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(malformed.status_code, 401)
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["device"], "cuda")
+        self.assertEqual(health.json()["platform"], platform.system())
         self.assertEqual(embedded.json()["embeddings"], [[1.0, 0.0]])
         self.assertEqual(mismatch.status_code, 409)
 

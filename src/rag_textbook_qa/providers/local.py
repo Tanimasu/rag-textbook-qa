@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import platform
 import threading
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -10,6 +12,8 @@ from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
     MissingOptionalDependencyError,
     ModelIdentity,
+    ProviderCall,
+    ProviderTelemetry,
     validate_embeddings,
     validate_scores,
 )
@@ -38,6 +42,7 @@ class LocalEmbeddingProvider:
         self.device = _model_device(device)
         self._model: Any | None = None
         self._lock = threading.RLock()
+        self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
@@ -61,18 +66,45 @@ class LocalEmbeddingProvider:
         values = list(texts)
         if not values:
             return []
-        with self._lock:
-            embeddings = (
-                self._load()
-                .encode(
-                    values,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
+        started = time.monotonic()
+        try:
+            with self._lock:
+                model = self._load()
+                embeddings = (
+                    model.encode(
+                        values,
+                        show_progress_bar=False,
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                    ).tolist()
                 )
-                .tolist()
+            result = validate_embeddings(embeddings, len(values))
+        except Exception as exc:
+            self._record_call(started, success=False, error_category=type(exc).__name__)
+            raise
+        self._record_call(started, success=True)
+        return result
+
+    def _record_call(
+        self,
+        started: float,
+        *,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        device = self.device or _runtime_device(self._model)
+        self.telemetry.record(
+            ProviderCall(
+                task="embedding",
+                backend="local",
+                model=self.identity.model,
+                device=device,
+                platform=platform.system() or None,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                error_category=error_category,
             )
-        return validate_embeddings(embeddings, len(values))
+        )
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return self._encode(texts)
@@ -90,6 +122,7 @@ class LocalRerankerProvider:
         self.device = _model_device(device)
         self._model: Any | None = None
         self._lock = threading.RLock()
+        self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
@@ -114,8 +147,48 @@ class LocalRerankerProvider:
         if not values:
             return []
         pairs = [(query, document) for document in values]
-        with self._lock:
-            scores = self._load().predict(pairs)
-        if hasattr(scores, "tolist"):
-            scores = scores.tolist()
-        return validate_scores(scores, len(values))
+        started = time.monotonic()
+        try:
+            with self._lock:
+                model = self._load()
+                scores = model.predict(pairs)
+            if hasattr(scores, "tolist"):
+                scores = scores.tolist()
+            result = validate_scores(scores, len(values))
+        except Exception as exc:
+            self._record_call(started, success=False, error_category=type(exc).__name__)
+            raise
+        self._record_call(started, success=True)
+        return result
+
+    def _record_call(
+        self,
+        started: float,
+        *,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        device = self.device or _runtime_device(self._model)
+        self.telemetry.record(
+            ProviderCall(
+                task="reranker",
+                backend="local",
+                model=self.identity.model,
+                device=device,
+                platform=platform.system() or None,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                error_category=error_category,
+            )
+        )
+
+
+def _runtime_device(model: Any | None) -> str:
+    if model is None:
+        return "auto"
+    direct = getattr(model, "device", None)
+    if direct is not None:
+        return str(direct)
+    nested = getattr(model, "model", None)
+    nested_device = getattr(nested, "device", None)
+    return str(nested_device) if nested_device is not None else "auto"

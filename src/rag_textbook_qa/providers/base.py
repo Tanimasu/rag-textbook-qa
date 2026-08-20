@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Sequence
+import threading
+import uuid
+from collections import deque
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 DEFAULT_QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 PROTOCOL_VERSION = "1"
+_TRACE_ID: ContextVar[str | None] = ContextVar("rag_qa_provider_trace_id", default=None)
 
 
 class ProviderError(RuntimeError):
@@ -54,6 +60,64 @@ class ModelIdentity:
 
     def as_dict(self) -> dict[str, str | bool]:
         return {**asdict(self), "fingerprint": self.fingerprint}
+
+
+@dataclass(frozen=True)
+class ProviderCall:
+    """Secret-free telemetry for one provider invocation."""
+
+    task: Literal["embedding", "reranker"]
+    backend: Literal["local", "remote"]
+    model: str
+    device: str
+    platform: str | None
+    elapsed_seconds: float
+    success: bool
+    fallback_used: bool = False
+    error_category: str | None = None
+
+    def as_dict(self) -> dict[str, str | float | bool | None]:
+        return asdict(self)
+
+
+class ProviderTelemetry:
+    """Thread-safe bounded call history used to build per-request summaries."""
+
+    def __init__(self, *, max_events: int = 256) -> None:
+        self._events: deque[tuple[int, str | None, ProviderCall]] = deque(
+            maxlen=max_events
+        )
+        self._sequence = 0
+        self._lock = threading.Lock()
+
+    def mark(self) -> int:
+        with self._lock:
+            return self._sequence
+
+    def record(self, call: ProviderCall) -> None:
+        with self._lock:
+            self._sequence += 1
+            self._events.append((self._sequence, _TRACE_ID.get(), call))
+
+    def since(self, marker: int) -> list[ProviderCall]:
+        with self._lock:
+            return [call for sequence, _, call in self._events if sequence > marker]
+
+    def for_trace(self, trace_id: str) -> list[ProviderCall]:
+        with self._lock:
+            return [call for _, event_trace, call in self._events if event_trace == trace_id]
+
+
+@contextmanager
+def provider_trace() -> Iterator[str]:
+    """Isolate provider events belonging to one engine request."""
+
+    trace_id = uuid.uuid4().hex
+    token = _TRACE_ID.set(trace_id)
+    try:
+        yield trace_id
+    finally:
+        _TRACE_ID.reset(token)
 
 
 @runtime_checkable

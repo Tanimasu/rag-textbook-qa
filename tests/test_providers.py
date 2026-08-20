@@ -7,9 +7,12 @@ from rag_textbook_qa.providers import (
     AuthenticationError,
     ModelIdentity,
     ModelMismatchError,
+    ProviderCall,
     ProviderError,
     ProviderProtocolError,
+    ProviderTelemetry,
     TransientProviderError,
+    provider_trace,
 )
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION, validate_embeddings
 from rag_textbook_qa.providers.remote import (
@@ -32,7 +35,11 @@ class FakeRemoteClient:
     def request(self, path, *, method="GET", payload=None):
         self.requests.append((path, method, payload))
         if path == "/health":
-            return {"models": {"embedding": self.identity.as_dict()}}
+            return {
+                "device": "cuda",
+                "platform": "Windows",
+                "models": {"embedding": self.identity.as_dict()},
+            }
         return {
             "fingerprint": self.identity.fingerprint,
             "embeddings": [[float(index), 1.0] for index, _ in enumerate(payload["texts"])],
@@ -63,6 +70,26 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_telemetry_is_isolated_by_request_trace(self):
+        telemetry = ProviderTelemetry()
+        call = ProviderCall(
+            task="embedding",
+            backend="remote",
+            model="model",
+            device="cuda",
+            platform="Windows",
+            elapsed_seconds=0.1,
+            success=True,
+        )
+
+        with provider_trace() as first_trace:
+            telemetry.record(call)
+        with provider_trace() as second_trace:
+            telemetry.record(call)
+
+        self.assertEqual(telemetry.for_trace(first_trace), [call])
+        self.assertEqual(telemetry.for_trace(second_trace), [call])
+
     def test_non_finite_embeddings_are_rejected(self):
         with self.assertRaisesRegex(ProviderProtocolError, "NaN"):
             validate_embeddings([[float("nan")]], 1)
@@ -105,6 +132,12 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual([request[0] for request in client.requests].count("/health"), 1)
         self.assertEqual(client.requests[1][2]["input_type"], "query")
         self.assertEqual(client.requests[2][2]["input_type"], "document")
+        events = provider.telemetry.since(0)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[-1].backend, "remote")
+        self.assertEqual(events[-1].device, "cuda")
+        self.assertEqual(events[-1].platform, "Windows")
+        self.assertTrue(events[-1].success)
 
     def test_remote_embedding_fails_fast_on_model_mismatch(self):
         provider = RemoteEmbeddingProvider(FakeRemoteClient("other-model"), "expected-model")
@@ -125,6 +158,12 @@ class ProviderTests(unittest.TestCase):
 
         self.assertEqual(provider.embed_queries(["q"]), [[1.0, 2.0]])
         self.assertEqual(fallback.calls, 1)
+        self.assertIsInstance(provider.telemetry, ProviderTelemetry)
+        event = provider.telemetry.since(0)[-1]
+        self.assertEqual(event.backend, "local")
+        self.assertTrue(event.fallback_used)
+        self.assertEqual(event.error_category, "TransientProviderError")
+        self.assertTrue(event.success)
 
         auth_primary = StubEmbeddingProvider(identity, AuthenticationError("bad token"))
         provider = FallbackEmbeddingProvider(auth_primary, fallback)

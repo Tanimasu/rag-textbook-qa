@@ -26,6 +26,7 @@
 - **多教材独立向量库**：支持操作系统、计算机组成原理、计算机网络、数据结构、数据库原理及应用等多本教材
 - **评估闭环完整**：集成 RAGAS 指标评估，并支持无 RAG baseline 对比
 - **可视化交互界面**：基于 Streamlit 提供教材选择、参数调节、问答对话和评估结果查看
+- **计算后端可观测**：每次回答显示 Embedding/Reranker 实际运行于远程 CUDA 还是本地 MPS/CPU，以及检索、生成和总耗时
 
 ---
 
@@ -302,6 +303,8 @@ rag-qa app --no-browser --host 127.0.0.1 --port 8501
 ```
 
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
+
+每次问答完成后，答案下方会显示本次请求的安全执行摘要：Embedding 与 Reranker 的实际后端、设备、Worker 平台、调用次数和耗时，以及检索、回答与总耗时。例如，远程正常时显示“远程 Worker（Windows）· CUDA”；瞬时网络故障触发回退时显示“已回退到本地（macOS）· MPS”。摘要不会包含 Worker URL、token、API Key、问题正文或模型输入。旧版 Worker 未返回平台字段时仍可显示“远程 Worker · CUDA”；Windows 更新代码并重启 Worker 后会补充平台名称。
 
 Web 界面的正式实现位于 `src/rag_textbook_qa/web/`；`project/app.py` 与原来的 `project/ui/`、`project/services/app_services.py` 仅保留为兼容入口。
 

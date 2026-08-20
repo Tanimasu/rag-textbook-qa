@@ -32,7 +32,11 @@ def render_chat_tab(
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
-                render_answer_block(message["content"], message.get("sources", []))
+                render_answer_block(
+                    message["content"],
+                    message.get("sources", []),
+                    message.get("execution"),
+                )
             else:
                 st.markdown(message["content"])
 
@@ -58,6 +62,7 @@ def render_chat_tab(
             "role": "assistant",
             "content": answer,
             "sources": sources,
+            "execution": result.get("execution"),
         }
     )
     st.rerun()
