@@ -1,7 +1,6 @@
 import html
 
 import streamlit as st
-
 from config.constants import BOOK_NAME_LABELS
 
 

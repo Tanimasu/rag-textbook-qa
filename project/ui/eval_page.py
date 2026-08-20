@@ -1,5 +1,4 @@
 import streamlit as st
-
 from config.constants import RAGAS_METRIC_LABELS
 
 
@@ -10,7 +9,7 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
 
     col_btn, col_info = st.columns([1, 3])
     with col_btn:
-        run_eval = st.button("运行评估", use_container_width=True)
+        run_eval = st.button("运行评估", width="stretch")
     with col_info:
         if df_existing is not None:
             st.caption(f"已有评估结果（{len(df_existing)} 条），点击「运行评估」重新生成。")
@@ -68,7 +67,7 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
             limit_options = [10, 20, 30, 50]
             valid_options = [value for value in limit_options if value < len(df_existing)]
             valid_options.append(len(df_existing))
-            valid_options = sorted(set(max(5, value) for value in valid_options))
+            valid_options = sorted({max(5, value) for value in valid_options})
             default_limit = min(20, len(df_existing))
             display_limit = st.selectbox(
                 "显示题数",
@@ -109,7 +108,7 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
             question_legend = chart_df[["题号", "问题"]].copy()
             st.dataframe(
                 question_legend,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "题号": st.column_config.TextColumn(width="small"),
@@ -173,7 +172,7 @@ def render_eval_tab(load_ragas_results, run_ragas_evaluation):
     st.caption(f"当前显示 {len(display_df)} 条结果。")
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "题号": st.column_config.TextColumn(width="small"),

@@ -44,7 +44,7 @@ def render_sidebar(book_options):
             )
 
         st.markdown("---")
-        if st.button("清空对话", use_container_width=True):
+        if st.button("清空对话", width="stretch"):
             st.session_state.messages = []
             st.rerun()
 
