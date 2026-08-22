@@ -24,6 +24,7 @@ class EvaluateCliTests(unittest.TestCase):
             questions_path = root / "questions.json"
             questions_path.write_text("[]", encoding="utf-8")
             database_path = root / "custom-db"
+            output_path = root / "smoke-results"
             questions = [{"question": "什么是进程？", "book_name": "os"}]
             engine = MagicMock()
             engine.__enter__.return_value = engine
@@ -47,6 +48,8 @@ class EvaluateCliTests(unittest.TestCase):
                         str(questions_path),
                         "--db-path",
                         str(database_path),
+                        "--output-dir",
+                        str(output_path),
                         "--baseline",
                     ]
                 )
@@ -62,7 +65,7 @@ class EvaluateCliTests(unittest.TestCase):
             run_evaluation.assert_called_once_with(
                 engine,
                 questions,
-                root.resolve() / "artifacts" / "evaluations",
+                output_path,
                 include_baseline=True,
             )
             engine.__exit__.assert_called_once()

@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--questions", type=Path, help="覆盖评估问题 JSON")
     evaluate.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
     evaluate.add_argument(
+        "--output-dir",
+        type=Path,
+        help="覆盖 artifacts/evaluations，避免覆盖已有评估结果",
+    )
+    evaluate.add_argument(
         "--baseline",
         action="store_true",
         help="同时运行无 RAG baseline（会增加 API 调用）",
@@ -294,7 +299,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         run_evaluation(
             engine,
             questions,
-            settings.paths.evaluations,
+            args.output_dir or settings.paths.evaluations,
             include_baseline=args.baseline,
         )
     return 0

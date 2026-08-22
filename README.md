@@ -279,7 +279,7 @@ rag-qa chat
 rag-qa evaluate
 ```
 
-评估问题来自 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。评估依赖按需安装：`uv sync --inexact --extra eval`。
+评估问题来自 `data/evaluation/test_questions.json`，结果默认写入 `artifacts/evaluations/`。临时测试时可通过 `--questions` 指定小规模问题集，并用 `--output-dir` 将结果写入独立目录，避免覆盖已有正式结果。评估依赖按需安装：`uv sync --inexact --extra eval`。
 
 如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
