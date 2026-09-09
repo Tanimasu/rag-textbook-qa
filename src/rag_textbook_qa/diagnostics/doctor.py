@@ -7,6 +7,7 @@ import platform
 import shutil
 import sys
 from dataclasses import asdict, dataclass
+from importlib import metadata
 
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.providers import ComputeSettings, ProviderError
@@ -34,6 +35,36 @@ def _required_module_status(import_name: str) -> Diagnostic:
         name=f"module:{import_name}",
         status="ok" if installed else "missing",
         detail="已安装" if installed else "基础依赖缺失；运行 uv sync",
+    )
+
+
+def _datasets_pyarrow_compatibility() -> Diagnostic:
+    """Detect the known pre-v4 Datasets / PyArrow 21+ import failure cheaply."""
+
+    try:
+        datasets_version = metadata.version("datasets")
+        pyarrow_version = metadata.version("pyarrow")
+        datasets_major = int(datasets_version.split(".", 1)[0])
+        pyarrow_major = int(pyarrow_version.split(".", 1)[0])
+    except (metadata.PackageNotFoundError, ValueError):
+        return Diagnostic(
+            "compat:datasets-pyarrow",
+            "optional",
+            "评估依赖未完整安装；需要 uv sync --extra eval",
+        )
+
+    compatible = datasets_major >= 4 or pyarrow_major < 21
+    return Diagnostic(
+        "compat:datasets-pyarrow",
+        "ok" if compatible else "warning",
+        (
+            f"datasets {datasets_version} / pyarrow {pyarrow_version}"
+            if compatible
+            else (
+                f"datasets {datasets_version} 与 pyarrow {pyarrow_version} 不兼容；"
+                "运行 uv sync --extra eval"
+            )
+        ),
     )
 
 
@@ -118,12 +149,14 @@ def collect_diagnostics(settings: Settings) -> list[Diagnostic]:
             _required_module_status("tqdm"),
             _module_status("sentence_transformers", "local-models"),
             _module_status("streamlit", "ui"),
+            _module_status("datasets", "eval"),
             _module_status("ragas", "eval"),
             _module_status("docling", "docling"),
             _module_status("mineru", "mineru"),
             _module_status("fastapi", "worker"),
         ]
     )
+    diagnostics.append(_datasets_pyarrow_compatibility())
     return diagnostics
 
 

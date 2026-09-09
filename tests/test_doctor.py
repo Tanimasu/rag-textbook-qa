@@ -13,9 +13,11 @@ from rag_textbook_qa.diagnostics.doctor import collect_diagnostics
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 HEAVY_MODULES = {
     "chromadb",
+    "datasets",
     "docling",
     "mineru",
     "openai",
+    "pyarrow",
     "ragas",
     "sentence_transformers",
     "streamlit",
@@ -65,6 +67,7 @@ class DoctorTests(unittest.TestCase):
         for import_name in ("chromadb", "dotenv", "jieba", "openai", "rank_bm25", "tqdm"):
             with self.subTest(import_name=import_name):
                 self.assertIn(by_name[f"module:{import_name}"].status, {"ok", "missing"})
+        self.assertIn(by_name["module:datasets"].status, {"ok", "optional"})
         self.assertIn(
             by_name["module:sentence_transformers"].status,
             {"ok", "optional"},
@@ -86,6 +89,21 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(compute.status, "ok")
         self.assertIn("http://100.64.0.10:8765", compute.detail)
         self.assertNotIn("not-for-output", compute.detail)
+
+    def test_doctor_warns_about_incompatible_datasets_and_pyarrow(self):
+        versions = {"datasets": "1.1.1", "pyarrow": "24.0.0"}
+        with patch(
+            "rag_textbook_qa.diagnostics.doctor.metadata.version",
+            side_effect=versions.__getitem__,
+        ):
+            checks = collect_diagnostics(Settings.load(REPOSITORY_ROOT))
+
+        compatibility = next(
+            check for check in checks if check.name == "compat:datasets-pyarrow"
+        )
+        self.assertEqual(compatibility.status, "warning")
+        self.assertIn("datasets 1.1.1", compatibility.detail)
+        self.assertIn("pyarrow 24.0.0", compatibility.detail)
 
 
 if __name__ == "__main__":
