@@ -15,6 +15,7 @@ concurrency:
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUTF8: "1"
 
 jobs:
   test:
