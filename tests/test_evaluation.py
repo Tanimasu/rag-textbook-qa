@@ -1,13 +1,25 @@
+import contextlib
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.evaluation import RAGASEvaluator, load_test_questions
+from rag_textbook_qa.evaluation.ragas import _ragas_embedding_model
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_ragas_embedding_defaults_to_the_retrieval_model(self):
+        with patch.dict(
+            os.environ,
+            {"RAG_QA_EMBEDDING_MODEL": "example/embedding-model"},
+            clear=True,
+        ):
+            self.assertEqual(_ragas_embedding_model(), "example/embedding-model")
+
     def test_legacy_script_is_a_thin_compatibility_entrypoint(self):
         repository_root = Path(__file__).resolve().parents[1]
         source = (repository_root / "project" / "ragas_evaluation.py").read_text(
@@ -96,6 +108,25 @@ class EvaluationTests(unittest.TestCase):
             top_k=8,
             use_llm=True,
         )
+
+    def test_print_results_handles_an_all_nan_evaluation(self):
+        import pandas as pd
+
+        evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+        result = MagicMock()
+        result.to_pandas.return_value = pd.DataFrame(
+            {
+                "question": ["什么是进程？"],
+                "faithfulness": [float("nan")],
+            }
+        )
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            dataframe = evaluator.print_results(result)
+
+        self.assertIsNotNone(dataframe)
+        self.assertIn("没有可汇总的有效指标分数", output.getvalue())
 
 
 if __name__ == "__main__":

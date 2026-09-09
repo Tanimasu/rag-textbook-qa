@@ -87,5 +87,6 @@ jobs:
           python -c "import glob, zipfile; wheel = glob.glob('dist/*.whl')[0]; names = set(zipfile.ZipFile(wheel).namelist()); required = {'rag_textbook_qa/cli.py', 'rag_textbook_qa/web/app.py', 'rag_textbook_qa/worker.py'}; missing = sorted(required - names); assert not missing, f'missing wheel files: {missing}'; print(wheel)"
           python -c "import glob, subprocess, sys; wheel = glob.glob('dist/*.whl')[0]; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', wheel])"
           python -c "import datasets, ragas; from datasets import Dataset; assert len(Dataset.from_dict({'question': ['ok']})) == 1"
+          python -c "from rag_textbook_qa.evaluation import RAGASEvaluator; evaluator = RAGASEvaluator(api_key='ci-only', base_url='http://127.0.0.1:9/v1', model='test-model'); assert evaluator._answer_relevancy.strictness == 1; assert evaluator.embeddings.check_embedding_ctx_length is False"
           rag-qa --help
           rag-qa doctor --json

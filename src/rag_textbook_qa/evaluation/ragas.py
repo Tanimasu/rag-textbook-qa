@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,14 @@ def _default_output_dir() -> Path:
     from rag_textbook_qa.config import Settings
 
     return Settings.load().paths.evaluations
+
+
+def _ragas_embedding_model() -> str:
+    return (
+        os.getenv("RAGAS_EMBEDDING_MODEL")
+        or os.getenv("RAG_QA_EMBEDDING_MODEL")
+        or "BAAI/bge-large-zh-v1.5"
+    )
 
 
 class RAGASEvaluator:
@@ -66,7 +76,8 @@ class RAGASEvaluator:
         self._evaluate = evaluate
         self._run_config_type = RunConfig
         self._faithfulness = faithfulness
-        self._answer_relevancy = answer_relevancy
+        self._answer_relevancy = copy.deepcopy(answer_relevancy)
+        self._answer_relevancy.strictness = 1
         self._context_precision = context_precision
         self._context_recall = context_recall
 
@@ -85,13 +96,15 @@ class RAGASEvaluator:
         print("  LLM 初始化成功")
 
         try:
+            embedding_model = _ragas_embedding_model()
             self.embeddings = OpenAIEmbeddings(
-                model="text-embedding-ada-002",
+                model=embedding_model,
                 openai_api_key=resolved_api_key,
                 openai_api_base=resolved_base_url,
                 request_timeout=60,
+                check_embedding_ctx_length=False,
             )
-            print("  Embeddings 初始化成功（API）")
+            print(f"  Embeddings 初始化成功（API: {embedding_model}）")
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             print(f"  API Embeddings 不可用 ({exc})，降级到本地 HuggingFace 模型")
             from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -270,18 +283,23 @@ class RAGASEvaluator:
                         print(f"  [{index + 1}] {question}  →  {', '.join(failed)}")
                 print()
 
-            scores = {
-                column: float(dataframe[column].mean()) for column in numeric_columns
-            }
+            scores = {}
+            for column in numeric_columns:
+                score = float(dataframe[column].mean())
+                if math.isfinite(score):
+                    scores[column] = score
         else:
             try:
                 scores = {
                     key: value
                     for key, value in result.items()
-                    if isinstance(value, (int, float))
+                    if isinstance(value, (int, float)) and math.isfinite(value)
                 }
             except AttributeError:
                 scores = {}
+
+        if not scores:
+            print("没有可汇总的有效指标分数。")
 
         for metric, score in scores.items():
             bar = "█" * int(score * 30) + "░" * (30 - int(score * 30))

@@ -131,6 +131,7 @@ LLM_MODEL=gemini-3-flash-preview
 # 可选：为 RAG 引擎和评估器单独指定模型（不设则使用上方共享值）
 # RAG_MODEL=gemini-3-flash-preview
 # RAGAS_MODEL=claude-sonnet-4-6   # 建议与生成模型使用不同厂商，避免自我偏好偏差
+# RAGAS_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 ```
 
 ### 3. 验证环境
