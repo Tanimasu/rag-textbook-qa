@@ -44,7 +44,7 @@ def main() -> None:
             top_k=sidebar_state["top_k"],
             temperature=sidebar_state["temperature"],
             max_tokens=sidebar_state["max_tokens"],
-            enable_hyde=sidebar_state["enable_hyde"],
+            enable_hyde=sidebar_state.get("enable_hyde", False),
             load_engine=load_engine,
         )
     with tab_eval:

@@ -37,11 +37,15 @@ class WebPackageTests(unittest.TestCase):
         layout_source = (
             REPOSITORY_ROOT / "src" / "rag_textbook_qa" / "web" / "layout.py"
         ).read_text(encoding="utf-8")
+        app_source = (
+            REPOSITORY_ROOT / "src" / "rag_textbook_qa" / "web" / "app.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("on_answer_chunk=render_chunk", chat_source)
         self.assertIn("use_hyde=enable_hyde", chat_source)
         self.assertIn('"启用 HyDE 增强检索"', layout_source)
         self.assertIn("value=False", layout_source)
+        self.assertIn('sidebar_state.get("enable_hyde", False)', app_source)
 
     @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
     def test_packaged_and_legacy_entrypoints_render_without_exceptions(self):
