@@ -196,6 +196,26 @@ RAG_QA_DEVICE=cuda
 rag-qa worker serve --host 100.x.y.z --port 8765 --device cuda
 ```
 
+配置完成后，也可以从仓库根目录直接运行一键启动脚本，不需要先执行
+`conda activate`：
+
+```powershell
+.\scripts\windows\start-worker.ps1
+```
+
+脚本会根据自身位置定位仓库，自动查找 Conda 和 Tailscale IPv4，检查
+`project/.env` 中是否存在格式有效的 Worker token，并在确认 8765 端口空闲后，
+通过 `conda run` 启动 CUDA Worker。脚本不会显示 token，也不会修改防火墙、
+开机启动项或持久环境变量。即使当前 PowerShell 中残留旧的 Worker 配置，脚本也会
+仅为本次子进程清除这些覆盖值，以仓库的 `project/.env` 为准。
+
+脚本也可以通过绝对路径从其他目录启动，或按需覆盖环境名和端口：
+
+```powershell
+& "D:\CodeField\rag-textbook-qa-worker\scripts\windows\start-worker.ps1"
+.\scripts\windows\start-worker.ps1 -EnvironmentName rag-textbook-qa -Port 8765
+```
+
 不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。如果 PowerShell 或终端进程中的 token 与 `project/.env` 不同，进程环境变量优先，命令会给出不含 token 内容的警告；修改 token 后应重启 Worker。
 
 ### Mac 连接远程 Worker

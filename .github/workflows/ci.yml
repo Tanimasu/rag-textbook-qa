@@ -58,6 +58,22 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src tests project
 
+      - name: Parse Windows Worker launcher
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/windows/start-worker.ps1"),
+            [ref]$tokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
   package:
     name: Build and inspect package
     runs-on: ubuntu-latest
