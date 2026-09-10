@@ -5,7 +5,8 @@ param(
     [int]$Port = 8765,
     [ValidateSet("auto", "cpu", "cuda")]
     [string]$Device = "cuda",
-    [string]$ListenAddress
+    [string]$ListenAddress,
+    [switch]$Warmup
 )
 
 Set-StrictMode -Version Latest
@@ -177,12 +178,32 @@ Write-Host "Repository: $repositoryRoot"
 Write-Host "Conda environment: $EnvironmentName"
 Write-Host "Listen URL: http://${ListenAddress}:$Port"
 Write-Host "Device: $Device"
+Write-Host "Warmup: $(if ($Warmup) { 'enabled' } else { 'disabled' })"
 Write-Host "Worker token: configured in project/.env"
 Write-Host "Press Ctrl+C to stop the Worker."
 
-& $condaExecutable run --no-capture-output -n $EnvironmentName `
-    rag-qa --workspace $repositoryRoot worker serve `
-    --host $ListenAddress --port $Port --device $Device
+$workerArguments = @(
+    "run",
+    "--no-capture-output",
+    "-n",
+    $EnvironmentName,
+    "rag-qa",
+    "--workspace",
+    $repositoryRoot,
+    "worker",
+    "serve",
+    "--host",
+    $ListenAddress,
+    "--port",
+    $Port,
+    "--device",
+    $Device
+)
+if ($Warmup) {
+    $workerArguments += "--warmup"
+}
+
+& $condaExecutable @workerArguments
 
 if ($LASTEXITCODE -ne 0) {
     throw "Worker exited with code $LASTEXITCODE."

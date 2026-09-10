@@ -2,6 +2,7 @@
 
 import platform
 import secrets
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -76,6 +77,21 @@ class WorkerRuntime:
                 "embedding": self.embedding_provider.identity.as_dict(),
                 "reranker": self.reranker_provider.identity.as_dict(),
             },
+        }
+
+    def warmup(self) -> dict[str, float]:
+        """Load both local models with one minimal inference per provider."""
+
+        started = time.monotonic()
+        self.embedding_provider.embed_queries(["模型预热"])
+        embedding_seconds = time.monotonic() - started
+
+        started = time.monotonic()
+        self.reranker_provider.rerank("模型预热", ["模型预热"])
+        reranker_seconds = time.monotonic() - started
+        return {
+            "embedding_seconds": embedding_seconds,
+            "reranker_seconds": reranker_seconds,
         }
 
     def embeddings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -183,6 +199,7 @@ def run_worker_server(
     reranker_model: str,
     device: str,
     token: str | None,
+    warmup: bool = False,
 ) -> None:
     validate_worker_bind(host, token)
     try:
@@ -198,4 +215,13 @@ def run_worker_server(
         token=token,
         device=device,
     )
+    if warmup:
+        print("正在预热 embedding 和 reranker 模型...", flush=True)
+        timings = runtime.warmup()
+        print(
+            "模型预热完成："
+            f"embedding {timings['embedding_seconds']:.3f} 秒，"
+            f"reranker {timings['reranker_seconds']:.3f} 秒",
+            flush=True,
+        )
     uvicorn.run(create_worker_app(runtime), host=host, port=port)

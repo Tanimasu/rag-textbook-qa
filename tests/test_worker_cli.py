@@ -105,6 +105,40 @@ class WorkerCliTests(unittest.TestCase):
             self.assertNotIn(file_token, error.getvalue())
             self.assertNotIn(process_token, error.getvalue())
 
+    def test_serve_passes_explicit_warmup_to_worker(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(root, token="cli-test-secret")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("rag_textbook_qa.worker.run_worker_server") as serve,
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        str(root),
+                        "worker",
+                        "serve",
+                        "--host",
+                        "100.64.0.10",
+                        "--device",
+                        "cuda",
+                        "--warmup",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            serve.assert_called_once_with(
+                host="100.64.0.10",
+                port=8765,
+                embedding_model="embedding-model",
+                reranker_model="reranker-model",
+                device="cuda",
+                token="cli-test-secret",
+                warmup=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

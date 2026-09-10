@@ -133,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--embedding-model")
     serve.add_argument("--reranker-model")
     serve.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"))
+    serve.add_argument(
+        "--warmup",
+        action="store_true",
+        help="启动监听前加载 embedding 和 reranker 模型",
+    )
     worker_check = worker_commands.add_parser(
         "check",
         help="只请求 /health，安全检查远程 Worker 配置",
@@ -493,6 +498,7 @@ def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
         reranker_model=compute.reranker_model,
         device=compute.device,
         token=compute.remote_token,
+        warmup=args.warmup,
     )
     return 0
 

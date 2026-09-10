@@ -216,6 +216,17 @@ rag-qa worker serve --host 100.x.y.z --port 8765 --device cuda
 .\scripts\windows\start-worker.ps1 -EnvironmentName rag-textbook-qa -Port 8765
 ```
 
+若希望把首次请求的模型加载等待移到 Worker 启动阶段，可显式启用预热：
+
+```powershell
+.\scripts\windows\start-worker.ps1 -Warmup
+# 等价的 CLI 参数：rag-qa worker serve ... --warmup
+```
+
+预热只会在 Windows 本地分别执行一次最小的 embedding 和 reranker 推理，
+不会调用 LLM 或外部 API，也不会修改教材索引。启用后，Worker 会在两个模型
+加载完成后再开始监听；未指定 `-Warmup` 时仍保持原有的首次请求懒加载行为。
+
 不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。如果 PowerShell 或终端进程中的 token 与 `project/.env` 不同，进程环境变量优先，命令会给出不含 token 内容的警告；修改 token 后应重启 Worker。
 
 ### Mac 连接远程 Worker

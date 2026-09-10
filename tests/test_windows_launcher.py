@@ -17,8 +17,10 @@ class WindowsWorkerLauncherTests(unittest.TestCase):
 
     def test_launcher_does_not_require_conda_activation(self):
         self.assertNotIn("conda activate", self.script.lower())
-        self.assertIn("run --no-capture-output -n $EnvironmentName", self.script)
-        self.assertIn("rag-qa --workspace $repositoryRoot worker serve", self.script)
+        self.assertIn('"--no-capture-output"', self.script)
+        self.assertIn("& $condaExecutable @workerArguments", self.script)
+        for argument in ('"rag-qa"', '"--workspace"', '"worker"', '"serve"'):
+            self.assertIn(argument, self.script)
 
     def test_launcher_discovers_tailscale_and_checks_port(self):
         self.assertIn("tailscale.exe", self.script)
@@ -30,6 +32,10 @@ class WindowsWorkerLauncherTests(unittest.TestCase):
         self.assertIn('Remove-Item "Env:$_"', self.script)
         self.assertNotIn("Write-Host $tokenValue", self.script)
         self.assertIn("Worker token: configured in project/.env", self.script)
+
+    def test_launcher_supports_opt_in_model_warmup(self):
+        self.assertIn("[switch]$Warmup", self.script)
+        self.assertIn('$workerArguments += "--warmup"', self.script)
 
 
 if __name__ == "__main__":
