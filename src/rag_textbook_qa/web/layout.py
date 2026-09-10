@@ -48,6 +48,11 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
                 value=2000,
                 step=100,
             )
+            enable_hyde = st.toggle(
+                "启用 HyDE 增强检索",
+                value=False,
+                help="会在检索前额外调用一次 LLM；默认关闭以降低等待时间和费用。",
+            )
 
         st.markdown("---")
         if st.button("清空对话", width="stretch"):
@@ -60,6 +65,7 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
         "top_k": top_k,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "enable_hyde": enable_hyde,
     }
 
 

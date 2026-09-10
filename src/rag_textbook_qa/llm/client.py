@@ -161,6 +161,8 @@ class LLMClient:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
+        *,
+        raise_on_error: bool = False,
     ) -> Iterator[str]:
         selected_model = model or self.default_model
         try:
@@ -178,7 +180,9 @@ class LLMClient:
                 content = getattr(choices[0].delta, "content", None)
                 if content:
                     yield content
-        except Exception as exc:  # noqa: BLE001 - generator exposes SDK failures as text
+        except Exception as exc:
+            if raise_on_error:
+                raise
             message = f"\n\n❌ 流式生成错误：{exc}"
             if self.verbose:
                 print(message)

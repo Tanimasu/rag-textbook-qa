@@ -138,6 +138,17 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result, ["A", "B"])
         self.assertNotIn("key", output.getvalue())
 
+    def test_stream_can_raise_errors_for_engine_handling(self):
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=FakeSDKClient([RuntimeError("stream failed")]),
+            verbose=False,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "stream failed"):
+            list(client.stream_answer("问题", raise_on_error=True))
+
 
 if __name__ == "__main__":
     unittest.main()

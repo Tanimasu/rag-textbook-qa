@@ -334,6 +334,11 @@ rag-qa app --backend remote
 rag-qa app --no-browser --host 127.0.0.1 --port 8501
 ```
 
+Web 问答默认使用流式输出，答案会在模型生成过程中逐步显示。高级参数中的
+“启用 HyDE 增强检索”默认关闭；开启后会在每次检索前额外调用一次 LLM，可能
+提高部分复杂问题的召回效果，但会增加等待时间和 API 费用。流式回答完成后，
+执行摘要还会显示首字等待时间。
+
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
 每次问答完成后，答案下方会显示本次请求的安全执行摘要：Embedding 与 Reranker 的实际后端、设备、Worker 平台、调用次数和耗时，以及检索、回答与总耗时。例如，远程正常时显示“远程 Worker（Windows）· CUDA”；瞬时网络故障触发回退时显示“已回退到本地（macOS）· MPS”。摘要不会包含 Worker URL、token、API Key、问题正文或模型输入。旧版 Worker 未返回平台字段时仍可显示“远程 Worker · CUDA”；Windows 更新代码并重启 Worker 后会补充平台名称。

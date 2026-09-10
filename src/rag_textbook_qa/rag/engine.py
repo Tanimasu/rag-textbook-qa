@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, Self
@@ -37,6 +38,16 @@ class AnswerGenerator(Protocol):
         max_tokens: int = 2000,
         retry: int = 2,
     ) -> dict[str, Any]: ...
+
+    def stream_answer(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        *,
+        raise_on_error: bool = False,
+    ) -> Iterator[str]: ...
 
 
 def _environment_value(primary: str, fallback: str, default: str) -> str:
@@ -298,6 +309,7 @@ class RAGEngine:
         book_name: str,
         query: str,
         top_k: int = 3,
+        use_hyde: bool | None = None,
     ) -> list[dict[str, Any]]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -312,7 +324,8 @@ class RAGEngine:
 
         collection = self.vectorizer.client.get_collection(collection_name)
         self.vectorizer.validate_collection_embedding(collection)
-        if self.enable_hyde and self.enable_llm and self.llm:
+        hyde_enabled = self.enable_hyde if use_hyde is None else use_hyde
+        if hyde_enabled and self.enable_llm and self.llm:
             hypothetical_document = self._generate_hypothetical_doc(query)
             query_embedding = self.vectorizer.embedding_provider.embed_documents(
                 [hypothetical_document]
@@ -353,11 +366,17 @@ class RAGEngine:
         book_name: str,
         query: str,
         top_k: int = 5,
+        use_hyde: bool | None = None,
     ) -> list[dict[str, Any]]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
         candidate_count = top_k * 3 if self.reranker else top_k
-        semantic = self.search_embedding(book_name, query, candidate_count * 3)
+        semantic = self.search_embedding(
+            book_name,
+            query,
+            candidate_count * 3,
+            use_hyde=use_hyde,
+        )
         keyword = self.search_bm25(book_name, query, candidate_count)
         semantic = [
             result
@@ -383,6 +402,7 @@ class RAGEngine:
         self,
         query: str,
         top_k_per_book: int = 3,
+        use_hyde: bool | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         if top_k_per_book <= 0:
             raise ValueError("top_k_per_book 必须大于 0")
@@ -395,7 +415,12 @@ class RAGEngine:
             if not collection.name.startswith("textbook_"):
                 continue
             book_name = collection.name.removeprefix("textbook_")
-            results = self.search_single_book(book_name, query, top_k_per_book)
+            results = self.search_single_book(
+                book_name,
+                query,
+                top_k_per_book,
+                use_hyde=use_hyde,
+            )
             if results:
                 all_results[book_name] = results
         return all_results
@@ -463,6 +488,8 @@ class RAGEngine:
         use_llm: bool = True,
         temperature: float = 0.7,
         max_tokens: int = 2000,
+        use_hyde: bool | None = None,
+        on_answer_chunk: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -475,11 +502,17 @@ class RAGEngine:
 
         with provider_trace() as trace_id:
             if book_name:
-                results = self.search_single_book(book_name, query, top_k)
+                results = self.search_single_book(
+                    book_name,
+                    query,
+                    top_k,
+                    use_hyde=use_hyde,
+                )
             else:
                 grouped = self.search_all_books(
                     query,
                     top_k_per_book=max(1, top_k // 2),
+                    use_hyde=use_hyde,
                 )
                 results = [result for group in grouped.values() for result in group]
                 results.sort(
@@ -515,12 +548,49 @@ class RAGEngine:
         answer = None
         generation_error = None
         generation_started = time.monotonic()
+        first_token_seconds: float | None = None
         if use_llm and self.enable_llm and self.llm:
-            llm_response = self.llm.generate_answer(
-                prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            if on_answer_chunk is None:
+                llm_response = self.llm.generate_answer(
+                    prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            else:
+                try:
+                    chunks = []
+                    for chunk in self.llm.stream_answer(
+                        prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        raise_on_error=True,
+                    ):
+                        if first_token_seconds is None:
+                            first_token_seconds = time.monotonic() - generation_started
+                        chunks.append(chunk)
+                        on_answer_chunk(chunk)
+                    streamed_answer = "".join(chunks)
+                    if not streamed_answer.strip():
+                        raise RuntimeError("LLM 流式响应为空")
+                    llm_response = {
+                        "success": True,
+                        "answer": streamed_answer,
+                        "model": getattr(self.llm, "default_model", "stream"),
+                        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                        "time": round(time.monotonic() - generation_started, 2),
+                        "finish_reason": None,
+                        "streamed": True,
+                    }
+                except Exception as exc:  # noqa: BLE001 - normalize SDK stream errors
+                    llm_response = {
+                        "success": False,
+                        "error": str(exc),
+                        "answer": None,
+                        "model": getattr(self.llm, "default_model", "stream"),
+                        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                        "time": round(time.monotonic() - generation_started, 2),
+                        "streamed": True,
+                    }
             answer = llm_response["answer"]
             if not llm_response["success"]:
                 generation_error = llm_response.get("error") or "LLM 生成失败"
@@ -547,6 +617,7 @@ class RAGEngine:
             trace_id=trace_id,
             retrieval_seconds=retrieval_seconds,
             generation_seconds=generation_seconds,
+            first_token_seconds=first_token_seconds,
             total_seconds=time.monotonic() - total_started,
         )
 
@@ -569,11 +640,12 @@ class RAGEngine:
         trace_id: str,
         retrieval_seconds: float,
         generation_seconds: float,
+        first_token_seconds: float | None = None,
         total_seconds: float,
     ) -> dict[str, Any]:
         """Build a display-safe summary without inputs, URLs, or credentials."""
 
-        return {
+        summary = {
             "configured_backend": self.compute_settings.backend,
             "fallback_enabled": self.compute_settings.query_fallback_to_local,
             "embedding": _summarize_provider_calls(
@@ -586,6 +658,9 @@ class RAGEngine:
             "generation_seconds": round(generation_seconds, 3),
             "total_seconds": round(total_seconds, 3),
         }
+        if first_token_seconds is not None:
+            summary["first_token_seconds"] = round(first_token_seconds, 3)
+        return summary
 
     def answer(
         self,

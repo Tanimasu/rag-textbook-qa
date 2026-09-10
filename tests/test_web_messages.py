@@ -56,6 +56,7 @@ class WebMessageTests(unittest.TestCase):
                 },
                 "retrieval_seconds": 1.5,
                 "generation_seconds": 2,
+                "first_token_seconds": 0.4,
                 "total_seconds": 3.5,
             }
         )
@@ -63,6 +64,7 @@ class WebMessageTests(unittest.TestCase):
         self.assertIn("远程 Worker（Windows） · CUDA", remote[0]["text"])
         self.assertIn("已回退到本地（macOS） · MPS", remote[1]["text"])
         self.assertEqual(remote[1]["kind"], "fallback")
+        self.assertIn("首字 0.400 秒", remote[2]["text"])
         self.assertIn("总计 3.500 秒", remote[2]["text"])
 
     def test_compute_trace_is_empty_for_legacy_messages(self):

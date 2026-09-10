@@ -30,6 +30,19 @@ class WebPackageTests(unittest.TestCase):
         self.assertNotIn("spec_from_file_location", source)
         self.assertNotIn("project/ragas_evaluation.py", source)
 
+    def test_chat_uses_streaming_and_hyde_is_opt_in(self):
+        chat_source = (
+            REPOSITORY_ROOT / "src" / "rag_textbook_qa" / "web" / "chat_page.py"
+        ).read_text(encoding="utf-8")
+        layout_source = (
+            REPOSITORY_ROOT / "src" / "rag_textbook_qa" / "web" / "layout.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("on_answer_chunk=render_chunk", chat_source)
+        self.assertIn("use_hyde=enable_hyde", chat_source)
+        self.assertIn('"启用 HyDE 增强检索"', layout_source)
+        self.assertIn("value=False", layout_source)
+
     @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
     def test_packaged_and_legacy_entrypoints_render_without_exceptions(self):
         from streamlit import config

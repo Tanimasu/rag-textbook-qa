@@ -60,11 +60,18 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
     retrieval = _seconds(execution.get("retrieval_seconds"))
     generation = _seconds(execution.get("generation_seconds"))
     total = _seconds(execution.get("total_seconds"))
+    first_token = execution.get("first_token_seconds")
+    first_token_suffix = (
+        f"（首字 {_seconds(first_token):.3f} 秒）"
+        if first_token is not None
+        else ""
+    )
     items.append(
         {
             "kind": "timing",
             "text": (
-                f"⏱️ 检索 {retrieval:.3f} 秒 · 回答 {generation:.3f} 秒 · "
+                f"⏱️ 检索 {retrieval:.3f} 秒 · "
+                f"回答 {generation:.3f} 秒{first_token_suffix} · "
                 f"总计 {total:.3f} 秒"
             ),
         }

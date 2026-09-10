@@ -7,7 +7,11 @@ from typing import Any
 
 import streamlit as st
 
-from rag_textbook_qa.web.helpers import render_answer_block
+from rag_textbook_qa.web.helpers import (
+    render_answer_block,
+    render_answer_details,
+    render_answer_header,
+)
 from rag_textbook_qa.web.messages import answer_message
 
 
@@ -16,6 +20,7 @@ def render_chat_tab(
     top_k: int,
     temperature: float,
     max_tokens: int,
+    enable_hyde: bool,
     load_engine: Callable[[], Any],
 ) -> None:
     if not st.session_state.messages:
@@ -45,18 +50,35 @@ def render_chat_tab(
         return
 
     st.session_state.messages.append({"role": "user", "content": user_question})
-    engine = load_engine()
-    with st.spinner("正在检索和生成答案…"):
-        result = engine.ask(
-            query=user_question,
-            book_name=book_id,
-            top_k=top_k,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+    with st.chat_message("user"):
+        st.markdown(user_question)
 
-    answer = answer_message(result)
-    sources = result.get("results", [])
+    engine = load_engine()
+    with st.chat_message("assistant"):
+        render_answer_header()
+        answer_placeholder = st.empty()
+        streamed_chunks: list[str] = []
+
+        def render_chunk(chunk: str) -> None:
+            streamed_chunks.append(chunk)
+            answer_placeholder.markdown("".join(streamed_chunks) + "▌")
+
+        with st.spinner("正在检索教材并生成答案…"):
+            result = engine.ask(
+                query=user_question,
+                book_name=book_id,
+                top_k=top_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                use_hyde=enable_hyde,
+                on_answer_chunk=render_chunk,
+            )
+
+        answer = answer_message(result)
+        answer_placeholder.markdown(answer)
+        sources = result.get("results", [])
+        render_answer_details(sources, result.get("execution"))
+
     st.session_state.messages.append(
         {
             "role": "assistant",
@@ -65,4 +87,3 @@ def render_chat_tab(
             "execution": result.get("execution"),
         }
     )
-    st.rerun()

@@ -70,6 +70,7 @@ class FakeRerankerProvider:
 class FakeLLMClient:
     def __init__(self):
         self.prompts = []
+        self.default_model = "fake-llm"
 
     def generate_answer(self, prompt, **kwargs):
         self.prompts.append((prompt, kwargs))
@@ -80,6 +81,11 @@ class FakeLLMClient:
             "tokens": {"prompt": 1, "completion": 1, "total": 2},
             "time": 0,
         }
+
+    def stream_answer(self, prompt, **kwargs):
+        self.prompts.append((prompt, kwargs))
+        yield "测试"
+        yield "回答"
 
 
 def build_test_vector_db(root: Path) -> Path:
@@ -205,6 +211,40 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertEqual(len(result["results"]), 1)
             self.assertIn("LLM 不可用", result["error"])
             self.assertIn("LLM_API_KEY", result["error"])
+
+    def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                db_path = build_test_vector_db(root)
+                llm = FakeLLMClient()
+                chunks = []
+                with RAGEngine(
+                    db_path=db_path,
+                    embedding_provider=FakeEmbeddingProvider(),
+                    reranker_provider=FakeRerankerProvider(),
+                    llm_client=llm,
+                    enable_hyde=True,
+                    verbose=False,
+                ) as engine:
+                    result = engine.ask(
+                        "什么是进程？",
+                        book_name="os",
+                        top_k=1,
+                        use_hyde=False,
+                        on_answer_chunk=chunks.append,
+                    )
+
+            self.assertTrue(result["success"])
+            self.assertEqual(chunks, ["测试", "回答"])
+            self.assertEqual(result["answer"], "测试回答")
+            self.assertTrue(result["llm_response"]["streamed"])
+            self.assertEqual(len(llm.prompts), 1)
+            self.assertGreaterEqual(result["execution"]["first_token_seconds"], 0)
+            self.assertEqual(result["execution"]["embedding"]["backend"], "remote")
 
 
 if __name__ == "__main__":

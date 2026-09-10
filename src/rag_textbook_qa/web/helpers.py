@@ -88,6 +88,12 @@ def render_answer_block(
     sources: list[dict[str, Any]],
     execution: dict[str, Any] | None = None,
 ) -> None:
+    render_answer_header()
+    st.markdown(answer)
+    render_answer_details(sources, execution)
+
+
+def render_answer_header() -> None:
     st.markdown(
         """
         <div class="answer-shell">
@@ -99,7 +105,12 @@ def render_answer_block(
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(answer)
+
+
+def render_answer_details(
+    sources: list[dict[str, Any]],
+    execution: dict[str, Any] | None = None,
+) -> None:
     render_compute_trace(execution)
     render_source_preview(sources)
     render_sources_expander(sources)
