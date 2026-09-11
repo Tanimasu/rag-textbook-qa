@@ -145,6 +145,36 @@ class ChunkerTests(unittest.TestCase):
         self.assertEqual(restored, text)
         self.assertTrue(all(chunk.char_count <= 12 for chunk in chunks))
 
+    def test_long_section_with_a_formula_splits_around_it(self):
+        prose = "正文内容。" * 200
+        markdown = f"# 第1章\n## 1.1 推导\n{prose}\n$$\nE = mc^2\n$$\n{prose}"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "formula.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker().chunk_document(source)
+        self.assertGreater(len(chunks), 1)
+        holder = [chunk for chunk in chunks if "E = mc^2" in chunk.content]
+        self.assertEqual(len(holder), 1)
+        self.assertEqual(holder[0].content.count("$$"), 2)
+        self.assertTrue(all(chunk.char_count <= 800 for chunk in chunks))
+
+    def test_oversized_table_ships_whole_while_its_prose_splits(self):
+        table = "<table>" + "<tr><td>单元格</td></tr>" * 200 + "</table>"
+        prose = "正文内容。" * 200
+        markdown = f"# 第1章\n## 1.1 表格\n{prose}\n{table}\n{prose}"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "table.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker().chunk_document(source)
+        tables = [chunk for chunk in chunks if "<table>" in chunk.content]
+        self.assertEqual(len(tables), 1)
+        self.assertTrue(tables[0].content.endswith("</table>"))
+        prose_chunks = [chunk for chunk in chunks if "<table>" not in chunk.content]
+        self.assertGreater(len(prose_chunks), 1)
+        self.assertTrue(all(chunk.char_count <= 800 for chunk in prose_chunks))
+
     def test_char_count_matches_stored_content_around_blank_lines(self):
         markdown = "# 第1章\n\n## 1.1 概念\n\n\n概念正文。\n\n\n## 1.2 细节\n\n" + "细节" * 500
         with tempfile.TemporaryDirectory() as directory:
