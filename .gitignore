@@ -15,6 +15,7 @@ env/
 
 # ── 向量数据库（二进制 + 体积大，可本地重建）────────────────
 artifacts/vector_db/
+artifacts/evaluations/retrieval/
 
 # ── PDF 原书（体积大 + 版权）────────────────────────────────
 data/raw/*

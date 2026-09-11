@@ -5,11 +5,15 @@ from collections import Counter
 from pathlib import Path
 
 from rag_textbook_qa.evaluation.retrieval import (
+    RETRIEVAL_STRATEGIES,
     RetrievalQuestion,
     evaluate_retrieval,
     load_retrieval_questions,
     result_section,
+    run_retrieval_strategies,
+    save_retrieval_report,
     score_ranked_results,
+    search_with_strategy,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +24,33 @@ CHUNK_FILES = {
     "data_structure": "数据结构_mineru_chunks.json",
     "database": "数据库原理及应用教程_mineru_chunks.json",
 }
+
+
+class FakeRetrievalEngine:
+    def __init__(self):
+        self.calls = []
+
+    def search_bm25(self, book_name, question, top_k):
+        self.calls.append(("bm25", book_name, question, top_k))
+        return [{"chapter": "第3章", "section_h2": "3.5 死锁概述"}]
+
+    def search_embedding(self, book_name, question, top_k, *, use_hyde):
+        self.calls.append(("embedding", book_name, question, top_k, use_hyde))
+        return [{"chapter": "第3章", "section_h2": "3.5 死锁概述"}]
+
+    def search_single_book(
+        self,
+        book_name,
+        question,
+        top_k,
+        *,
+        use_hyde,
+        use_reranker,
+    ):
+        self.calls.append(
+            ("hybrid", book_name, question, top_k, use_hyde, use_reranker)
+        )
+        return [{"chapter": "第3章", "section_h2": "3.5 死锁概述"}]
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
@@ -120,6 +151,47 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertEqual(report["hit_rate_at_k"], 0.5)
         self.assertEqual(report["mrr"], 0.5)
         self.assertEqual(len(report["cases"]), 2)
+
+    def test_routes_each_named_strategy_without_hyde(self):
+        engine = FakeRetrievalEngine()
+        question = RetrievalQuestion("什么是死锁？", "os", ("3.5",))
+
+        for strategy in RETRIEVAL_STRATEGIES:
+            search_with_strategy(engine, question, 5, strategy=strategy)
+
+        self.assertEqual(
+            engine.calls,
+            [
+                ("bm25", "os", "什么是死锁？", 5),
+                ("embedding", "os", "什么是死锁？", 5, False),
+                ("hybrid", "os", "什么是死锁？", 5, False, False),
+                ("hybrid", "os", "什么是死锁？", 5, False, True),
+            ],
+        )
+
+    def test_runs_multiple_strategies_and_saves_timestamped_report(self):
+        engine = FakeRetrievalEngine()
+        questions = [RetrievalQuestion("什么是死锁？", "os", ("3.5",))]
+
+        report = run_retrieval_strategies(
+            engine,
+            questions,
+            ("bm25", "hybrid-rerank"),
+            top_k=3,
+        )
+
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["question_count"], 1)
+        self.assertEqual(report["top_k"], 3)
+        self.assertEqual(set(report["strategies"]), {"bm25", "hybrid-rerank"})
+        self.assertEqual(report["strategies"]["bm25"]["hit_rate_at_k"], 1.0)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report_path = save_retrieval_report(report, temporary_directory)
+            saved = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(report_path.name.startswith("retrieval_"))
+        self.assertEqual(saved, report)
 
 
 if __name__ == "__main__":

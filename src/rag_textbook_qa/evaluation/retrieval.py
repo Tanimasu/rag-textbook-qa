@@ -5,9 +5,18 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
+
+RETRIEVAL_STRATEGIES = (
+    "bm25",
+    "embedding",
+    "hybrid",
+    "hybrid-rerank",
+)
 
 
 @dataclass(frozen=True)
@@ -125,7 +134,9 @@ def evaluate_retrieval(
         )
         cases.append(
             {
-                **asdict(question),
+                "question": question.question,
+                "book_name": question.book_name,
+                "relevant_sections": list(question.relevant_sections),
                 **score,
                 "elapsed_seconds": round(elapsed_seconds, 6),
             }
@@ -141,3 +152,82 @@ def evaluate_retrieval(
         "mean_latency_seconds": sum(case["elapsed_seconds"] for case in cases) / count,
         "cases": cases,
     }
+
+
+def search_with_strategy(
+    engine: Any,
+    question: RetrievalQuestion,
+    top_k: int,
+    *,
+    strategy: str,
+) -> Sequence[dict[str, Any]]:
+    """Run one explicit retrieval strategy without invoking an LLM or HyDE."""
+
+    if strategy == "bm25":
+        return engine.search_bm25(question.book_name, question.question, top_k)
+    if strategy == "embedding":
+        return engine.search_embedding(
+            question.book_name,
+            question.question,
+            top_k,
+            use_hyde=False,
+        )
+    if strategy in {"hybrid", "hybrid-rerank"}:
+        return engine.search_single_book(
+            question.book_name,
+            question.question,
+            top_k,
+            use_hyde=False,
+            use_reranker=strategy == "hybrid-rerank",
+        )
+    raise ValueError(f"未知检索策略: {strategy}")
+
+
+def run_retrieval_strategies(
+    engine: Any,
+    questions: Sequence[RetrievalQuestion],
+    strategies: Sequence[str],
+    *,
+    top_k: int = 5,
+) -> dict[str, Any]:
+    """Evaluate multiple retrieval strategies against the same annotations."""
+
+    selected = tuple(dict.fromkeys(strategies))
+    if not selected:
+        raise ValueError("至少选择一种检索策略")
+    unknown = [strategy for strategy in selected if strategy not in RETRIEVAL_STRATEGIES]
+    if unknown:
+        raise ValueError(f"未知检索策略: {', '.join(unknown)}")
+
+    results = {
+        strategy: evaluate_retrieval(
+            questions,
+            partial(search_with_strategy, engine, strategy=strategy),
+            top_k=top_k,
+        )
+        for strategy in selected
+    }
+    return {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "question_count": len(questions),
+        "top_k": top_k,
+        "strategies": results,
+    }
+
+
+def save_retrieval_report(
+    report: dict[str, Any],
+    output_dir: str | Path,
+) -> Path:
+    """Write a timestamped retrieval report without overwriting earlier runs."""
+
+    directory = Path(output_dir).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    path = directory / f"retrieval_{timestamp}.json"
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path

@@ -212,6 +212,35 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertIn("LLM 不可用", result["error"])
             self.assertIn("LLM_API_KEY", result["error"])
 
+    def test_hybrid_search_can_skip_configured_reranker(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                db_path = build_test_vector_db(root)
+                reranker = FakeRerankerProvider()
+                marker = reranker.telemetry.mark()
+                with RAGEngine(
+                    db_path=db_path,
+                    embedding_provider=FakeEmbeddingProvider(),
+                    reranker_provider=reranker,
+                    enable_llm=False,
+                    enable_hyde=False,
+                    verbose=False,
+                ) as engine:
+                    results = engine.search_single_book(
+                        "os",
+                        "什么是进程？",
+                        top_k=1,
+                        use_hyde=False,
+                        use_reranker=False,
+                    )
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(reranker.telemetry.since(marker), [])
+
     def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

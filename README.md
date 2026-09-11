@@ -315,6 +315,14 @@ rag-qa evaluate
 
 如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
+在运行会调用 LLM 的 RAGAS 评估前，可以先只比较检索链路：
+
+```bash
+rag-qa evaluate-retrieval --strategy all --top-k 5
+```
+
+该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。它会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，评测过程中远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
+
 ### Step 7 — 启动 Web 界面
 
 ```bash
@@ -387,3 +395,4 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 | 文件 | 题数 | 说明 |
 |------|------|------|
 | `data/evaluation/test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
+| `data/evaluation/retrieval_questions.json` | 10 条 | 五本教材各 2 条章节标注题，用于检索策略对比 |

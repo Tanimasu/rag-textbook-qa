@@ -110,6 +110,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="同时运行无 RAG baseline（会增加 API 调用）",
     )
 
+    retrieval_evaluate = commands.add_parser(
+        "evaluate-retrieval",
+        help="对比检索策略，不调用 LLM",
+    )
+    retrieval_evaluate.add_argument(
+        "--questions",
+        type=Path,
+        help="覆盖检索评估问题 JSON",
+    )
+    retrieval_evaluate.add_argument(
+        "--db-path",
+        type=Path,
+        help="覆盖 artifacts/vector_db",
+    )
+    retrieval_evaluate.add_argument(
+        "--output-dir",
+        type=Path,
+        help="覆盖 artifacts/evaluations/retrieval",
+    )
+    retrieval_evaluate.add_argument(
+        "--strategy",
+        choices=("all", "bm25", "embedding", "hybrid", "hybrid-rerank"),
+        default="all",
+        help="检索策略；默认依次评测全部策略",
+    )
+    retrieval_evaluate.add_argument("--top-k", type=int, default=5)
+
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
         "--backend",
@@ -307,6 +334,61 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
             args.output_dir or settings.paths.evaluations,
             include_baseline=args.baseline,
         )
+    return 0
+
+
+def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int:
+    _load_project_environment(settings.paths.root / "project" / ".env")
+    from rag_textbook_qa.evaluation import (
+        RETRIEVAL_STRATEGIES,
+        load_retrieval_questions,
+        run_retrieval_strategies,
+        save_retrieval_report,
+    )
+    from rag_textbook_qa.rag import RAGEngine
+
+    if args.top_k <= 0:
+        raise ValueError("--top-k 必须大于 0")
+    questions_path = args.questions or (
+        settings.paths.evaluation_data / "retrieval_questions.json"
+    )
+    questions = load_retrieval_questions(questions_path)
+    strategies = RETRIEVAL_STRATEGIES if args.strategy == "all" else (args.strategy,)
+
+    # A benchmark must fail visibly instead of silently mixing remote and local results.
+    compute = replace(
+        ComputeSettings.from_env(),
+        query_fallback_to_local=False,
+    )
+    with RAGEngine(
+        db_path=args.db_path or settings.paths.vector_db,
+        enable_llm=False,
+        enable_reranker="hybrid-rerank" in strategies,
+        enable_hyde=False,
+        verbose=False,
+        compute_settings=compute,
+    ) as engine:
+        report = run_retrieval_strategies(
+            engine,
+            questions,
+            strategies,
+            top_k=args.top_k,
+        )
+
+    report_path = save_retrieval_report(
+        report,
+        args.output_dir or settings.paths.evaluations / "retrieval",
+    )
+    print(f"检索评测完成：{report['question_count']} 题，Top {report['top_k']}")
+    for strategy, result in report["strategies"].items():
+        print(
+            f"{strategy}: "
+            f"Recall@{args.top_k}={result['mean_recall_at_k']:.3f}，"
+            f"Hit@{args.top_k}={result['hit_rate_at_k']:.3f}，"
+            f"MRR={result['mrr']:.3f}，"
+            f"平均检索={result['mean_latency_seconds']:.3f} 秒"
+        )
+    print(f"报告: {report_path}")
     return 0
 
 
@@ -549,6 +631,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             settings = Settings.load(args.workspace)
             return _run_evaluate(args, settings)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "evaluate-retrieval":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_retrieval_evaluate(args, settings)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 

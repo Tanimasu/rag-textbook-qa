@@ -367,10 +367,12 @@ class RAGEngine:
         query: str,
         top_k: int = 5,
         use_hyde: bool | None = None,
+        use_reranker: bool = True,
     ) -> list[dict[str, Any]]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
-        candidate_count = top_k * 3 if self.reranker else top_k
+        rerank_enabled = self.reranker is not None and use_reranker
+        candidate_count = top_k * 3 if rerank_enabled else top_k
         semantic = self.search_embedding(
             book_name,
             query,
@@ -396,7 +398,9 @@ class RAGEngine:
             key=lambda item: item["final_score"],
             reverse=True,
         )[:candidate_count]
-        return self._rerank(query, combined, top_k)
+        if rerank_enabled:
+            return self._rerank(query, combined, top_k)
+        return combined[:top_k]
 
     def search_all_books(
         self,
