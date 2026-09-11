@@ -11,6 +11,7 @@ from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
+from rag_textbook_qa.rag.engine import _reciprocal_rank_fusion
 
 
 class FakeEmbeddingProvider:
@@ -248,6 +249,8 @@ class RagProviderIntegrationTests(unittest.TestCase):
     def test_hybrid_search_uses_rank_fusion_deduplication_and_noise_filtering(self):
         engine = object.__new__(RAGEngine)
         engine.reranker = None
+        # Pinned so this test covers fusion mechanics, not the shipped weighting.
+        engine.fusion_weights = {"embedding": 1.0, "bm25": 1.0}
         engine.search_embedding = MagicMock(
             return_value=[
                 {
@@ -365,6 +368,49 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertEqual(len(llm.prompts), 1)
             self.assertGreaterEqual(result["execution"]["first_token_seconds"], 0)
             self.assertEqual(result["execution"]["embedding"]["backend"], "remote")
+
+
+class FusionWeightTests(unittest.TestCase):
+    def _rankings(self):
+        return (
+            (
+                "embedding",
+                [
+                    {"chunk_id": "a", "book_name": "os", "content": "语义第一"},
+                    {"chunk_id": "c", "book_name": "os", "content": "语义第二"},
+                ],
+            ),
+            ("bm25", [{"chunk_id": "b", "book_name": "os", "content": "关键词第一"}]),
+        )
+
+    def test_equal_weights_let_the_weaker_method_outrank_a_strong_second_hit(self):
+        ranked = _reciprocal_rank_fusion(
+            self._rankings(),
+            limit=3,
+            weights={"embedding": 1.0, "bm25": 1.0},
+        )
+        self.assertEqual([result["chunk_id"] for result in ranked], ["a", "b", "c"])
+
+    def test_discounting_bm25_demotes_its_exclusive_hit(self):
+        ranked = _reciprocal_rank_fusion(
+            self._rankings(),
+            limit=3,
+            weights={"embedding": 1.0, "bm25": 0.3},
+        )
+        self.assertEqual([result["chunk_id"] for result in ranked], ["a", "c", "b"])
+
+    def test_zero_weight_drops_a_method_entirely(self):
+        ranked = _reciprocal_rank_fusion(
+            self._rankings(),
+            limit=3,
+            weights={"embedding": 1.0, "bm25": 0.0},
+        )
+        self.assertEqual([result["chunk_id"] for result in ranked], ["a", "c"])
+        self.assertTrue(all("bm25" not in result["source_methods"] for result in ranked))
+
+    def test_negative_weight_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "非负有限数"):
+            RAGEngine(fusion_weights={"bm25": -1.0})
 
 
 class ContextPackingTests(unittest.TestCase):

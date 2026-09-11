@@ -59,7 +59,7 @@ PDF
 **检索流程**
 
 1. **HyDE**：用 LLM 将问题改写为假设性教材原文，用其嵌入向量检索，提升语义匹配质量
-2. **混合检索**：通过 RRF 按排名融合语义向量与 BM25，并过滤习题、去除重复候选
+2. **混合检索**：通过加权 RRF 按排名融合语义向量与 BM25，并过滤习题、去除重复候选。BM25 权重默认 0.2，因为它单独评测明显弱于向量，等权融合会把向量的优质结果挤下去
 3. **Cross-Encoder 重排序**：`BAAI/bge-reranker-base` 对候选结果精排，取最优 top-k
 4. **LLM 生成**：将检索上下文与问题拼接为 Prompt，调用 LLM 生成结构化答案
 
@@ -343,6 +343,12 @@ rag-qa evaluate-retrieval --strategy all --top-k 5
 ```
 
 该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
+
+融合权重是用这套评测调出来的。在 10 题标注集上，BM25 单独跑 Recall@5 只有 0.400，
+等权 RRF 会让 Hybrid 的 MRR 从纯向量的 0.850 掉到 0.783；把 BM25 权重降到 0.2 之后
+MRR 回到 0.850，而 Hybrid + Reranker 的 Recall@5 仍是 1.000。BM25 不能直接去掉：
+权重归零时重排后的 Recall@5 会从 1.000 掉回 0.900，说明它确实召回了向量漏掉的内容。
+标注集只有 10 题，这个数值是暂定的，扩充标注后应当重新扫描。
 
 ### Step 7 — 启动 Web 界面
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol, Self
 
 import jieba
@@ -86,6 +88,32 @@ def _summarize_provider_calls(calls: list[ProviderCall]) -> dict[str, Any] | Non
     }
 
 
+# Chosen on the 10-question retrieval set as the largest BM25 weight that still
+# leaves un-reranked MRR at the pure-embedding level (0.850). BM25 must stay
+# present: at weight 0 the reranked Recall@5 drops from 1.000 to 0.900, so it
+# does contribute a document the embedding path misses. Small sample, so treat
+# the exact value as provisional and re-sweep when the annotation set grows.
+DEFAULT_FUSION_WEIGHTS: Mapping[str, float] = MappingProxyType(
+    {"embedding": 1.0, "bm25": 0.2}
+)
+
+
+def normalized_fusion_weights(
+    weights: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """Validate caller-supplied fusion weights."""
+
+    if weights is None:
+        return dict(DEFAULT_FUSION_WEIGHTS)
+    resolved = {}
+    for method, value in weights.items():
+        number = float(value)
+        if not math.isfinite(number) or number < 0:
+            raise ValueError(f"融合权重必须是非负有限数: {method}")
+        resolved[method] = number
+    return resolved
+
+
 def _candidate_key(result: dict[str, Any]) -> tuple[str, str]:
     """Identify duplicate chunks across retrieval methods and duplicate indexes."""
 
@@ -113,12 +141,23 @@ def _reciprocal_rank_fusion(
     *,
     limit: int,
     rank_constant: int = 60,
+    weights: Mapping[str, float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fuse rankings by rank so provider-specific score scales never mix."""
+    """Fuse rankings by rank so provider-specific score scales never mix.
 
+    Weights stay in rank space: a method contributes ``weight/(k + rank)``, so
+    a weaker retriever can be discounted without reintroducing score-space
+    blending. Equal weights let a weak path outvote a strong one on the
+    retrieval benchmark, which is what the weights exist to correct.
+    """
+
+    resolved = dict(DEFAULT_FUSION_WEIGHTS if weights is None else weights)
     fused: dict[tuple[str, str], dict[str, Any]] = {}
     order = 0
     for method, raw_results in rankings:
+        weight = float(resolved.get(method, 1.0))
+        if weight <= 0:
+            continue
         seen_in_method: set[tuple[str, str]] = set()
         rank = 0
         for result in raw_results:
@@ -142,7 +181,7 @@ def _reciprocal_rank_fusion(
             candidate = fused[key]
             candidate["source_methods"].append(method)
             candidate["source_ranks"][method] = rank
-            candidate["rrf_score"] += 1 / (rank_constant + rank)
+            candidate["rrf_score"] += weight / (rank_constant + rank)
 
     ranked = sorted(
         fused.values(),
@@ -174,10 +213,12 @@ class RAGEngine:
         reranker_provider: RerankerProvider | None = None,
         compute_settings: ComputeSettings | None = None,
         llm_client: AnswerGenerator | None = None,
+        fusion_weights: Mapping[str, float] | None = None,
     ) -> None:
         print("初始化 RAG 引擎...")
         self.verbose = verbose
         self.enable_hyde = enable_hyde
+        self.fusion_weights = normalized_fusion_weights(fusion_weights)
 
         if compute_settings is None:
             providers_fully_injected = embedding_provider is not None and (
@@ -456,6 +497,7 @@ class RAGEngine:
         combined = _reciprocal_rank_fusion(
             (("embedding", semantic), ("bm25", keyword)),
             limit=candidate_count,
+            weights=self.fusion_weights,
         )
         if rerank_enabled:
             return self._rerank(query, combined, top_k)
