@@ -11,7 +11,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol, Self
 
-import jieba
 from rank_bm25 import BM25Okapi
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
@@ -29,6 +28,11 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.rag.tokenizer import (
+    DEFAULT_BM25_MODE,
+    BM25Tokenizer,
+    heading_terms,
+)
 
 
 class AnswerGenerator(Protocol):
@@ -88,13 +92,14 @@ def _summarize_provider_calls(calls: list[ProviderCall]) -> dict[str, Any] | Non
     }
 
 
-# Chosen on the 10-question retrieval set as the largest BM25 weight that still
-# leaves un-reranked MRR at the pure-embedding level (0.850). BM25 must stay
-# present: at weight 0 the reranked Recall@5 drops from 1.000 to 0.900, so it
-# does contribute a document the embedding path misses. Small sample, so treat
-# the exact value as provisional and re-sweep when the annotation set grows.
+# Re-swept after BM25 tokenization improved its Recall@5 from 0.400 to 0.700.
+# Reranked Recall@5 holds at 1.000 across weights 0.1-0.6 and falls off at 0.8,
+# and hybrid MRR varies by less than one question inside that band, so this
+# takes the middle of the safe region rather than an endpoint. A stronger BM25
+# earns more say than the 0.2 it had while its tokenizer was breaking terms.
+# Ten questions only: re-sweep whenever the tokenizer or the set changes.
 DEFAULT_FUSION_WEIGHTS: Mapping[str, float] = MappingProxyType(
-    {"embedding": 1.0, "bm25": 0.2}
+    {"embedding": 1.0, "bm25": 0.3}
 )
 
 
@@ -214,11 +219,14 @@ class RAGEngine:
         compute_settings: ComputeSettings | None = None,
         llm_client: AnswerGenerator | None = None,
         fusion_weights: Mapping[str, float] | None = None,
+        bm25_mode: str | None = None,
     ) -> None:
         print("初始化 RAG 引擎...")
         self.verbose = verbose
         self.enable_hyde = enable_hyde
         self.fusion_weights = normalized_fusion_weights(fusion_weights)
+        self.bm25_mode = bm25_mode or DEFAULT_BM25_MODE
+        self.bm25_tokenizer: BM25Tokenizer | None = None
 
         if compute_settings is None:
             providers_fully_injected = embedding_provider is not None and (
@@ -314,15 +322,29 @@ class RAGEngine:
             collection for collection in collections if collection.name.startswith("textbook_")
         ]
         indexed_count = 0
+        harvested = []
         for collection in book_collections:
             book_name = collection.name.removeprefix("textbook_")
             data = collection.get(include=["documents", "metadatas"])
             documents = data["documents"] or []
             if not documents:
                 continue
-            document_ids = data["ids"]
+            harvested.append((book_name, documents, data["ids"], data["metadatas"] or []))
+
+        # The textbook's own headings are the closest thing to a domain
+        # glossary the corpus offers, so mine them before tokenizing anything.
+        terms: set[str] = set()
+        for _, _, _, metadatas in harvested:
+            terms |= heading_terms(
+                str(metadata.get(field, ""))
+                for metadata in metadatas
+                for field in ("chapter", "section_h2", "section_h3", "section_h4")
+            )
+        self.bm25_tokenizer = BM25Tokenizer(self.bm25_mode, sorted(terms))
+
+        for book_name, documents, document_ids, _ in harvested:
             self.bm25_indexes[book_name] = BM25Okapi(
-                [list(jieba.cut(document)) for document in documents]
+                [self.bm25_tokenizer(document) for document in documents]
             )
             self.bm25_corpus[book_name] = documents
             self.bm25_doc_ids[book_name] = document_ids
@@ -359,7 +381,8 @@ class RAGEngine:
         bm25 = self.bm25_indexes[book_name]
         documents = self.bm25_corpus[book_name]
         document_ids = self.bm25_doc_ids[book_name]
-        scores = bm25.get_scores(list(jieba.cut(query)))
+        tokenize = self.bm25_tokenizer or BM25Tokenizer(self.bm25_mode)
+        scores = bm25.get_scores(tokenize(query))
         top_indices = sorted(
             range(len(scores)),
             key=lambda index: scores[index],
