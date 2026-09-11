@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, Self
@@ -84,6 +84,75 @@ def _summarize_provider_calls(calls: list[ProviderCall]) -> dict[str, Any] | Non
         "fallback_used": any(call.fallback_used for call in calls),
         "success": all(call.success for call in calls),
     }
+
+
+def _candidate_key(result: dict[str, Any]) -> tuple[str, str]:
+    """Identify duplicate chunks across retrieval methods and duplicate indexes."""
+
+    content = "".join(str(result.get("content", "")).split())
+    if content:
+        return (str(result.get("book_name", "")), content)
+    return (
+        str(result.get("book_name", "")),
+        str(result.get("chunk_id", result.get("rank", ""))),
+    )
+
+
+def _is_candidate_noise(result: dict[str, Any]) -> bool:
+    """Exclude explicit exercise sections while retaining imperfect legacy headings."""
+
+    hierarchy = " ".join(
+        str(result.get(field, ""))
+        for field in ("chapter", "section_h2", "section_h3", "section_h4")
+    )
+    return any(marker in hierarchy for marker in ("习题", "思考题"))
+
+
+def _reciprocal_rank_fusion(
+    rankings: Sequence[tuple[str, list[dict[str, Any]]]],
+    *,
+    limit: int,
+    rank_constant: int = 60,
+) -> list[dict[str, Any]]:
+    """Fuse rankings by rank so provider-specific score scales never mix."""
+
+    fused: dict[tuple[str, str], dict[str, Any]] = {}
+    order = 0
+    for method, raw_results in rankings:
+        seen_in_method: set[tuple[str, str]] = set()
+        rank = 0
+        for result in raw_results:
+            if _is_candidate_noise(result):
+                continue
+            key = _candidate_key(result)
+            if key in seen_in_method:
+                continue
+            seen_in_method.add(key)
+            rank += 1
+            if key not in fused:
+                order += 1
+                fused[key] = {
+                    **result,
+                    "method": "hybrid",
+                    "source_methods": [],
+                    "source_ranks": {},
+                    "rrf_score": 0.0,
+                    "_fusion_order": order,
+                }
+            candidate = fused[key]
+            candidate["source_methods"].append(method)
+            candidate["source_ranks"][method] = rank
+            candidate["rrf_score"] += 1 / (rank_constant + rank)
+
+    ranked = sorted(
+        fused.values(),
+        key=lambda result: (-result["rrf_score"], result["_fusion_order"]),
+    )[:limit]
+    for rank, result in enumerate(ranked, 1):
+        result["rank"] = rank
+        result["final_score"] = result["rrf_score"]
+        del result["_fusion_order"]
+    return ranked
 
 
 class RAGEngine:
@@ -264,6 +333,7 @@ class RAGEngine:
             metadata = collection.get(ids=[document_ids[index]])["metadatas"][0]
             results.append(
                 {
+                    "chunk_id": document_ids[index],
                     "rank": rank,
                     "similarity": float(scores[index]) * 0.05,
                     "method": "bm25",
@@ -339,6 +409,7 @@ class RAGEngine:
         )
         return [
             {
+                "chunk_id": document_id,
                 "rank": rank,
                 "similarity": float(1 - distance),
                 "method": "embedding",
@@ -351,8 +422,9 @@ class RAGEngine:
                 "has_image": metadata["has_image"],
                 "char_count": metadata["char_count"],
             }
-            for rank, (document, metadata, distance) in enumerate(
+            for rank, (document_id, document, metadata, distance) in enumerate(
                 zip(
+                    response["ids"][0],
                     response["documents"][0],
                     response["metadatas"][0],
                     response["distances"][0],
@@ -373,31 +445,18 @@ class RAGEngine:
             raise ValueError("top_k 必须大于 0")
         rerank_enabled = self.reranker is not None and use_reranker
         candidate_count = top_k * 3 if rerank_enabled else top_k
+        retrieval_count = candidate_count * 3
         semantic = self.search_embedding(
             book_name,
             query,
-            candidate_count * 3,
+            retrieval_count,
             use_hyde=use_hyde,
         )
-        keyword = self.search_bm25(book_name, query, candidate_count)
-        semantic = [
-            result
-            for result in semantic
-            if not any(
-                marker in result["section_h2"]
-                for marker in ("小结", "习题", "思考题")
-            )
-            and result["char_count"] > 100
-        ]
-        for result in semantic:
-            result["final_score"] = result["similarity"]
-        for result in keyword:
-            result["final_score"] = result["similarity"] * 0.3
-        combined = sorted(
-            semantic + keyword,
-            key=lambda item: item["final_score"],
-            reverse=True,
-        )[:candidate_count]
+        keyword = self.search_bm25(book_name, query, retrieval_count)
+        combined = _reciprocal_rank_fusion(
+            (("embedding", semantic), ("bm25", keyword)),
+            limit=candidate_count,
+        )
         if rerank_enabled:
             return self._rerank(query, combined, top_k)
         return combined[:top_k]

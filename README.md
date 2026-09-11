@@ -321,7 +321,7 @@ rag-qa evaluate
 rag-qa evaluate-retrieval --strategy all --top-k 5
 ```
 
-该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。它会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，评测过程中远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
+该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
 
 ### Step 7 — 启动 Web 界面
 

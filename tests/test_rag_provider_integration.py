@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
@@ -240,6 +240,89 @@ class RagProviderIntegrationTests(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(reranker.telemetry.since(marker), [])
+
+    def test_hybrid_search_uses_rank_fusion_deduplication_and_noise_filtering(self):
+        engine = object.__new__(RAGEngine)
+        engine.reranker = None
+        engine.search_embedding = MagicMock(
+            return_value=[
+                {
+                    "chunk_id": "semantic-correct",
+                    "book_name": "os",
+                    "content": "死锁是多个进程互相等待资源。",
+                    "section_h2": "3.5 死锁概述",
+                    "similarity": 0.9,
+                },
+                {
+                    "chunk_id": "duplicate-correct",
+                    "book_name": "os",
+                    "content": "死锁是多个进程互相等待资源。",
+                    "section_h2": "3.5 死锁概述",
+                    "similarity": 0.89,
+                },
+                {
+                    "chunk_id": "exercise",
+                    "book_name": "os",
+                    "content": "回答下面的死锁练习。",
+                    "section_h2": "习题 3",
+                    "similarity": 0.88,
+                },
+                {
+                    "chunk_id": "semantic-only",
+                    "book_name": "os",
+                    "content": "进程同步的其他内容。",
+                    "section_h2": "进程同步",
+                    "similarity": 0.87,
+                },
+            ]
+        )
+        engine.search_bm25 = MagicMock(
+            return_value=[
+                {
+                    "chunk_id": "exercise-copy",
+                    "book_name": "os",
+                    "content": "回答下面的死锁练习。",
+                    "section_h3": "思考题",
+                    "similarity": 8.0,
+                },
+                {
+                    "chunk_id": "keyword-correct",
+                    "book_name": "os",
+                    "content": "死锁是多个进程互相等待资源。",
+                    "section_h2": "3.5 死锁概述",
+                    "similarity": 6.0,
+                },
+                {
+                    "chunk_id": "keyword-only",
+                    "book_name": "os",
+                    "content": "资源分配的其他内容。",
+                    "section_h2": "资源分配",
+                    "similarity": 5.0,
+                },
+            ]
+        )
+
+        results = RAGEngine.search_single_book(
+            engine,
+            "os",
+            "什么是死锁？",
+            top_k=3,
+            use_hyde=False,
+            use_reranker=False,
+        )
+
+        engine.search_embedding.assert_called_once_with(
+            "os",
+            "什么是死锁？",
+            9,
+            use_hyde=False,
+        )
+        engine.search_bm25.assert_called_once_with("os", "什么是死锁？", 9)
+        self.assertEqual(results[0]["section_h2"], "3.5 死锁概述")
+        self.assertEqual(results[0]["source_methods"], ["embedding", "bm25"])
+        self.assertEqual(results[0]["source_ranks"], {"embedding": 1, "bm25": 1})
+        self.assertEqual(sum("练习" in result["content"] for result in results), 0)
+        self.assertEqual(len({result["content"] for result in results}), len(results))
 
     def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
