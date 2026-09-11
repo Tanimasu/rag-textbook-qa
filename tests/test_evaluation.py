@@ -22,9 +22,7 @@ class EvaluationTests(unittest.TestCase):
 
     def test_legacy_script_is_a_thin_compatibility_entrypoint(self):
         repository_root = Path(__file__).resolve().parents[1]
-        source = (repository_root / "project" / "ragas_evaluation.py").read_text(
-            encoding="utf-8"
-        )
+        source = (repository_root / "project" / "ragas_evaluation.py").read_text(encoding="utf-8")
 
         self.assertIn("rag_textbook_qa.evaluation", source)
         self.assertNotIn("from ragas", source)
@@ -69,6 +67,11 @@ class EvaluationTests(unittest.TestCase):
             engine.ask.return_value = {
                 "success": True,
                 "answer": "进程是程序的一次执行过程。",
+                "context": "[os - 第1章 - 进程]\n实际提供的上下文",
+                "context_sources": [
+                    {"context_text": "[os - 第1章 - 进程]\n"},
+                    {"context_text": "实际提供的上下文"},
+                ],
                 "results": [
                     {
                         "book_name": "os",
@@ -100,7 +103,9 @@ class EvaluationTests(unittest.TestCase):
             set(dataset),
             {"question", "answer", "contexts", "ground_truth"},
         )
-        self.assertIn("[os - 第1章 - 进程]", dataset["contexts"][0][0])
+        self.assertEqual("".join(dataset["contexts"][0]), engine.ask.return_value["context"])
+        self.assertEqual(len(dataset["contexts"][0]), 2)
+        self.assertNotIn("教材上下文", dataset["contexts"][0][0])
         self.assertEqual(comparison[0]["ground_truth"], "标准答案")
         engine.ask.assert_called_once_with(
             query="什么是进程？",
@@ -108,6 +113,42 @@ class EvaluationTests(unittest.TestCase):
             top_k=8,
             use_llm=True,
         )
+
+    def test_failure_summary_includes_failed_and_exception_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+            evaluator.output_dir = Path(directory)
+            engine = MagicMock()
+            engine.ask.side_effect = [
+                {"success": False, "error": "private error detail"},
+                RuntimeError("private runtime detail"),
+                {"success": True, "answer": "答案", "context": "实际证据"},
+            ]
+            with patch(
+                "rag_textbook_qa.evaluation.ragas._dataset_from_dict", side_effect=lambda data: data
+            ):
+                dataset = evaluator.prepare_evaluation_data(
+                    engine, [{"question": str(i)} for i in range(3)]
+                )
+            summary_text = (Path(directory) / "ragas_run_summary.json").read_text()
+            summary = json.loads(summary_text)
+        self.assertEqual(summary["total_questions"], 3)
+        self.assertEqual(summary["failed_questions"], 2)
+        self.assertEqual(summary["success_rate"], 1 / 3)
+        self.assertEqual(dataset["contexts"], [["实际证据"]])
+        self.assertNotIn("private", summary_text)
+
+    def test_all_failed_run_still_writes_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+            evaluator.output_dir = Path(directory)
+            engine = MagicMock()
+            engine.ask.return_value = {"success": False}
+            with self.assertRaisesRegex(ValueError, "失败摘要已保存"):
+                evaluator.prepare_evaluation_data(engine, [{"question": "问题"}])
+            summary = json.loads((Path(directory) / "ragas_run_summary.json").read_text())
+            self.assertEqual(summary["success_rate"], 0)
+            self.assertEqual(summary["failed_questions"], 1)
 
     def test_print_results_handles_an_all_nan_evaluation(self):
         import pandas as pd

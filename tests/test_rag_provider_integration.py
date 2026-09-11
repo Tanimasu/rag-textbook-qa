@@ -178,6 +178,10 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertEqual(semantic[0]["method"], "embedding")
             self.assertTrue(result["success"])
             self.assertEqual(result["answer"], "测试回答")
+            self.assertEqual(
+                "".join(source["context_text"] for source in result["context_sources"]),
+                result["context"],
+            )
             self.assertIn("相关教材内容", result["prompt"])
             self.assertEqual(len(llm.prompts), 3)
             execution = result["execution"]
@@ -353,10 +357,37 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(chunks, ["测试", "回答"])
             self.assertEqual(result["answer"], "测试回答")
+            self.assertEqual(
+                "".join(source["context_text"] for source in result["context_sources"]),
+                result["context"],
+            )
             self.assertTrue(result["llm_response"]["streamed"])
             self.assertEqual(len(llm.prompts), 1)
             self.assertGreaterEqual(result["execution"]["first_token_seconds"], 0)
             self.assertEqual(result["execution"]["embedding"]["backend"], "remote")
+
+
+class ContextPackingTests(unittest.TestCase):
+    def test_large_first_source_provides_evidence_within_budget(self):
+        source = {"book_name": "os", "chapter": "第一章", "content": "甲" * 3000}
+        context, sources = RAGEngine.select_context([source], 200)
+        self.assertLessEqual(len(context), 200)
+        self.assertEqual(len(sources), 1)
+        self.assertTrue(sources[0]["truncated"])
+        self.assertIn(sources[0]["content"], context)
+        self.assertTrue(sources[0]["content"])
+        self.assertEqual(len(source["content"]), 3000)
+
+    def test_sources_match_packed_evidence_and_preserve_full_hierarchy(self):
+        results = [
+            {"book_name": "os", "content": "", "chapter": "空"},
+            {"book_name": "os", "content": "实际证据", "section_h4": "四级标题"},
+        ]
+        context, sources = RAGEngine.select_context(results)
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["citation_id"], 1)
+        self.assertIn("四级标题", context)
+        self.assertIn("【参考资料 1】", context)
 
 
 if __name__ == "__main__":

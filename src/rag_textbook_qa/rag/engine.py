@@ -270,9 +270,7 @@ class RAGEngine:
             print("构建 BM25 关键词索引...")
         collections = self.vectorizer.client.list_collections()
         book_collections = [
-            collection
-            for collection in collections
-            if collection.name.startswith("textbook_")
+            collection for collection in collections if collection.name.startswith("textbook_")
         ]
         indexed_count = 0
         for collection in book_collections:
@@ -341,6 +339,7 @@ class RAGEngine:
                     "chapter": metadata["chapter"],
                     "section_h2": metadata["section_h2"],
                     "section_h3": metadata.get("section_h3", ""),
+                    "section_h4": metadata.get("section_h4", ""),
                     "content": documents[index],
                     "has_code": metadata["has_code"],
                     "has_image": metadata["has_image"],
@@ -417,6 +416,7 @@ class RAGEngine:
                 "chapter": metadata["chapter"],
                 "section_h2": metadata["section_h2"],
                 "section_h3": metadata.get("section_h3", ""),
+                "section_h4": metadata.get("section_h4", ""),
                 "content": document,
                 "has_code": metadata["has_code"],
                 "has_image": metadata["has_image"],
@@ -489,27 +489,51 @@ class RAGEngine:
         return all_results
 
     @staticmethod
-    def build_context(
+    def select_context(
         results: list[dict[str, Any]],
         max_length: int = 2000,
-    ) -> str:
-        context = ""
-        length = 0
-        for index, result in enumerate(results, 1):
-            block = f"""
-【参考资料 {index}】（相似度: {result['similarity']:.3f} | 方法: {result['method']}）
- 教材: {result['book_name']}
- 章节: {result['chapter']} - {result['section_h2']}
- 内容:
-{result['content']}
----
-"""
-            if length + len(block) > max_length:
-                context += "\n（部分内容省略）\n"
-                break
-            context += block
-            length += len(block)
-        return context
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Pack evidence and return exactly the excerpts supplied to generation."""
+        if max_length <= 0:
+            raise ValueError("上下文预算必须大于 0")
+        blocks = []
+        sources = []
+        remaining = max_length
+        for result in results:
+            content = str(result.get("content", "")).strip()
+            if not content:
+                continue
+            index = len(sources) + 1
+            heading = " - ".join(
+                str(result.get(field, ""))
+                for field in ("chapter", "section_h2", "section_h3", "section_h4")
+                if result.get(field)
+            )
+            prefix = f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
+            suffix = "\n---\n"
+            available = remaining - len(prefix) - len(suffix)
+            if available <= 0:
+                continue
+            truncated = len(content) > available
+            excerpt = content[:available]
+            block = prefix + excerpt + suffix
+            blocks.append(block)
+            sources.append(
+                {
+                    **result,
+                    "content": excerpt,
+                    "citation_id": index,
+                    "context_text": block,
+                    "truncated": truncated,
+                    "char_count": len(excerpt),
+                }
+            )
+            remaining -= len(block)
+        return "".join(blocks), sources
+
+    @staticmethod
+    def build_context(results: list[dict[str, Any]], max_length: int = 2000) -> str:
+        return RAGEngine.select_context(results, max_length)[0]
 
     @staticmethod
     def build_prompt(query: str, context: str) -> str:
@@ -519,7 +543,8 @@ class RAGEngine:
 1. 不要编造教材没有的内容
 2. 先给出简明答案（2-3句话），再给出详细解释
 3. 如有多个要点，使用编号列表
-4. 最后标注引用的章节
+4. 在相关论述后标注【参考资料 N】，仅引用提供的资料编号，并在最后标注章节
+5. 如果资料不足以回答，请明确说明教材证据不足，不要补造答案
 
 回答格式示例：
 ## 简明答案
@@ -605,7 +630,7 @@ class RAGEngine:
                 "execution": execution,
             }
 
-        context = self.build_context(results)
+        context, context_sources = self.select_context(results)
         prompt = self.build_prompt(query, context)
         llm_response = None
         answer = None
@@ -688,6 +713,7 @@ class RAGEngine:
             "query": query,
             "results": results,
             "context": context,
+            "context_sources": context_sources,
             "prompt": prompt,
             "answer": answer,
             "llm_response": llm_response,
@@ -714,9 +740,7 @@ class RAGEngine:
             "embedding": _summarize_provider_calls(
                 _telemetry_for_trace(embedding_provider, trace_id)
             ),
-            "reranker": _summarize_provider_calls(
-                _telemetry_for_trace(self.reranker, trace_id)
-            ),
+            "reranker": _summarize_provider_calls(_telemetry_for_trace(self.reranker, trace_id)),
             "retrieval_seconds": round(retrieval_seconds, 3),
             "generation_seconds": round(generation_seconds, 3),
             "total_seconds": round(total_seconds, 3),

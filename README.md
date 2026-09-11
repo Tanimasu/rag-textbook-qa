@@ -328,6 +328,10 @@ rag-qa evaluate
 
 评估问题来自 `data/evaluation/test_questions.json`，结果默认写入 `artifacts/evaluations/`。临时测试时可通过 `--questions` 指定小规模问题集，并用 `--output-dir` 将结果写入独立目录，避免覆盖已有正式结果。评估依赖按需安装：`uv sync --inexact --extra eval`。
 
+RAGAS 的上下文现在使用实际发送给生成模型的文本，质量均分仅覆盖成功问题。
+每次运行额外输出 `ragas_run_summary.json`，记录总题数、成功率及失败问题和原因类别；
+即使全部问题失败，也会保留摘要。该口径与旧版评估不同，不宜直接比较历史分数。
+
 如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
 在运行会调用 LLM 的 RAGAS 评估前，可以先只比较检索链路：
@@ -360,7 +364,8 @@ rag-qa app --no-browser --host 127.0.0.1 --port 8501
 Web 问答默认使用流式输出，答案会在模型生成过程中逐步显示。高级参数中的
 “启用 HyDE 增强检索”默认关闭；开启后会在每次检索前额外调用一次 LLM，可能
 提高部分复杂问题的召回效果，但会增加等待时间和 API 费用。流式回答完成后，
-执行摘要还会显示首字等待时间。
+执行摘要还会显示首字等待时间。答案引用区只显示实际送入模型的资料片段；
+上下文默认限制为 2000 字符，超过剩余预算的正文会截取可容纳的部分。
 
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
