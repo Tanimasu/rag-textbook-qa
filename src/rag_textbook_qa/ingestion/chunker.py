@@ -15,6 +15,67 @@ from pathlib import Path
 
 _CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*章")
 _SECTION_NUMBER = re.compile(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?")
+_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _closing_line(lines: list[str], start: int, marker: str) -> int:
+    """Index of the first line carrying ``marker``, or the last line."""
+
+    for probe in range(start, len(lines)):
+        if marker in lines[probe]:
+            return probe
+    return len(lines) - 1
+
+
+def _atomic_line_flags(lines: list[str]) -> list[bool]:
+    """Mark lines belonging to a listing that must not be split."""
+
+    flags = [False] * len(lines)
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        fence = _FENCE_LINE.match(line)
+        if fence:
+            token = fence.group(1)
+            for probe in range(index + 1, len(lines)):
+                closing = _FENCE_LINE.match(lines[probe])
+                if (
+                    closing
+                    and closing.group(1)[0] == token[0]
+                    and len(closing.group(1)) >= len(token)
+                    and not closing.group(2).strip()
+                ):
+                    end = probe
+                    break
+            else:
+                end = len(lines) - 1
+        elif "$$" in line:
+            end = index if line.count("$$") >= 2 else _closing_line(lines, index + 1, "$$")
+        elif "\\[" in line:
+            end = index if "\\]" in line else _closing_line(lines, index + 1, "\\]")
+        elif line.lstrip().startswith("<table"):
+            end = index if "</table>" in line else _closing_line(lines, index + 1, "</table>")
+        else:
+            index += 1
+            continue
+        for position in range(index, end + 1):
+            flags[position] = True
+        index = end + 1
+    return flags
+
+
+def _atomic_segments(content: str) -> list[tuple[str, bool]]:
+    """Split a section into alternating runs of listings and splittable prose."""
+
+    lines = content.split("\n")
+    flags = _atomic_line_flags(lines)
+    segments: list[tuple[str, bool]] = []
+    start = 0
+    for index in range(1, len(lines) + 1):
+        if index == len(lines) or flags[index] != flags[start]:
+            segments.append(("\n".join(lines[start:index]), flags[start]))
+            start = index
+    return segments
 
 
 @dataclass
@@ -84,7 +145,7 @@ class SmartTextbookChunker:
 
         fence = None
         for line in content.split("\n"):
-            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            marker = _FENCE_LINE.match(line)
             inside_fence = fence is not None
             if marker:
                 token, suffix = marker.groups()
@@ -224,6 +285,34 @@ class SmartTextbookChunker:
             start = end - overlap
         return chunks
 
+    def split_section(self, content: str, level: int) -> list[TextChunk]:
+        """Pack an oversized section, keeping code, formulas and tables intact.
+
+        Preserving a whole section because it contains one listing produced
+        chunks far beyond the embedding model's input limit, where the tail is
+        silently truncated and becomes unretrievable. Listings stay whole, the
+        prose around them is split, and neighbours merge while they fit.
+        """
+
+        chunks: list[TextChunk] = []
+        buffer = ""
+        for text, atomic in _atomic_segments(content):
+            joiner = "\n" if buffer else ""
+            if len(buffer) + len(joiner) + len(text) <= self.max_chunk_size:
+                buffer += joiner + text
+                continue
+            if buffer.strip():
+                chunks.append(self.create_chunk(buffer, level))
+            buffer = ""
+            if atomic or len(text) <= self.max_chunk_size:
+                # An oversized listing still ships whole; splitting it destroys it.
+                buffer = text
+            else:
+                chunks.extend(self.split_long_content(text, level))
+        if buffer.strip():
+            chunks.append(self.create_chunk(buffer, level))
+        return chunks
+
     def chunk_document(self, markdown_path: str | Path) -> list[TextChunk]:
         """Chunk a complete UTF-8 Markdown document."""
 
@@ -258,15 +347,7 @@ class SmartTextbookChunker:
                 continue
 
             if len(section_content) > self.max_chunk_size:
-                if (
-                    section_content.lstrip().startswith("<table")
-                    or re.search(r"^ {0,3}(`{3,}|~{3,})", section_content, re.MULTILINE)
-                    or "$$" in section_content
-                    or r"\[" in section_content
-                ):
-                    all_chunks.append(self.create_chunk(section_content, level))
-                else:
-                    all_chunks.extend(self.split_long_content(section_content, level))
+                all_chunks.extend(self.split_section(section_content, level))
             else:
                 all_chunks.append(self.create_chunk(section_content, level))
 
