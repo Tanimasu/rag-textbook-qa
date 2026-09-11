@@ -20,6 +20,16 @@ class EvaluationTests(unittest.TestCase):
         ):
             self.assertEqual(_ragas_embedding_model(), "example/embedding-model")
 
+    def test_judge_thinking_is_only_disabled_when_asked(self):
+        from rag_textbook_qa.evaluation.ragas import judge_model_kwargs
+
+        self.assertEqual(judge_model_kwargs({}), {})
+        self.assertEqual(judge_model_kwargs({"RAGAS_DISABLE_THINKING": "no"}), {})
+        self.assertEqual(
+            judge_model_kwargs({"RAGAS_DISABLE_THINKING": "true"}),
+            {"extra_body": {"enable_thinking": False}},
+        )
+
     def test_legacy_script_is_a_thin_compatibility_entrypoint(self):
         repository_root = Path(__file__).resolve().parents[1]
         source = (repository_root / "project" / "ragas_evaluation.py").read_text(encoding="utf-8")
