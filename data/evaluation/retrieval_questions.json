@@ -1,0 +1,52 @@
+[
+  {
+    "question": "计算机运行中所谓的\"死锁\"现象，具体指的是一种什么情况？",
+    "book_name": "os",
+    "relevant_sections": ["3.5 死锁概述"]
+  },
+  {
+    "question": "计算机在处理如打印、读写U盘等输入输出操作时，为什么经常需要使用\"缓冲区\"？",
+    "book_name": "os",
+    "relevant_sections": ["7.7 缓冲区管理"]
+  },
+  {
+    "question": "CPU中的Cache（高速缓存）是如何提高运行速度的？它的工作原理是什么？",
+    "book_name": "computer_organization",
+    "relevant_sections": ["4.5.1 cache 工作原理"]
+  },
+  {
+    "question": "现代CPU的流水线技术具体是指什么？它是否缩短了单条指令的执行时间？",
+    "book_name": "computer_organization",
+    "relevant_sections": ["7.1.1 流水线的基本概念"]
+  },
+  {
+    "question": "既然每个网络设备都有全球唯一的IP地址，为什么在局域网里传输数据时，还必须通过ARP协议去查找设备的MAC地址？",
+    "book_name": "computer_network",
+    "relevant_sections": ["4.2.4 地址解析协议 ARP"]
+  },
+  {
+    "question": "TCP建立连接时必须要进行\"三次握手\"，如果简化成\"两次握手\"，也就是客户端发送请求、服务器回复确认就建立连接，会产生什么严重的后果？",
+    "book_name": "computer_network",
+    "relevant_sections": ["5.9.1 TCP 的连接建立"]
+  },
+  {
+    "question": "队列是先进先出的结构，普通队列在数组装满但头部还有空闲时会报错，如何解决这种假溢出问题？",
+    "book_name": "data_structure",
+    "relevant_sections": ["3.5.2 循环队列"]
+  },
+  {
+    "question": "图的深度优先搜索（DFS）和广度优先搜索（BFS）在遍历思路上有什么本质的不同？",
+    "book_name": "data_structure",
+    "relevant_sections": ["6.5 图的遍历"]
+  },
+  {
+    "question": "数据库的事务到底是什么？为什么转账这种操作一定要用事务来处理？",
+    "book_name": "database",
+    "relevant_sections": ["9.2.1 事务的概念"]
+  },
+  {
+    "question": "数据库里的视图（View）和普通的物理表有什么不一样？建视图有什么实际用处？",
+    "book_name": "database",
+    "relevant_sections": ["7.1.1 视图概述"]
+  }
+]
