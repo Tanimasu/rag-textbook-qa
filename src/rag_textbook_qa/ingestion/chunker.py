@@ -82,8 +82,19 @@ class SmartTextbookChunker:
             "content": [],
         }
 
+        fence = None
         for line in content.split("\n"):
-            title_match = re.match(r"^(#{1,4})\s+(.+)$", line)
+            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            inside_fence = fence is not None
+            if marker:
+                token, suffix = marker.groups()
+                if fence is None:
+                    fence = token
+                elif token[0] == fence[0] and len(token) >= len(fence) and not suffix.strip():
+                    fence = None
+            title_match = (
+                re.match(r"^(#{1,4})\s+(.+)$", line) if not inside_fence and not marker else None
+            )
 
             if title_match:
                 current_content = current_section["content"]
@@ -97,7 +108,7 @@ class SmartTextbookChunker:
                     "title": title_match.group(2).strip(),
                     "content": [],
                 }
-            elif line.strip():
+            else:
                 current_content = current_section["content"]
                 assert isinstance(current_content, list)
                 current_content.append(line)
@@ -133,10 +144,9 @@ class SmartTextbookChunker:
                 chapter_number, section_number = section_match.group(1, 2)
                 self._sync_chapter_number(chapter_number)
                 current_h2_match = _SECTION_NUMBER.match(self.current_h2)
-                if (
-                    current_h2_match is None
-                    or current_h2_match.group(1, 2)
-                    != (chapter_number, section_number)
+                if current_h2_match is None or current_h2_match.group(1, 2) != (
+                    chapter_number,
+                    section_number,
                 ):
                     self.current_h2 = f"{chapter_number}.{section_number}"
                 self.current_h3 = title
@@ -177,61 +187,41 @@ class SmartTextbookChunker:
     def create_chunk(self, content: str, level: int) -> TextChunk:
         """Create one chunk using the current heading context."""
 
+        # Every field must describe the stored text: char_count reaches Chroma
+        # metadata and drives retrieval filtering and the undersized-chunk merge.
+        text = content.strip()
         return TextChunk(
             chunk_id=self.generate_chunk_id(),
             chapter=self.current_chapter,
             section_h2=self.current_h2,
             section_h3=self.current_h3,
             section_h4=self.current_h4,
-            content=content.strip(),
+            content=text,
             level=level,
-            char_count=len(content),
-            has_code="```" in content,
-            has_image="📷" in content or "[图片]" in content,
+            char_count=len(text),
+            has_code="```" in text,
+            has_image="📷" in text or "[图片]" in text,
         )
 
     def split_long_content(self, content: str, level: int) -> list[TextChunk]:
-        """Split oversized content by paragraph, then by Chinese sentence marks."""
-
+        """Split prose at natural boundaries with bounded, real overlap."""
         chunks: list[TextChunk] = []
-        paragraphs = re.split(r"\n\n+", content)
-        current_content = ""
-
-        for paragraph in paragraphs:
-            if len(paragraph) > self.max_chunk_size:
-                if current_content:
-                    chunks.append(self.create_chunk(current_content, level))
-                    current_content = ""
-
-                sentences = re.split(r"([。！？\n])", paragraph)
-                temporary_content = ""
-
-                for index in range(0, len(sentences), 2):
-                    sentence = sentences[index]
-                    separator = sentences[index + 1] if index + 1 < len(sentences) else ""
-
-                    if (
-                        len(temporary_content) + len(sentence) + len(separator)
-                        > self.max_chunk_size
-                    ):
-                        if temporary_content:
-                            chunks.append(self.create_chunk(temporary_content, level))
-                        temporary_content = sentence + separator
-                    else:
-                        temporary_content += sentence + separator
-
-                if temporary_content:
-                    current_content = temporary_content
-            elif len(current_content) + len(paragraph) > self.max_chunk_size:
-                if current_content:
-                    chunks.append(self.create_chunk(current_content, level))
-                current_content = paragraph
-            else:
-                current_content += ("\n\n" if current_content else "") + paragraph
-
-        if current_content:
-            chunks.append(self.create_chunk(current_content, level))
-
+        start = 0
+        # Tiny custom chunk sizes must still make progress with the default overlap.
+        overlap = min(self.overlap_size, self.max_chunk_size - 1)
+        while start < len(content):
+            end = min(start + self.max_chunk_size, len(content))
+            if end < len(content):
+                boundaries = list(re.finditer(r"[。！？\n]", content[start:end]))
+                minimum = max(self.max_chunk_size // 2, overlap + 1)
+                eligible = [match.end() for match in boundaries if match.end() >= minimum]
+                if eligible:
+                    end = start + eligible[-1]
+            if content[start:end].strip():
+                chunks.append(self.create_chunk(content[start:end], level))
+            if end == len(content):
+                break
+            start = end - overlap
         return chunks
 
     def chunk_document(self, markdown_path: str | Path) -> list[TextChunk]:
@@ -246,6 +236,8 @@ class SmartTextbookChunker:
         print(f"  重叠大小: {self.overlap_size} 字符")
         print("=" * 70)
 
+        self.current_chapter = self.current_h2 = self.current_h3 = self.current_h4 = ""
+        self.chapter_num = self.chunk_counter = 0
         content = Path(markdown_path).read_text(encoding="utf-8")
         sections = self.parse_markdown(content)
 
@@ -262,11 +254,16 @@ class SmartTextbookChunker:
 
             self.update_context(level, title)
 
-            if not section_content or len(section_content.strip()) < 10:
+            if not section_content.strip():
                 continue
 
             if len(section_content) > self.max_chunk_size:
-                if section_content.lstrip().startswith("<table"):
+                if (
+                    section_content.lstrip().startswith("<table")
+                    or re.search(r"^ {0,3}(`{3,}|~{3,})", section_content, re.MULTILINE)
+                    or "$$" in section_content
+                    or r"\[" in section_content
+                ):
                     all_chunks.append(self.create_chunk(section_content, level))
                 else:
                     all_chunks.extend(self.split_long_content(section_content, level))
@@ -281,6 +278,10 @@ class SmartTextbookChunker:
                 processed.append(chunk)
             elif (
                 processed
+                and all(
+                    getattr(processed[-1], field) == getattr(chunk, field)
+                    for field in ("chapter", "section_h2", "section_h3", "section_h4")
+                )
                 and processed[-1].char_count + chunk.char_count + 2 <= self.max_chunk_size
             ):
                 previous = processed[-1]
@@ -288,6 +289,8 @@ class SmartTextbookChunker:
                 previous.char_count = len(previous.content)
                 previous.has_code = previous.has_code or chunk.has_code
                 previous.has_image = previous.has_image or chunk.has_image
+            else:
+                processed.append(chunk)
 
         print(f"   ✅ 合并过小块后，共 {len(processed)} 个块")
         self.print_statistics(processed)
@@ -448,9 +451,7 @@ def batch_chunk_markdown(
 
     sources = sorted(source_dir.glob(pattern), key=lambda path: path.name)
     if not sources:
-        raise FileNotFoundError(
-            f"输入目录中没有匹配 {pattern!r} 的 Markdown 文件: {source_dir}"
-        )
+        raise FileNotFoundError(f"输入目录中没有匹配 {pattern!r} 的 Markdown 文件: {source_dir}")
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     created: list[Path] = []
@@ -502,14 +503,10 @@ def batch_chunk_cleaned(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按教材标题结构分块 Markdown")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--single", type=Path, metavar="MARKDOWN", help="处理单个 Markdown 文件"
-    )
+    mode.add_argument("--single", type=Path, metavar="MARKDOWN", help="处理单个 Markdown 文件")
     mode.add_argument("--batch", type=Path, metavar="DIRECTORY", help="批量处理 *_cleaned.md")
     parser.add_argument("--output", type=Path, help="单文件输出 JSON 路径")
-    parser.add_argument(
-        "--output-dir", type=Path, help="批量输出目录（默认为输入目录）"
-    )
+    parser.add_argument("--output-dir", type=Path, help="批量输出目录（默认为输入目录）")
     parser.add_argument("--max-chunk-size", type=int, default=800)
     parser.add_argument("--min-chunk-size", type=int, default=100)
     parser.add_argument("--overlap-size", type=int, default=50)
@@ -549,10 +546,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             overwrite=args.force,
             write_preview=not args.no_preview,
         )
-        print(
-            f"批量分块完成：新建 {len(result.created)}，"
-            f"跳过 {len(result.skipped_existing)}"
-        )
+        print(f"批量分块完成：新建 {len(result.created)}，跳过 {len(result.skipped_existing)}")
         return 0
     except (OSError, ValueError) as error:
         parser.exit(1, f"错误: {error}\n")

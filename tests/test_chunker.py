@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 
 from rag_textbook_qa.ingestion.chunker import (
@@ -133,6 +134,55 @@ class ChunkerTests(unittest.TestCase):
         self.assertEqual(chunks[1].section_h3, "3.5.2 循环队列")
         self.assertEqual(chunks[1].section_h4, "define MAXQSIZE 100")
 
+    def test_prose_overlap_preserves_long_unpunctuated_text(self):
+        text = "abcdefghijklmnopqrstuvwxyz0123456789"
+        chunker = SmartTextbookChunker(max_chunk_size=12, min_chunk_size=2, overlap_size=3)
+        chunks = chunker.split_long_content(text, 1)
+        restored = chunks[0].content
+        for previous, current in pairwise(chunks):
+            self.assertEqual(previous.content[-3:], current.content[:3])
+            restored += current.content[3:]
+        self.assertEqual(restored, text)
+        self.assertTrue(all(chunk.char_count <= 12 for chunk in chunks))
+
+    def test_char_count_matches_stored_content_around_blank_lines(self):
+        markdown = "# 第1章\n\n## 1.1 概念\n\n\n概念正文。\n\n\n## 1.2 细节\n\n" + "细节" * 500
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "blank.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker(min_chunk_size=4).chunk_document(source)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertEqual(chunk.char_count, len(chunk.content))
+            self.assertEqual(chunk.content, chunk.content.strip())
+
+    def test_short_sections_are_preserved_without_cross_heading_merge(self):
+        markdown = "# 第1章\n## 1.1 简介\n短定义\n## 1.2 正文\n" + "正文" * 60
+        markdown += "\n# 第2章\n## 2.1 简介\n第二章短定义"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "short.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker().chunk_document(source)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(chunks[0].content, "短定义")
+        self.assertEqual(chunks[2].chapter, "第2章")
+        self.assertEqual(chunks[2].content, "第二章短定义")
+
+    def test_fenced_code_preserves_comments_blank_lines_and_boundaries(self):
+        code = "```python\n# comment\n\nx = 1\n" + "print(x)\n" * 30 + "```"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "code.md"
+            source.write_text("# 第1章\n" + code, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker(max_chunk_size=80, min_chunk_size=10).chunk_document(
+                    source
+                )
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].chapter, "第1章")
+        self.assertEqual(chunks[0].content, code)
+
     def test_existing_output_is_not_silently_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -141,9 +191,7 @@ class ChunkerTests(unittest.TestCase):
             source.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
             output.write_text("preserved", encoding="utf-8")
 
-            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(
-                FileExistsError
-            ):
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(FileExistsError):
                 chunk_markdown(source, output)
 
             self.assertEqual(output.read_text(encoding="utf-8"), "preserved")

@@ -297,6 +297,10 @@ rag-qa ingest chunk data/cleaned/数据结构_mineru_cleaned.md \
 rag-qa ingest check artifacts/chunks/数据结构_mineru_chunks.json
 ```
 
+新版分块器保留无法安全合并的短块，仅在同一标题路径内合并；普通长文本实际应用重叠窗口。
+包含围栏代码、独立公式标记或以 HTML 表格开头的段落优先完整保留，因此可能超过块大小上限。
+修改分块参数后，需要重新生成 chunks 并重建索引才能影响问答；已有索引不会自动更新。
+
 质量检查会同时报告过大/过小块、代码截断、章节编号继承冲突和重复内容。
 
 ### Step 4 — 向量化
