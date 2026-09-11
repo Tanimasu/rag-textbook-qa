@@ -76,7 +76,7 @@ def render_chat_tab(
 
         answer = answer_message(result)
         answer_placeholder.markdown(answer)
-        sources = result.get("results", [])
+        sources = result.get("context_sources", result.get("results", []))
         render_answer_details(sources, result.get("execution"))
 
     st.session_state.messages.append(

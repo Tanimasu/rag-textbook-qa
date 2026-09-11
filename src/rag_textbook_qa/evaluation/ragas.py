@@ -14,9 +14,7 @@ def _dataset_from_dict(data: dict[str, list[Any]]) -> Any:
     try:
         from datasets import Dataset
     except ImportError as exc:
-        raise RuntimeError(
-            "运行评估需要安装 eval 依赖：uv sync --extra eval"
-        ) from exc
+        raise RuntimeError("运行评估需要安装 eval 依赖：uv sync --extra eval") from exc
     return Dataset.from_dict(data)
 
 
@@ -54,13 +52,9 @@ class RAGASEvaluator:
                 faithfulness,
             )
         except ImportError as exc:
-            raise RuntimeError(
-                "运行评估需要安装 eval 依赖：uv sync --extra eval"
-            ) from exc
+            raise RuntimeError("运行评估需要安装 eval 依赖：uv sync --extra eval") from exc
 
-        resolved_api_key = api_key or os.getenv("RAGAS_API_KEY") or os.getenv(
-            "LLM_API_KEY", ""
-        )
+        resolved_api_key = api_key or os.getenv("RAGAS_API_KEY") or os.getenv("LLM_API_KEY", "")
         resolved_base_url = (
             base_url
             or os.getenv("RAGAS_API_BASE")
@@ -132,6 +126,7 @@ class RAGASEvaluator:
         contexts: list[list[str]] = []
         ground_truths: list[str] = []
         qa_records: list[dict[str, str]] = []
+        failures: list[dict[str, Any]] = []
 
         for index, item in enumerate(test_questions, 1):
             question = item["question"]
@@ -144,20 +139,31 @@ class RAGASEvaluator:
                     use_llm=True,
                 )
                 if not result["success"]:
-                    print(f"  失败: {result.get('error', 'unknown')}")
+                    failures.append(
+                        {
+                            "question_index": index,
+                            "question": question,
+                            "reason": "generation_failed",
+                        }
+                    )
+                    print("  失败: 回答生成失败")
                     continue
 
                 ground_truth = item.get("ground_truth", "")
                 answer = result["answer"]
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("回答为空")
+                # Never evaluate against retrieved evidence omitted from the prompt.
+                actual_context = result["context"]
+                if not isinstance(actual_context, str) or not actual_context.strip():
+                    raise ValueError("缺少实际生成上下文")
+                source_blocks = [source["context_text"] for source in
+                                 result.get("context_sources", [])]
+                if source_blocks and "".join(source_blocks) != actual_context:
+                    raise ValueError("资料片段与生成上下文不一致")
                 questions.append(question)
                 answers.append(answer)
-                contexts.append(
-                    [
-                        f"[{source['book_name']} - {source['chapter']} - "
-                        f"{source['section_h2']}]\n{source['content']}"
-                        for source in result["results"]
-                    ]
-                )
+                contexts.append(source_blocks or [actual_context])
                 ground_truths.append(ground_truth)
                 qa_records.append(
                     {
@@ -170,8 +176,7 @@ class RAGASEvaluator:
                 print(f"  [回答] {preview}")
                 if ground_truth:
                     ground_truth_preview = (
-                        f"{ground_truth[:300]}"
-                        f"{'...' if len(ground_truth) > 300 else ''}"
+                        f"{ground_truth[:300]}{'...' if len(ground_truth) > 300 else ''}"
                     )
                     print(f"  [标准] {ground_truth_preview}")
                 print()
@@ -183,13 +188,27 @@ class RAGASEvaluator:
                 TypeError,
                 ValueError,
             ) as exc:
-                print(f"  异常: {exc}")
-
-        if not questions:
-            raise ValueError("没有成功处理任何问题，无法评估。")
+                failures.append(
+                    {"question_index": index, "question": question, "reason": type(exc).__name__}
+                )
+                print(f"  异常: {type(exc).__name__}")
 
         output_dir = self.output_dir or _default_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "total_questions": len(test_questions),
+            "successful_questions": len(questions),
+            "failed_questions": len(failures),
+            "success_rate": len(questions) / len(test_questions) if test_questions else 0.0,
+            "quality_metrics_scope": "successful_questions_only",
+            "context_policy": "exact_generation_context",
+            "failures": failures,
+        }
+        (output_dir / "ragas_run_summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"问题处理成功率: {len(questions)}/{len(test_questions)}；质量均分仅覆盖成功问题")
         comparison_path = output_dir / "ragas_qa_comparison.json"
         comparison_path.write_text(
             json.dumps(qa_records, ensure_ascii=False, indent=2),
@@ -197,6 +216,9 @@ class RAGASEvaluator:
         )
         print(f"问答对比已保存到: {comparison_path}")
         print(f"\n数据准备完成：{len(questions)} 条\n")
+
+        if not questions:
+            raise ValueError("没有成功处理任何问题，无法评估；失败摘要已保存。")
 
         data: dict[str, list[Any]] = {
             "question": questions,
@@ -218,10 +240,7 @@ class RAGASEvaluator:
                 metrics.append(self._context_recall)
 
         print("=" * 60)
-        print(
-            f"开始评估  数据集: {len(dataset)} 条  "
-            f"指标: {[metric.name for metric in metrics]}"
-        )
+        print(f"开始评估  数据集: {len(dataset)} 条  指标: {[metric.name for metric in metrics]}")
         print("=" * 60)
         result = self._evaluate(
             dataset,
@@ -483,8 +502,7 @@ def create_test_dataset() -> list[dict[str, str]]:
             "question": "死锁的四个必要条件是什么？",
             "book_name": "os",
             "ground_truth": (
-                "死锁的四个必要条件是：1)互斥条件 2)请求与保持条件 "
-                "3)不可剥夺条件 4)循环等待条件。"
+                "死锁的四个必要条件是：1)互斥条件 2)请求与保持条件 3)不可剥夺条件 4)循环等待条件。"
             ),
         },
         {
