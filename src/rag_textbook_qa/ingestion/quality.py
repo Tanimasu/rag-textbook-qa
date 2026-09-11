@@ -7,6 +7,26 @@ import re
 from pathlib import Path
 from typing import Any
 
+_CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*章")
+_SECTION_NUMBER = re.compile(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def _has_hierarchy_mismatch(chunk: dict[str, Any]) -> bool:
+    chapter_match = _CHAPTER_NUMBER.search(str(chunk.get("chapter", "")))
+    h2_match = _SECTION_NUMBER.match(str(chunk.get("section_h2", "")))
+    h3_match = _SECTION_NUMBER.match(str(chunk.get("section_h3", "")))
+    chapter_number = chapter_match.group(1) if chapter_match else None
+
+    if h2_match and chapter_number and h2_match.group(1) != chapter_number:
+        return True
+    if h3_match and chapter_number and h3_match.group(1) != chapter_number:
+        return True
+    return bool(
+        h2_match
+        and h3_match
+        and h2_match.group(1, 2) != h3_match.group(1, 2)
+    )
+
 
 def analyze_markdown(markdown_path: str | Path) -> dict[str, Any]:
     """Return the legacy Markdown statistics together with structured issues."""
@@ -67,7 +87,11 @@ def analyze_chunks(chunks_path: str | Path) -> dict[str, Any]:
         "too_small": [],
         "too_large": [],
         "empty_code": [],
+        "hierarchy_mismatch": [],
+        "duplicate_content": [],
     }
+
+    seen_content: dict[str, str] = {}
 
     for chunk in chunks:
         chunk_id = chunk["chunk_id"]
@@ -92,6 +116,16 @@ def analyze_chunks(chunks_path: str | Path) -> dict[str, Any]:
             code_content = re.search(r"```.*?```", content, re.DOTALL)
             if code_content and len(code_content.group(0)) < 50:
                 issues["empty_code"].append(chunk_id)
+
+        if _has_hierarchy_mismatch(chunk):
+            issues["hierarchy_mismatch"].append(chunk_id)
+
+        normalized_content = "".join(content.split())
+        if normalized_content:
+            if normalized_content in seen_content:
+                issues["duplicate_content"].append(chunk_id)
+            else:
+                seen_content[normalized_content] = chunk_id
 
     total = len(chunks)
     total_issues = sum(len(chunk_ids) for chunk_ids in issues.values())

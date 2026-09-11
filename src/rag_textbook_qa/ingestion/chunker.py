@@ -13,6 +13,9 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+_CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*章")
+_SECTION_NUMBER = re.compile(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?")
+
 
 @dataclass
 class TextChunk:
@@ -84,10 +87,9 @@ class SmartTextbookChunker:
 
             if title_match:
                 current_content = current_section["content"]
-                if current_content:
-                    current_section["content"] = "\n".join(  # type: ignore[arg-type]
-                        current_content
-                    )
+                if current_section["level"] or current_content:
+                    assert isinstance(current_content, list)
+                    current_section["content"] = "\n".join(current_content)
                     sections.append(current_section.copy())
 
                 current_section = {
@@ -101,8 +103,9 @@ class SmartTextbookChunker:
                 current_content.append(line)
 
         current_content = current_section["content"]
-        if current_content:
-            current_section["content"] = "\n".join(current_content)  # type: ignore[arg-type]
+        if current_section["level"] or current_content:
+            assert isinstance(current_content, list)
+            current_section["content"] = "\n".join(current_content)
             sections.append(current_section)
 
         print(f"   ✅ 解析完成，共 {len(sections)} 个段落")
@@ -118,21 +121,50 @@ class SmartTextbookChunker:
             self.current_h4 = ""
             self.chapter_num += 1
         elif level == 2:
+            section_match = _SECTION_NUMBER.match(title)
+            if section_match:
+                self._sync_chapter_number(section_match.group(1))
             self.current_h2 = title
             self.current_h3 = ""
             self.current_h4 = ""
         elif level == 3:
-            self.current_h3 = title
-            self.current_h4 = ""
+            section_match = _SECTION_NUMBER.match(title)
+            if section_match and section_match.group(3):
+                chapter_number, section_number = section_match.group(1, 2)
+                self._sync_chapter_number(chapter_number)
+                current_h2_match = _SECTION_NUMBER.match(self.current_h2)
+                if (
+                    current_h2_match is None
+                    or current_h2_match.group(1, 2)
+                    != (chapter_number, section_number)
+                ):
+                    self.current_h2 = f"{chapter_number}.{section_number}"
+                self.current_h3 = title
+                self.current_h4 = ""
+            else:
+                current_h3_match = _SECTION_NUMBER.match(self.current_h3)
+                if current_h3_match and current_h3_match.group(3):
+                    self.current_h4 = title
+                else:
+                    self.current_h3 = title
+                    self.current_h4 = ""
         elif level == 4:
             self.current_h4 = title
+
+    def _sync_chapter_number(self, expected: str) -> None:
+        current_match = _CHAPTER_NUMBER.search(self.current_chapter)
+        if current_match is None or current_match.group(1) != expected:
+            self.current_chapter = f"第{expected}章"
+            self.current_h2 = ""
+            self.current_h3 = ""
+            self.current_h4 = ""
 
     def generate_chunk_id(self) -> str:
         """Generate a stable chunk ID using the current chapter and section."""
 
         self.chunk_counter += 1
 
-        chapter_match = re.search(r"第\s*(\d+)\s*章", self.current_chapter)
+        chapter_match = _CHAPTER_NUMBER.search(self.current_chapter)
         chapter_number = chapter_match.group(1) if chapter_match else str(self.chapter_num)
 
         h2_match = re.match(r"(\d+\.\d+)", self.current_h2)

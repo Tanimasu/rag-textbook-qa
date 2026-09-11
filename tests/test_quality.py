@@ -42,6 +42,35 @@ class QualityAnalysisTests(unittest.TestCase):
         self.assertEqual(report["issues"]["too_large"], ["large"])
         self.assertEqual(report["grade"], "poor")
 
+    def test_chunk_analysis_detects_hierarchy_mismatch_and_duplicate_content(self):
+        chunks = [
+            {
+                "chunk_id": "wrong-parent",
+                "chapter": "第3章",
+                "section_h2": "3.4 栈与递归",
+                "section_h3": "3.5.2 循环队列",
+                "content": "循环队列用于解决假溢出。" * 5,
+                "char_count": 65,
+                "has_code": False,
+            },
+            {
+                "chunk_id": "duplicate",
+                "chapter": "第3章",
+                "section_h2": "3.5 队列",
+                "section_h3": "3.5.2 循环队列",
+                "content": "循环队列用于解决假溢出。" * 5,
+                "char_count": 65,
+                "has_code": False,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chunks.json"
+            path.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+            report = analyze_chunks(path)
+
+        self.assertEqual(report["issues"]["hierarchy_mismatch"], ["wrong-parent"])
+        self.assertEqual(report["issues"]["duplicate_content"], ["duplicate"])
+
 
 if __name__ == "__main__":
     unittest.main()

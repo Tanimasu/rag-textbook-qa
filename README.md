@@ -59,7 +59,7 @@ PDF
 **检索流程**
 
 1. **HyDE**：用 LLM 将问题改写为假设性教材原文，用其嵌入向量检索，提升语义匹配质量
-2. **混合检索**：向量相似度（权重 1.0）与 BM25 关键词匹配（权重 0.3）融合排序
+2. **混合检索**：通过 RRF 按排名融合语义向量与 BM25，并过滤习题、去除重复候选
 3. **Cross-Encoder 重排序**：`BAAI/bge-reranker-base` 对候选结果精排，取最优 top-k
 4. **LLM 生成**：将检索上下文与问题拼接为 Prompt，调用 LLM 生成结构化答案
 
@@ -80,8 +80,9 @@ rag-textbook-qa/
 │  │  └─ previews/              # 分块文本预览
 │  └─ evaluation/               # 评估问题集
 ├─ artifacts/
+│  ├─ chunks/                   # 当前分块器生成的本地 chunks，不提交 Git
 │  ├─ vector_db/                # 本地 ChromaDB，可重建且不提交 Git
-│  └─ evaluations/              # RAGAS 和 baseline 评估结果
+│  └─ evaluations/              # RAGAS 和检索评估结果
 └─ tests/                       # 无网络回归与历史资产基线
 ```
 
@@ -282,16 +283,26 @@ rag-qa ingest clean data/parsed/教材.md --output data/cleaned/教材_cleaned.m
 
 ```bash
 rag-qa ingest chunk data/cleaned/教材_cleaned.md \
-  --output data/chunks/教材_chunks.json
-rag-qa ingest check data/chunks/教材_chunks.json
+  --output artifacts/chunks/教材_chunks.json
+rag-qa ingest check artifacts/chunks/教材_chunks.json
 ```
 
-按标题结构切分 Markdown，并将 JSON 写入 `data/chunks/`。
+按标题结构切分 Markdown，并将 JSON 写入 `--output` 指定的位置。
+
+仓库现有的十份 `data/chunks/*.json` 是受测试保护的毕业设计原始资产。验证新版分块器或重新构建当前索引时，应将输出写入 `artifacts/chunks/`，避免覆盖原始基线：
+
+```bash
+rag-qa ingest chunk data/cleaned/数据结构_mineru_cleaned.md \
+  --output artifacts/chunks/数据结构_mineru_chunks.json
+rag-qa ingest check artifacts/chunks/数据结构_mineru_chunks.json
+```
+
+质量检查会同时报告过大/过小块、代码截断、章节编号继承冲突和重复内容。
 
 ### Step 4 — 向量化
 
 ```bash
-rag-qa index build data/chunks/教材_chunks.json
+rag-qa index build artifacts/chunks/教材_chunks.json
 rag-qa index list
 ```
 

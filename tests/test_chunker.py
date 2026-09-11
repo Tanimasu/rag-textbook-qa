@@ -75,6 +75,64 @@ class ChunkerTests(unittest.TestCase):
 
             self.assertEqual(first.read_bytes(), second.read_bytes())
 
+    def test_heading_without_direct_body_still_updates_descendant_context(self):
+        markdown = """# 第7章 视图和索引
+## 7.1 视图
+### 7.1.1 视图概述
+视图是在基本表之上定义的虚拟表，这段内容足够长，可以单独形成一个测试文本块。
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "headings.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker(min_chunk_size=10).chunk_document(source)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].chapter, "第7章 视图和索引")
+        self.assertEqual(chunks[0].section_h2, "7.1 视图")
+        self.assertEqual(chunks[0].section_h3, "7.1.1 视图概述")
+        self.assertTrue(chunks[0].chunk_id.startswith("ch7_s7_1_"))
+
+    def test_numbered_section_repairs_missing_chapter_heading(self):
+        markdown = """# 第1章 导论
+第一章正文足够长，用来建立初始上下文并生成一个独立的文本块。
+第2章线性表
+## 2.1 线性表定义
+第二章标题未被解析成 Markdown，但二级标题编号仍应纠正章节上下文。
+### 2.2.1 错位的子标题
+三级标题编号与二级标题冲突时，也应纠正它的二级父级编号。
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "missing-chapter.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker(min_chunk_size=10).chunk_document(source)
+
+        second_chapter = [chunk for chunk in chunks if chunk.chapter == "第2章"]
+        self.assertEqual(len(second_chapter), 2)
+        self.assertEqual(second_chapter[0].section_h2, "2.1 线性表定义")
+        self.assertEqual(second_chapter[1].section_h2, "2.2")
+        self.assertEqual(second_chapter[1].section_h3, "2.2.1 错位的子标题")
+
+    def test_non_numbered_h3_does_not_replace_numbered_parent_section(self):
+        markdown = """# 第3章 栈和队列
+## 3.5 队列
+### 3.5.2 循环队列
+循环队列正文用于建立编号三级标题，它包含足够字符以形成文本块。
+### define MAXQSIZE 100
+这里原本是代码预处理指令，被解析器误识别成了同级标题。
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "false-heading.md"
+            source.write_text(markdown, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                chunks = SmartTextbookChunker(min_chunk_size=10).chunk_document(source)
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[1].section_h2, "3.5 队列")
+        self.assertEqual(chunks[1].section_h3, "3.5.2 循环队列")
+        self.assertEqual(chunks[1].section_h4, "define MAXQSIZE 100")
+
     def test_existing_output_is_not_silently_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

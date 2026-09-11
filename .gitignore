@@ -14,6 +14,7 @@ venv/
 env/
 
 # ── 向量数据库（二进制 + 体积大，可本地重建）────────────────
+artifacts/chunks/
 artifacts/vector_db/
 artifacts/evaluations/retrieval/
 
