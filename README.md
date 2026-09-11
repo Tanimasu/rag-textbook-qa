@@ -334,6 +334,10 @@ RAGAS 的上下文现在使用实际发送给生成模型的文本，质量均�
 每次运行额外输出 `ragas_run_summary.json`，记录总题数、成功率及失败问题和原因类别；
 即使全部问题失败，也会保留摘要。该口径与旧版评估不同，不宜直接比较历史分数。
 
+评判模型通过 `RAGAS_MODEL` 单独指定，应与生成模型分属不同家族。若评判模型默认开启思考模式
+（Qwen3 系列如此），需设置 `RAGAS_DISABLE_THINKING=true`，否则 faithfulness 会因超时全部变成
+NaN；实测同一道判断题，开启思考耗时 7.2 秒且判错，关闭后 0.5 秒且判对。该参数只在端点支持时发送。
+
 如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
 在运行会调用 LLM 的 RAGAS 评估前，可以先只比较检索链路：

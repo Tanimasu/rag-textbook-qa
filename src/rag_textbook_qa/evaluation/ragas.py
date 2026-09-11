@@ -6,8 +6,26 @@ import copy
 import json
 import math
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+
+def judge_model_kwargs(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Vendor extras for the judge model, opt-in because endpoints differ.
+
+    Qwen3 on SiliconFlow reasons before answering. On a faithfulness job that
+    pushes the run past the RunConfig timeout, and the metric comes back NaN;
+    the long reasoning also degraded the binary entailment answers it exists
+    to produce. Sending the flag to an endpoint that does not know it would
+    fail the request, so it is never sent unless asked for.
+    """
+
+    values = os.environ if environ is None else environ
+    requested = values.get("RAGAS_DISABLE_THINKING", "").strip().lower()
+    if requested not in {"1", "true", "yes", "on"}:
+        return {}
+    return {"extra_body": {"enable_thinking": False}}
 
 
 def _dataset_from_dict(data: dict[str, list[Any]]) -> Any:
@@ -84,8 +102,12 @@ class RAGASEvaluator:
             openai_api_key=resolved_api_key,
             openai_api_base=resolved_base_url,
             temperature=0.0,
-            request_timeout=60,
+            # A faithfulness job chains several judge calls and takes about a
+            # minute per question; under worker contention a 60s per-request
+            # budget expired and the metric came back NaN for every row.
+            request_timeout=180,
             max_retries=3,
+            **judge_model_kwargs(),
         )
         print("  LLM 初始化成功")
 
@@ -250,7 +272,7 @@ class RAGASEvaluator:
             raise_exceptions=False,
             run_config=self._run_config_type(
                 max_retries=5,
-                timeout=180,
+                timeout=600,
                 max_workers=2,
             ),
         )

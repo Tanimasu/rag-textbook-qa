@@ -17,6 +17,7 @@ env/
 artifacts/chunks/
 artifacts/vector_db/
 artifacts/evaluations/retrieval/
+artifacts/evaluations/ragas/
 
 # ── PDF 原书（体积大 + 版权）────────────────────────────────
 data/raw/*
