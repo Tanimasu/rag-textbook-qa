@@ -23,7 +23,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # current chunker, so it cannot validate them. artifacts/chunks/ is gitignored,
 # hence the skip on a fresh checkout and in CI.
 CHUNKS_DIR = REPOSITORY_ROOT / "artifacts" / "chunks"
-QUESTIONS_PER_BOOK = 10
+QUESTIONS_PER_BOOK = 13
 CHUNK_FILES = {
     "os": "操作系统_mineru_chunks.json",
     "computer_organization": "计算机组成原理_mineru_chunks.json",
@@ -127,19 +127,19 @@ class RetrievalEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "没有问题"):
             select_split([dev], "holdout")
 
-    def test_historical_holdout_is_stratified(self):
+    def test_holdout_is_stratified(self):
         questions = load_retrieval_questions(
             REPOSITORY_ROOT / "data" / "evaluation" / "retrieval_questions.json"
         )
         holdout = [question for question in questions if question.split == "holdout"]
 
-        self.assertEqual(len(holdout), 15)
+        self.assertEqual(len(holdout), 30)
         self.assertEqual(
             Counter(question.book_name for question in holdout),
-            {book_name: 3 for book_name in CHUNK_FILES},
+            {book_name: 6 for book_name in CHUNK_FILES},
         )
 
-    def test_repository_annotations_cover_ten_questions_per_book(self):
+    def test_repository_annotations_cover_thirteen_questions_per_book(self):
         questions = load_retrieval_questions(
             REPOSITORY_ROOT / "data" / "evaluation" / "retrieval_questions.json"
         )

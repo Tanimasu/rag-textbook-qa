@@ -7,7 +7,7 @@
       "9.2.2　位示图法"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 4,
     "answer_key": "申请时，在位示图中找值为0的位，将其改为1并分配对应盘块；归还时，找到对应盘块的位，将其从1改为0。",
     "evidence": {
@@ -26,7 +26,7 @@
       "7.8.1 磁盘性能概述"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 3,
     "answer_key": "现代磁盘已采用环带技术，外层磁道扇区更多，但向OS隐藏物理细节，提供固定大小的虚拟扇区以简化驱动和文件系统管理。",
     "evidence": {
@@ -45,7 +45,7 @@
       "5.4.2 固定分区分配"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 3,
     "answer_key": "每个分区大小固定且独立，作业只能装入一个完整分区，即使总空闲空间足够，若无单个分区能容纳该作业，也无法分配。",
     "evidence": {
@@ -64,7 +64,7 @@
       "2.4.3　海明校验"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 4,
     "answer_key": "检错码不为0时，其值直接指示出错位的位置，据此可定位并纠正错误比特。",
     "evidence": {
@@ -83,7 +83,7 @@
       "3.2.1　补码加减法运算方法"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "减去y等价于加上-y的补码；通常对y的补码各位取反、末位加1，使用补码加法器进行模运算。",
     "evidence": {
@@ -102,7 +102,7 @@
       "6.6.1　微程序控制的基本概念"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "一条机器指令由一段微程序实现；微程序包含多条微指令，依次产生微操作控制信号以完成指令功能。",
     "evidence": {
@@ -121,7 +121,7 @@
       "4.3.1划分子网"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 4,
     "answer_key": "子网掩码用于从IP地址中提取网络地址，划分子网后IP变三级结构，不同掩码会得出不同网络地址。",
     "evidence": {
@@ -140,7 +140,7 @@
       "3.1.2 三个基本问题"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 4,
     "answer_key": "发送端在数据中的控制字符前插入转义字符ESC，接收端删除该ESC以还原数据；若ESC本身出现则再插入一个ESC，接收端收到连续两个ESC时删除前一个。",
     "evidence": {
@@ -159,7 +159,7 @@
       "5.4.1停止等待协议"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "通过分组编号识别已接收的分组，丢弃重复数据而不重复交付上层，并重新发送确认。",
     "evidence": {
@@ -178,7 +178,7 @@
       "5.7.3 哈夫曼编码"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "前缀自由使识别到一个完整编码时不会同时是更长编码的开头，从而避免解码边界歧义。",
     "evidence": {
@@ -197,7 +197,7 @@
       "7.2.2　折半查找"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "有序性允许按中间关键字比较结果排除另一半；相等即成功，小于查左半，大于查右半，空区间即失败。",
     "evidence": {
@@ -216,7 +216,7 @@
       "7.3.2　平衡二叉树"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "有序插入可能使普通二叉排序树退化为链；AVL要求每个节点左右子树高度差绝对值不超过1，并通过调整维持平衡。",
     "evidence": {
@@ -235,7 +235,7 @@
       "2.3.3 关系的完整性"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "违反参照完整性：非空外键应对应被参照关系中的主键值，否则引用了不存在的客户。",
     "evidence": {
@@ -254,7 +254,7 @@
       "10.6.2　日志的作用"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 2,
     "answer_key": "慢查询日志用于找出执行时间长、效率低的语句；错误日志用于记录和排查系统运行错误。",
     "evidence": {
@@ -273,7 +273,7 @@
       "12.2.1 函数依赖的定义"
     ],
     "split": "holdout",
-    "annotation_status": "ai_source_reviewed_pending_human",
+    "annotation_status": "human_reviewed_glance",
     "revision": 3,
     "answer_key": "只要属性子集X能唯一决定Y，函数依赖X→Y就成立，不要求X必须是候选键。",
     "evidence": {
