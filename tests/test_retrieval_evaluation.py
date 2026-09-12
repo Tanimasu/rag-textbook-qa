@@ -8,7 +8,9 @@ from rag_textbook_qa.evaluation.retrieval import (
     RETRIEVAL_STRATEGIES,
     RetrievalQuestion,
     evaluate_retrieval,
+    grade_result,
     load_retrieval_questions,
+    ndcg_at_k,
     result_section,
     run_retrieval_strategies,
     save_retrieval_report,
@@ -167,6 +169,43 @@ class RetrievalEvaluationTests(unittest.TestCase):
                     any(normalized_marker in hierarchy for hierarchy in normalized_hierarchies),
                     f"未在 {question.book_name} 的 artifacts/chunks 中找到标注章节: {marker}",
                 )
+
+    def test_grading_separates_exact_sibling_and_chapter(self):
+        markers = ["3.5.3 死锁的定义、必要条件与处理方法"]
+
+        exact = {"chapter": "第3章", "section_h2": "3.5 死锁概述",
+                 "section_h3": "3.5.3 死锁的定义、必要条件与处理方法"}
+        sibling = {"chapter": "第3章", "section_h2": "3.5 死锁概述",
+                   "section_h3": "3.5.2 计算机系统中的死锁"}
+        chapter = {"chapter": "第3章", "section_h2": "3.1 进程调度"}
+        elsewhere = {"chapter": "第7章", "section_h2": "7.2 磁盘调度"}
+
+        self.assertEqual(grade_result(exact, markers), 3)
+        self.assertEqual(grade_result(sibling, markers), 2)
+        self.assertEqual(grade_result(chapter, markers), 1)
+        self.assertEqual(grade_result(elsewhere, markers), 0)
+
+    def test_a_marker_without_a_section_number_cannot_reach_sibling(self):
+        # Nothing in the string identifies a parent, so only exact and chapter
+        # are decidable.
+        markers = ["1.OS作为用户与计算机硬件系统之间的接口"]
+        sibling_ish = {"chapter": "第1章", "section_h2": "2.OS作为计算机系统资源的管理者"}
+
+        self.assertEqual(grade_result(sibling_ish, markers), 1)
+
+    def test_ndcg_rewards_putting_the_exact_section_first(self):
+        first = ndcg_at_k([3, 0, 0, 0, 0], wanted=1, top_k=5)
+        third = ndcg_at_k([0, 0, 3, 0, 0], wanted=1, top_k=5)
+
+        self.assertGreater(first, third)
+        self.assertEqual(ndcg_at_k([0, 0, 0, 0, 0], wanted=1, top_k=5), 0.0)
+        self.assertAlmostEqual(ndcg_at_k([3, 2, 2, 2, 2], wanted=1, top_k=5), 1.0)
+
+    def test_ndcg_gives_partial_credit_a_hit_or_miss_metric_cannot(self):
+        # The death-lock failure: every result sat beside the wanted section.
+        self.assertEqual(ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5), 
+                         ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5))
+        self.assertGreater(ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5), 0.0)
 
     def test_scores_section_recall_and_reciprocal_rank(self):
         score = score_ranked_results(

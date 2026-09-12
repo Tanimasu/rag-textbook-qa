@@ -393,6 +393,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
             f"Recall@{args.top_k}={result['mean_recall_at_k']:.3f}，"
             f"Hit@{args.top_k}={result['hit_rate_at_k']:.3f}，"
             f"MRR={result['mrr']:.3f}，"
+            f"nDCG@{args.top_k}={result['mean_ndcg_at_k']:.3f}，"
             f"平均检索={result['mean_latency_seconds']:.3f} 秒"
         )
     print(f"报告: {report_path}")
