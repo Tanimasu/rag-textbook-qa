@@ -80,6 +80,30 @@
     "split": "dev"
   },
   {
+    "question": "如果系统用一张表格标记每个存储小块的空闲或占用状态，0代表空闲、1代表占用，那么申请一块空间或归还一块空间时，具体该怎么在这张表上做记号？",
+    "book_name": "os",
+    "relevant_sections": [
+      "9.2.2　位示图法"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "既然内外磁道的存储密度不同、外圈能存更多数据，那为什么还要把磁盘划分成固定大小的扇区，而不是直接按物理位密度来动态分配存储空间呢？",
+    "book_name": "os",
+    "relevant_sections": [
+      "7.8.1 磁盘性能概述"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "为什么固定分区分配里作业大小和分区尺寸不匹配时，即使整体空闲内存足够也装不下别的作业？",
+    "book_name": "os",
+    "relevant_sections": [
+      "5.4.2 固定分区分配"
+    ],
+    "split": "holdout"
+  },
+  {
     "question": "现在的电脑通常被称为冯·诺依曼架构，这种架构最核心的思想是什么？",
     "book_name": "computer_organization",
     "relevant_sections": [
@@ -160,6 +184,30 @@
     "split": "dev"
   },
   {
+    "question": "收到一串数据后，怎么根据那几个检查用的比特，反推出具体是哪一个比特传错了？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "2.4.3　海明校验"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "有符号数用补码表示后，减法为什么可以转换成加法来执行？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "3.2.1　补码加减法运算方法"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "在采用微程序控制的计算机中，一条机器指令与实现它的微指令序列是什么关系？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "6.6.1　微程序控制的基本概念"
+    ],
+    "split": "holdout"
+  },
+  {
     "question": "计算机网络体系结构中，OSI提出了七层模型，而TCP/IP是四层模型。在实际学习和研究网络原理时，通常采用五层协议体系结构的原因是什么？",
     "book_name": "computer_network",
     "relevant_sections": [
@@ -237,6 +285,30 @@
     "book_name": "computer_network",
     "relevant_sections": [
       "7.2.2公钥密码体制"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "子网掩码到底起了什么作用？比如说，同一个IP地址，用不同的子网掩码去算，得到的网络地址是不是肯定不一样？那它究竟改变了什么？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "4.3.1划分子网"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "如果我要发的数据里，刚好有跟开头、结尾标记长得一模一样的内容，接收方那边是怎么分清哪个是真的结束、哪个只是碰巧相同的数据的？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "3.1.2 三个基本问题"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "数据已到达接收方但确认在途中丢失，发送方重传后，接收方怎样避免把同一份数据重复交付？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "5.4.1停止等待协议"
     ],
     "split": "holdout"
   },
@@ -321,6 +393,30 @@
     "split": "holdout"
   },
   {
+    "question": "为了保证变长二进制编码能够无歧义地即时解码，为什么要避免一个字符的编码成为另一个字符编码的前缀？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "5.7.3 哈夫曼编码"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "折半查找为什么要求数据有序，每次比较后又如何确定下一步要查找的范围？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.2.2　折半查找"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "有序数据连续插入普通二叉排序树可能让查找越来越慢，平衡二叉树通过什么约束缓解这一问题？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.3.2　平衡二叉树"
+    ],
+    "split": "holdout"
+  },
+  {
     "question": "数据库的事务到底是什么？为什么转账这种操作一定要用事务来处理？",
     "book_name": "database",
     "relevant_sections": [
@@ -397,6 +493,30 @@
     "book_name": "database",
     "relevant_sections": [
       "2.1.1 关系的形式化定义"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "订单表的客户编号被定义为引用客户表主键的外键，如果其非空值在客户表中不存在，违反哪类完整性约束？",
+    "book_name": "database",
+    "relevant_sections": [
+      "2.3.3 关系的完整性"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "数据库运行正常但部分查询耗时很长，应优先查看哪类日志来定位低效语句？它与错误日志的用途有何不同？",
+    "book_name": "database",
+    "relevant_sections": [
+      "10.6.2　日志的作用"
+    ],
+    "split": "holdout"
+  },
+  {
+    "question": "是不是只有当X是候选键的时候，X→Y这个依赖才成立，还是说只要属性子集能够唯一决定另一个子集就行？",
+    "book_name": "database",
+    "relevant_sections": [
+      "12.2.1 函数依赖的定义"
     ],
     "split": "holdout"
   }
