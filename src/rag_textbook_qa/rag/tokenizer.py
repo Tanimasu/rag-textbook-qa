@@ -54,13 +54,13 @@ def _split_on_connectives(fragment: str) -> list[str]:
     return [fragment, *pieces] if pieces != [fragment] else pieces
 
 
-def install_terms(terms: Iterable[str]) -> int:
-    """Teach jieba the textbook's own vocabulary. Idempotent."""
+def install_terms(tokenizer: jieba.Tokenizer, terms: Iterable[str]) -> int:
+    """Teach an isolated tokenizer the textbook vocabulary."""
 
     added = 0
     for term in terms:
         if term:
-            jieba.add_word(term)
+            tokenizer.add_word(term)
             added += 1
     return added
 
@@ -84,8 +84,8 @@ def _bigrams(text: str) -> list[str]:
     return tokens
 
 
-def _words(text: str) -> list[str]:
-    return [token for token in jieba.cut(text) if _WORD.fullmatch(token)]
+def _words(text: str, tokenizer: jieba.Tokenizer) -> list[str]:
+    return [token for token in tokenizer.cut(text) if _WORD.fullmatch(token)]
 
 
 class BM25Tokenizer:
@@ -96,13 +96,14 @@ class BM25Tokenizer:
             raise ValueError(f"未知的 BM25 分词模式: {mode}")
         self.mode = mode
         self.terms = tuple(terms)
+        self._tokenizer = jieba.Tokenizer()
         if mode in {"dictionary", "hybrid"} and terms:
-            install_terms(terms)
+            install_terms(self._tokenizer, terms)
 
     def __call__(self, text: str) -> list[str]:
         if self.mode == "bigram":
             return _bigrams(text)
-        words = _words(text)
+        words = _words(text, self._tokenizer)
         if self.mode == "hybrid":
             return words + _bigrams(text)
         return words
