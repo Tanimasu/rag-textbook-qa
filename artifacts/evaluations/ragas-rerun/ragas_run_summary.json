@@ -1,9 +1,0 @@
-{
-  "total_questions": 50,
-  "successful_questions": 50,
-  "failed_questions": 0,
-  "success_rate": 1.0,
-  "quality_metrics_scope": "successful_questions_only",
-  "context_policy": "exact_generation_context",
-  "failures": []
-}
