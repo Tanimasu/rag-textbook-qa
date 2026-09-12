@@ -385,6 +385,12 @@ v2修正证据章节并替换3道题，每题附答案要点、源文件行号�
 15 题的标注小节现均存在于索引分块、编号格式规范、证据行段有效、互不重复，与旧 50 题的措辞
 重合度最高 0.18。状态不变，仍待人工审定。
 
+`retrieval_holdout_candidates_v4.json` 改写 4 道题的措辞。检索评测集对问题有两条独立要求：
+能由所标注小节回答，以及不照抄该小节的原文用语。前者决定标注是否成立，后者决定检索器之间的
+对比是否公平——BM25 按字面匹配，问题复用原文词句会让它不经理解就命中。实测同一系统上，
+模型据原文生成的题使 BM25 的 Recall@5 达到 0.975，人工措辞的题只有 0.680，而向量检索几乎不变。
+改写后候选题的字面重合度中位数由 0.394 降至 0.345，接近人工 50 题的 0.319。详见同名 `.md`。
+
 该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
 
 分词和融合权重都是用这套评测调出来的。
@@ -479,7 +485,7 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 |------|------|------|
 | `data/evaluation/test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
 | `data/evaluation/retrieval_questions.json` | 50 条 | 五本教材各 10 条章节标注题，按 dev 35 / holdout 15 分层切分，用于检索策略对比 |
-| `data/evaluation/retrieval_holdout_candidates_v3.json` | 15 条 | AI 依据审核完成、待人工审定的候选验证题，默认评测不加载 |
+| `data/evaluation/retrieval_holdout_candidates_v4.json` | 15 条 | AI 依据审核完成、待人工审定的候选验证题，默认评测不加载 |
 
 
 ### 表格回答上下文
