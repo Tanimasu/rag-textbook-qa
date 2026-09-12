@@ -127,7 +127,7 @@ class RetrievalEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "没有问题"):
             select_split([dev], "holdout")
 
-    def test_repository_holdout_is_stratified_and_untouched_by_tuning(self):
+    def test_historical_holdout_is_stratified(self):
         questions = load_retrieval_questions(
             REPOSITORY_ROOT / "data" / "evaluation" / "retrieval_questions.json"
         )

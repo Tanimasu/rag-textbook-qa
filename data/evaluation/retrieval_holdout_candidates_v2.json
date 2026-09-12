@@ -1,0 +1,287 @@
+[
+  {
+    "id": "candidate-v1-01",
+    "question": "磁盘位示图约定0表示空闲、1表示已分配时，分配和回收一个盘块分别需要怎样修改对应的位？",
+    "book_name": "os",
+    "relevant_sections": [
+      "9.2.2　位示图法"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "用一个二进制位对应一个盘块；分配时找到空闲位并置1，回收时把对应位置0。",
+    "evidence": {
+      "path": "data/cleaned/操作系统_mineru_cleaned.md",
+      "start_line": 7604,
+      "end_line": 7645,
+      "sha256": "95e47bcd0165718a38815675d39e46e940fe5bdf587de9e3d9bf0f7bea154ad4"
+    },
+    "review_note": "替换工作集题，减少与旧抖动题的主题重合。"
+  },
+  {
+    "id": "candidate-v1-02",
+    "question": "磁盘总是先服务离当前磁头最近的请求，为什么远处的请求可能等待很久？",
+    "book_name": "os",
+    "relevant_sections": [
+      "1.SCAN 调度算法"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "不断到达的近磁道请求获得更高优先级，远磁道请求持续被推迟，可能饥饿。",
+    "evidence": {
+      "path": "data/cleaned/操作系统_mineru_cleaned.md",
+      "start_line": 6609,
+      "end_line": 6613,
+      "sha256": "95e47bcd0165718a38815675d39e46e940fe5bdf587de9e3d9bf0f7bea154ad4"
+    },
+    "review_note": "改为直接解释SSTF饥饿原因的实际小节，不再标注只有概述的7.8.2。"
+  },
+  {
+    "id": "candidate-v1-03",
+    "question": "每次都从能够容纳作业的最小空闲分区分配内存，为什么仍可能产生许多难以利用的小碎片？",
+    "book_name": "os",
+    "relevant_sections": [
+      "$\\textcircled{3}$ 最佳适应算法。"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "选择满足要求的最小空闲区；每次切割剩余空间较小，积累成难利用的碎片。",
+    "evidence": {
+      "path": "data/cleaned/操作系统_mineru_cleaned.md",
+      "start_line": 4457,
+      "end_line": 4460,
+      "sha256": "95e47bcd0165718a38815675d39e46e940fe5bdf587de9e3d9bf0f7bea154ad4"
+    },
+    "review_note": "明确不是要求大小恰好相等；标注具体算法小节。"
+  },
+  {
+    "id": "candidate-v1-04",
+    "question": "假设海明码传输中仅有一位出错，接收端如何利用各校验组的检错结果定位错误？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "2.4.3　海明校验"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "各校验组产生检错位，组合成检错码；在单比特错误假设下，非零检错码指示出错位置。",
+    "evidence": {
+      "path": "data/cleaned/计算机组成原理_mineru_cleaned.md",
+      "start_line": 1840,
+      "end_line": 1850,
+      "sha256": "66be413464bbe717a10a6194a70c56324d8334d573b74cb311d713a405eab14c"
+    },
+    "review_note": "明确单比特错误前提。"
+  },
+  {
+    "id": "candidate-v1-05",
+    "question": "有符号数用补码表示后，减法为什么可以转换成加法来执行？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "3.2.1　补码加减法运算方法"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "减去y等价于加上-y的补码；通常对y的补码各位取反、末位加1，使用补码加法器进行模运算。",
+    "evidence": {
+      "path": "data/cleaned/计算机组成原理_mineru_cleaned.md",
+      "start_line": 2401,
+      "end_line": 2418,
+      "sha256": "66be413464bbe717a10a6194a70c56324d8334d573b74cb311d713a405eab14c"
+    },
+    "review_note": "正文公式存在OCR噪声，答案要点依据可读文字和运算说明，不照抄乱码。"
+  },
+  {
+    "id": "candidate-v1-06",
+    "question": "在采用微程序控制的计算机中，一条机器指令与实现它的微指令序列是什么关系？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "6.6.1　微程序控制的基本概念"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "一条机器指令由一段微程序实现；微程序包含多条微指令，依次产生微操作控制信号以完成指令功能。",
+    "evidence": {
+      "path": "data/cleaned/计算机组成原理_mineru_cleaned.md",
+      "start_line": 7204,
+      "end_line": 7210,
+      "sha256": "66be413464bbe717a10a6194a70c56324d8334d573b74cb311d713a405eab14c"
+    },
+    "review_note": "限定微程序控制，避免泛化到所有控制器。"
+  },
+  {
+    "id": "candidate-v1-07",
+    "question": "同一个IP地址使用不同子网掩码，计算出的网络地址是否一定不同？子网掩码改变了什么？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "4.3.1划分子网"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "不一定不同；逐位与运算可能得到相同网络地址，但网络/主机位划分、子网数及可容纳主机数会改变。",
+    "evidence": {
+      "path": "data/cleaned/计算机网络_mineru_cleaned.md",
+      "start_line": 3320,
+      "end_line": 3393,
+      "sha256": "6061a96bbf15966b92bc1e655e8cb960634857b3bd4ba4d09931f7a39e8e1b64"
+    },
+    "review_note": "采用教材中的反例检验理解，与旧CIDR动机题不同。"
+  },
+  {
+    "id": "candidate-v1-08",
+    "question": "帧的数据部分恰好出现帧定界控制字符或转义字符时，字节填充如何避免接收端误判边界？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "3.1.2 三个基本问题"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "发送方在数据中的控制字符前加转义字符；数据中的转义字符也需转义；接收方移除填充后还原数据。",
+    "evidence": {
+      "path": "data/cleaned/计算机网络_mineru_cleaned.md",
+      "start_line": 1969,
+      "end_line": 1986,
+      "sha256": "6061a96bbf15966b92bc1e655e8cb960634857b3bd4ba4d09931f7a39e8e1b64"
+    },
+    "review_note": "替换与第7题同考子网掩码的转发题。"
+  },
+  {
+    "id": "candidate-v1-09",
+    "question": "数据已到达接收方但确认在途中丢失，发送方重传后，接收方怎样避免把同一份数据重复交付？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "5.4.1停止等待协议"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "通过分组编号识别已接收的分组，丢弃重复数据而不重复交付上层，并重新发送确认。",
+    "evidence": {
+      "path": "data/cleaned/计算机网络_mineru_cleaned.md",
+      "start_line": 5024,
+      "end_line": 5067,
+      "sha256": "6061a96bbf15966b92bc1e655e8cb960634857b3bd4ba4d09931f7a39e8e1b64"
+    },
+    "review_note": "与旧握手题不同，关注停止等待的确认丢失。"
+  },
+  {
+    "id": "candidate-v1-10",
+    "question": "为了保证变长二进制编码能够无歧义地即时解码，为什么要避免一个字符的编码成为另一个字符编码的前缀？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "5.7.3 哈夫曼编码"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "前缀自由使识别到一个完整编码时不会同时是更长编码的开头，从而避免解码边界歧义。",
+    "evidence": {
+      "path": "data/cleaned/数据结构_mineru_cleaned.md",
+      "start_line": 4783,
+      "end_line": 4793,
+      "sha256": "6d54a002336485f7fcbb9976e34dc999593d29df25ecd69a1a068dc443f70b4d"
+    },
+    "review_note": "避免把前缀自由说成所有变长编码的必要条件。"
+  },
+  {
+    "id": "candidate-v1-11",
+    "question": "折半查找为什么要求数据有序，每次比较后又如何确定下一步要查找的范围？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.2.2　折半查找"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "有序性允许按中间关键字比较结果排除另一半；相等即成功，小于查左半，大于查右半，空区间即失败。",
+    "evidence": {
+      "path": "data/cleaned/数据结构_mineru_cleaned.md",
+      "start_line": 6389,
+      "end_line": 6398,
+      "sha256": "6d54a002336485f7fcbb9976e34dc999593d29df25ecd69a1a068dc443f70b4d"
+    },
+    "review_note": "与旧散列表题不同，关注有序查找。"
+  },
+  {
+    "id": "candidate-v1-12",
+    "question": "有序数据连续插入普通二叉排序树可能让查找越来越慢，平衡二叉树通过什么约束缓解这一问题？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.3.2　平衡二叉树"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "有序插入可能使普通二叉排序树退化为链；AVL要求每个节点左右子树高度差绝对值不超过1，并通过调整维持平衡。",
+    "evidence": {
+      "path": "data/cleaned/数据结构_mineru_cleaned.md",
+      "start_line": 6719,
+      "end_line": 6741,
+      "sha256": "6d54a002336485f7fcbb9976e34dc999593d29df25ecd69a1a068dc443f70b4d"
+    },
+    "review_note": "与旧二叉树遍历题不同，关注高度约束。"
+  },
+  {
+    "id": "candidate-v1-13",
+    "question": "订单表的客户编号被定义为引用客户表主键的外键，如果其非空值在客户表中不存在，违反哪类完整性约束？",
+    "book_name": "database",
+    "relevant_sections": [
+      "2.3.3 关系的完整性"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "违反参照完整性：非空外键应对应被参照关系中的主键值，否则引用了不存在的客户。",
+    "evidence": {
+      "path": "data/cleaned/数据库原理及应用教程_mineru_cleaned.md",
+      "start_line": 1473,
+      "end_line": 1483,
+      "sha256": "fdb1cb7f52c0f60cbf8ee291a218d6307f4d5c3186fa460b3fdb2546b8f8ed3c"
+    },
+    "review_note": "补齐外键和非空前提，与旧主键唯一性题区分。"
+  },
+  {
+    "id": "candidate-v1-14",
+    "question": "数据库运行正常但部分查询耗时很长，应优先查看哪类日志来定位低效语句？它与错误日志的用途有何不同？",
+    "book_name": "database",
+    "relevant_sections": [
+      "10.6.2　日志的作用"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "慢查询日志用于找出执行时间长、效率低的语句；错误日志用于记录和排查系统运行错误。",
+    "evidence": {
+      "path": "data/cleaned/数据库原理及应用教程_mineru_cleaned.md",
+      "start_line": 6647,
+      "end_line": 6655,
+      "sha256": "fdb1cb7f52c0f60cbf8ee291a218d6307f4d5c3186fa460b3fdb2546b8f8ed3c"
+    },
+    "review_note": "替换与旧并发冲突题主题接近的锁粒度题。"
+  },
+  {
+    "id": "candidate-v1-15",
+    "question": "当前样本里每个姓名恰好对应一个唯一学号，能否据此认定姓名函数决定学号？为什么？",
+    "book_name": "database",
+    "relevant_sections": [
+      "（3）函数依赖关系的存在与时间无关"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_source_reviewed_pending_human",
+    "revision": 2,
+    "answer_key": "不能仅凭当前样本推断；函数依赖是所有合法关系状态应满足的语义约束，新出现重名学生可能推翻样本中的对应。",
+    "evidence": {
+      "path": "data/cleaned/数据库原理及应用教程_mineru_cleaned.md",
+      "start_line": 7464,
+      "end_line": 7466,
+      "sha256": "fdb1cb7f52c0f60cbf8ee291a218d6307f4d5c3186fa460b3fdb2546b8f8ed3c"
+    },
+    "review_note": "缩小标注至直接讨论该反例的小节；与旧3NF设计目的有关联但不是同一答案。"
+  }
+]

@@ -1,0 +1,152 @@
+[
+  {
+    "id": "candidate-v1-01",
+    "question": "只统计进程最近一段时间访问过的页面，为什么比统计它曾经访问过的全部页面更适合估计当前内存需求？",
+    "book_name": "os",
+    "relevant_sections": [
+      "6.4.2 工作集"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-02",
+    "question": "磁盘总是先服务离当前磁头最近的请求，为什么远处的请求可能等待很久？",
+    "book_name": "os",
+    "relevant_sections": [
+      "7.8.2 早期的磁盘调度算法"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-03",
+    "question": "每次都从刚好能容纳作业的最小空闲分区分配内存，为什么仍可能产生许多难以利用的小碎片？",
+    "book_name": "os",
+    "relevant_sections": [
+      "5.4.3 动态分区分配"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-04",
+    "question": "接收端发现一个数据位发生翻转时，海明校验如何帮助定位出错的位置？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "2.4.3　海明校验"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-05",
+    "question": "有符号数用补码表示后，减法为什么可以转换成加法来执行？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "3.2.1　补码加减法运算方法"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-06",
+    "question": "一条机器指令与实现它的微指令序列是什么关系，为什么两者不能混为一谈？",
+    "book_name": "computer_organization",
+    "relevant_sections": [
+      "6.6.1　微程序控制的基本概念"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-07",
+    "question": "同一个IP地址配上不同的子网掩码，网络部分的判断为什么可能不同？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "4.3.1划分子网"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-08",
+    "question": "路由器收到一个分组后，为什么要先结合子网掩码判断目的网络，再选择下一跳？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "4.3.2使用子网时分组的转发"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-09",
+    "question": "数据已到达接收方但确认在途中丢失，发送方重传后，接收方怎样避免把同一份数据重复交付？",
+    "book_name": "computer_network",
+    "relevant_sections": [
+      "5.4.1停止等待协议"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-10",
+    "question": "用长短不一的二进制串表示字符时，为什么某个字符的编码不能成为另一个字符编码的前缀？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "5.7.3 哈夫曼编码"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-11",
+    "question": "折半查找为什么要求数据有序，每次比较后又如何确定下一步要查找的范围？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.2.2　折半查找"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-12",
+    "question": "有序数据连续插入普通二叉排序树可能让查找越来越慢，平衡二叉树通过什么约束缓解这一问题？",
+    "book_name": "data_structure",
+    "relevant_sections": [
+      "7.3.2　平衡二叉树"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-13",
+    "question": "订单表保存的客户编号在客户表中不存在，这违反哪类完整性约束，为什么会有问题？",
+    "book_name": "database",
+    "relevant_sections": [
+      "2.3.3 关系的完整性"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-14",
+    "question": "把锁从整张表改为单行，为什么并发程度可能提高而锁管理开销也可能增加？",
+    "book_name": "database",
+    "relevant_sections": [
+      "9.5.1 封锁粒度"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  },
+  {
+    "id": "candidate-v1-15",
+    "question": "当前样本里每个姓名恰好对应一个唯一学号，能否据此认定姓名函数决定学号？为什么？",
+    "book_name": "database",
+    "relevant_sections": [
+      "12.2.1 函数依赖的定义"
+    ],
+    "split": "holdout",
+    "annotation_status": "ai_draft_pending_review"
+  }
+]
