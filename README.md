@@ -366,7 +366,19 @@ rag-qa evaluate-retrieval --split holdout   # 仅在确认最终结论时使用
 标注集按教材分层切成 dev 35 题与 holdout 15 题。`--split` 默认取 dev，调参过程中不会读到
 留出集；holdout 只用于最终验证，避免参数被同一批问题反复拟合。需要旧口径的整体数字时用
 `--split all`。注意：当前的融合权重是在切分之前用全部 50 题扫出来的，因此这一版参数对
-holdout 而言并不干净，留出集从下一轮调参开始才真正生效。
+holdout 而言并不干净，今后停止使用这些题调参也不能消除已有的信息泄漏。
+这 15 题只能作为历史验证子集，不能支持独立泛化结论。
+
+新增 `data/evaluation/retrieval_holdout_candidates_v1.json` 包含五本教材各 3 题，
+由 AI 编写并初步核对章节存在性，尚未调用检索或评分，也不会被默认评测加载。
+它是待人工审核的候选题集，不能称为已验收的独立测试集。审核须确认问题可回答、
+标注章节提供足够证据，并排除与旧题的语义重复；定稿后冻结内容和参数，再进行一次最终验证。
+题集用途与出处见 `data/evaluation/retrieval_holdout_candidates_v1.md`。
+
+后续教材依据审核保存在 `data/evaluation/retrieval_holdout_candidates_v2.json`，保留v1以追溯修改。
+v2修正证据章节并替换3道题，每题附答案要点、源文件行号和SHA-256；审核记录见同名 `.md`。
+状态为AI依据审核完成、待人工审定，仍不作为默认评测输入。旁附 `.sha256` 标识本次审核版本，
+不是已经运行的评测成绩或正式冻结验收证明。
 
 该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
 
@@ -461,4 +473,14 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 | 文件 | 题数 | 说明 |
 |------|------|------|
 | `data/evaluation/test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
-| `data/evaluation/retrieval_questions.json` | 10 条 | 五本教材各 2 条章节标注题，用于检索策略对比 |
+| `data/evaluation/retrieval_questions.json` | 50 条 | 五本教材各 10 条章节标注题，按 dev 35 / holdout 15 分层切分，用于检索策略对比 |
+| `data/evaluation/retrieval_holdout_candidates_v2.json` | 15 条 | AI 依据审核完成、待人工审定的候选验证题，默认评测不加载 |
+
+
+### 表格回答上下文
+
+完整 HTML 表格在生成前转换为紧凑行列文本，合并单元格按占用位置展开，
+只纳入预算内的完整行；省略后续行时明确标记。含图片、标题或无法安全解释的结构暂时跳过，
+继续尝试后续资料；如果没有可用证据，不调用生成模型。
+界面引用与 RAGAS 使用的仍是实际送入模型的片段，原始检索结果保留不变。
+这项改动只作用于回答上下文，不改变索引；长表格在 embedding 阶段的输入截断仍需另行验证。
