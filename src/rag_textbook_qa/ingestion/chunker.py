@@ -49,12 +49,18 @@ def _atomic_line_flags(lines: list[str]) -> list[bool]:
                     break
             else:
                 end = len(lines) - 1
+        elif re.search(r"<table\b", line, re.IGNORECASE):
+            # A table may follow prose on the same line. Treat the containing
+            # lines atomically, including formulas inside the table cells.
+            end = len(lines) - 1
+            for probe in range(index, len(lines)):
+                if re.search(r"</table\s*>", lines[probe], re.IGNORECASE):
+                    end = probe
+                    break
         elif "$$" in line:
             end = index if line.count("$$") >= 2 else _closing_line(lines, index + 1, "$$")
         elif "\\[" in line:
             end = index if "\\]" in line else _closing_line(lines, index + 1, "\\]")
-        elif line.lstrip().startswith("<table"):
-            end = index if "</table>" in line else _closing_line(lines, index + 1, "</table>")
         else:
             index += 1
             continue
