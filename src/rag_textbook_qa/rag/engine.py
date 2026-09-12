@@ -29,6 +29,7 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.rag.context import evidence_excerpt
 from rag_textbook_qa.rag.tokenizer import (
     DEFAULT_BM25_MODE,
     BM25Tokenizer,
@@ -609,8 +610,9 @@ class RAGEngine:
             available = remaining - len(prefix) - len(suffix)
             if available <= 0:
                 continue
-            truncated = len(content) > available
-            excerpt = content[:available]
+            excerpt, truncated, table_compacted = evidence_excerpt(content, available)
+            if not excerpt:
+                continue
             block = prefix + excerpt + suffix
             blocks.append(block)
             sources.append(
@@ -620,6 +622,7 @@ class RAGEngine:
                     "citation_id": index,
                     "context_text": block,
                     "truncated": truncated,
+                    "table_compacted": table_compacted,
                     "char_count": len(excerpt),
                 }
             )
@@ -705,7 +708,9 @@ class RAGEngine:
                 results = self._rerank(query, results, top_k)
         retrieval_seconds = time.monotonic() - retrieval_started
 
-        if not results:
+        context, context_sources = self.select_context(results)
+        if not context_sources:
+            message = "没有找到相关内容" if not results else "检索资料无法完整装入上下文，请缩小问题范围"
             execution = self._execution_summary(
                 embedding_provider=embedding_provider,
                 trace_id=trace_id,
@@ -715,17 +720,17 @@ class RAGEngine:
             )
             return {
                 "query": query,
-                "results": [],
+                "results": results,
+                "context_sources": [],
                 "context": "",
                 "prompt": "",
-                "answer": "❌ 没有找到相关内容",
+                "answer": f"❌ {message}",
                 "llm_response": None,
-                "error": "没有找到相关内容",
+                "error": message,
                 "success": False,
                 "execution": execution,
             }
 
-        context, context_sources = self.select_context(results)
         prompt = self.build_prompt(query, context)
         llm_response = None
         answer = None

@@ -1,0 +1,492 @@
+[
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch1_s1_4_p124",
+    "original_chars": 2014,
+    "context_chars": 437,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch1_s1_4_p128",
+    "original_chars": 2174,
+    "context_chars": 507,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch4_s4_2_p238",
+    "original_chars": 6502,
+    "context_chars": 1968,
+    "used": true,
+    "omitted": true,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch12_s12_1_p756",
+    "original_chars": 2510,
+    "context_chars": 535,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch15_s15_2_p938",
+    "original_chars": 2818,
+    "context_chars": 0,
+    "used": false,
+    "omitted": true,
+    "compacted": false
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch15_s15_3_p970",
+    "original_chars": 3370,
+    "context_chars": 1325,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch15_s15_3_p973",
+    "original_chars": 3836,
+    "context_chars": 0,
+    "used": false,
+    "omitted": true,
+    "compacted": false
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch15_s15_3_p975",
+    "original_chars": 4068,
+    "context_chars": 1846,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch17_s17_3_p1108",
+    "original_chars": 2576,
+    "context_chars": 570,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据库原理及应用教程_mineru_chunks.json",
+    "source_sha256": "dd4cffbacef7e78e61eea316ad6b0377343198943ef93325de0608102a221461",
+    "id": "ch17_s17_3_p1112",
+    "original_chars": 2379,
+    "context_chars": 535,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch0_p012",
+    "original_chars": 2199,
+    "context_chars": 684,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch1_p106",
+    "original_chars": 4917,
+    "context_chars": 1341,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_s2_2_p159",
+    "original_chars": 2028,
+    "context_chars": 790,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_p166",
+    "original_chars": 3325,
+    "context_chars": 690,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_s2_2_p182",
+    "original_chars": 4327,
+    "context_chars": 1049,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_s2_3_p217",
+    "original_chars": 6033,
+    "context_chars": 1109,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_s2_3_p220",
+    "original_chars": 3859,
+    "context_chars": 631,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_s2_4_p246",
+    "original_chars": 4191,
+    "context_chars": 699,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_p270",
+    "original_chars": 6246,
+    "context_chars": 879,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_p272",
+    "original_chars": 2040,
+    "context_chars": 394,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch2_p284",
+    "original_chars": 2087,
+    "context_chars": 469,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch4_s4_5_p553",
+    "original_chars": 3154,
+    "context_chars": 543,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch4_s4_5_p555",
+    "original_chars": 3150,
+    "context_chars": 545,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch5_p685",
+    "original_chars": 2128,
+    "context_chars": 766,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch5_p690",
+    "original_chars": 2633,
+    "context_chars": 0,
+    "used": false,
+    "omitted": true,
+    "compacted": false
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch5_p699",
+    "original_chars": 2068,
+    "context_chars": 705,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch6_s6_3_p748",
+    "original_chars": 3203,
+    "context_chars": 1083,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch6_s6_5_p845",
+    "original_chars": 8640,
+    "context_chars": 1583,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch6_s6_5_p849",
+    "original_chars": 3451,
+    "context_chars": 778,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch7_s7_3_p964",
+    "original_chars": 2670,
+    "context_chars": 824,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch7_s7_3_p975",
+    "original_chars": 2043,
+    "context_chars": 691,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch7_s7_5_p1008",
+    "original_chars": 2372,
+    "context_chars": 502,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机组成原理_mineru_chunks.json",
+    "source_sha256": "48fc3b9ef1424431db185e9625a3f6d1b83c0ead39ef07263a4850c808403b52",
+    "id": "ch8_s8_1_p1035",
+    "original_chars": 2310,
+    "context_chars": 613,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch3_s3_6_p299",
+    "original_chars": 2044,
+    "context_chars": 404,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch3_s3_6_p305",
+    "original_chars": 2034,
+    "context_chars": 574,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch5_s5_7_p473",
+    "original_chars": 2590,
+    "context_chars": 495,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch5_s5_7_p475",
+    "original_chars": 2616,
+    "context_chars": 521,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch6_s6_6_p560",
+    "original_chars": 3709,
+    "context_chars": 999,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch6_s6_6_p583",
+    "original_chars": 2013,
+    "context_chars": 716,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch6_s6_6_p592",
+    "original_chars": 6971,
+    "context_chars": 1253,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch8_s8_7_p866",
+    "original_chars": 2939,
+    "context_chars": 1243,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/数据结构_mineru_chunks.json",
+    "source_sha256": "56464285dfd5ffc73153c020deb1008b9910884321130063f2c4223adba4a1cf",
+    "id": "ch8_s8_8_p875",
+    "original_chars": 2192,
+    "context_chars": 626,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/操作系统_mineru_chunks.json",
+    "source_sha256": "70648601a50c1d215d7c02042f291193680b69ccea8872626118b328793e9598",
+    "id": "ch12_s12_7_p095",
+    "original_chars": 7630,
+    "context_chars": 0,
+    "used": false,
+    "omitted": true,
+    "compacted": false
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/操作系统_mineru_chunks.json",
+    "source_sha256": "70648601a50c1d215d7c02042f291193680b69ccea8872626118b328793e9598",
+    "id": "ch3_p389",
+    "original_chars": 2158,
+    "context_chars": 509,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/操作系统_mineru_chunks.json",
+    "source_sha256": "70648601a50c1d215d7c02042f291193680b69ccea8872626118b328793e9598",
+    "id": "ch9_s9_2_p1037",
+    "original_chars": 3104,
+    "context_chars": 495,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机网络_mineru_chunks.json",
+    "source_sha256": "e87ed089799017cbd3d2d45bcc4957ba925e18736d39e9f5e37db881eb39a30f",
+    "id": "ch4_s4_3_p337",
+    "original_chars": 2285,
+    "context_chars": 601,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机网络_mineru_chunks.json",
+    "source_sha256": "e87ed089799017cbd3d2d45bcc4957ba925e18736d39e9f5e37db881eb39a30f",
+    "id": "ch4_s4_3_p349",
+    "original_chars": 2683,
+    "context_chars": 758,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机网络_mineru_chunks.json",
+    "source_sha256": "e87ed089799017cbd3d2d45bcc4957ba925e18736d39e9f5e37db881eb39a30f",
+    "id": "ch6_s6_7_p698",
+    "original_chars": 2332,
+    "context_chars": 640,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  },
+  {
+    "source": "artifacts/chunks/five-book-audit-20260912/计算机网络_mineru_chunks.json",
+    "source_sha256": "e87ed089799017cbd3d2d45bcc4957ba925e18736d39e9f5e37db881eb39a30f",
+    "id": "ch6_s6_7_p703",
+    "original_chars": 2129,
+    "context_chars": 668,
+    "used": true,
+    "omitted": false,
+    "compacted": true
+  }
+]
