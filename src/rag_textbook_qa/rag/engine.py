@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
@@ -133,14 +134,41 @@ def _candidate_key(result: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+# A contents line carries section numbering and ends on a page number. Whole
+# table-of-contents pages were chunked as ordinary sections, so they can be
+# retrieved and packed into the prompt as if they were evidence. Detecting on
+# body shape rather than on the heading matters: one textbook's contents pages
+# carry headings that look perfectly normal.
+_TOC_NUMBER_START = re.compile(r"^\s*(?:第\s*\d+\s*章|\d+(?:[.．]\d+)*)")
+_TOC_PAGE_END = re.compile(r"[\s\u2003\u3000.．·…]\d{1,3}\s*$")
+_TOC_MIN_LINES = 3
+_TOC_LINE_RATIO = 0.5
+
+
+def _is_contents_listing(content: object) -> bool:
+    """Detect a contents page by the shape of its body, not its heading."""
+
+    lines = [line for line in str(content or "").splitlines() if line.strip()]
+    if len(lines) < _TOC_MIN_LINES:
+        return False
+    listed = sum(
+        1
+        for line in lines
+        if _TOC_NUMBER_START.match(line) and _TOC_PAGE_END.search(line)
+    )
+    return listed / len(lines) >= _TOC_LINE_RATIO
+
+
 def _is_candidate_noise(result: dict[str, Any]) -> bool:
-    """Exclude explicit exercise sections while retaining imperfect legacy headings."""
+    """Exclude exercises and contents pages while keeping imperfect headings."""
 
     hierarchy = " ".join(
         str(result.get(field, ""))
         for field in ("chapter", "section_h2", "section_h3", "section_h4")
     )
-    return any(marker in hierarchy for marker in ("习题", "思考题"))
+    if any(marker in hierarchy for marker in ("习题", "思考题")):
+        return True
+    return _is_contents_listing(result.get("content"))
 
 
 def _reciprocal_rank_fusion(

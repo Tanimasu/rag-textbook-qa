@@ -11,7 +11,11 @@ from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
-from rag_textbook_qa.rag.engine import _reciprocal_rank_fusion
+from rag_textbook_qa.rag.engine import (
+    _is_candidate_noise,
+    _is_contents_listing,
+    _reciprocal_rank_fusion,
+)
 
 
 class FakeEmbeddingProvider:
@@ -411,6 +415,46 @@ class FusionWeightTests(unittest.TestCase):
     def test_negative_weight_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "非负有限数"):
             RAGEngine(fusion_weights={"bm25": -1.0})
+
+
+class ContentsListingTests(unittest.TestCase):
+    TOC = (
+        "8.1.1 总线分类... .287\n"
+        "8.1.2 总线组成... .289\n"
+        "8.1.3 总线标准... .291\n"
+        "8.1.4 总线性能指标.. .293"
+    )
+    PROSE = (
+        "总线是连接多个部件的信息传输线，是各部件共享的传输介质。\n"
+        "当多个部件与总线相连时，如果出现两个或两个以上部件同时向总线发送信息，\n"
+        "就会发生信号冲突，因此同一时刻只允许一个部件向总线发送信息。"
+    )
+
+    def test_contents_pages_are_detected_by_body_shape(self):
+        self.assertTrue(_is_contents_listing(self.TOC))
+
+    def test_prose_is_never_mistaken_for_a_contents_page(self):
+        self.assertFalse(_is_contents_listing(self.PROSE))
+
+    def test_short_bodies_are_left_alone(self):
+        # Two lines cannot establish a ratio; a real section may open this way.
+        self.assertFalse(_is_contents_listing("5.1 概述 12\n5.2 分类 14"))
+
+    def test_a_contents_page_under_a_normal_heading_is_still_noise(self):
+        # One textbook's contents pages carry ordinary-looking headings, so the
+        # heading alone cannot decide this.
+        self.assertTrue(
+            _is_candidate_noise(
+                {"chapter": "第8章", "section_h2": "8.1　总线概述", "content": self.TOC}
+            )
+        )
+
+    def test_real_sections_survive_the_filter(self):
+        self.assertFalse(
+            _is_candidate_noise(
+                {"chapter": "第8章", "section_h2": "8.1.1 总线分类", "content": self.PROSE}
+            )
+        )
 
 
 class ContextPackingTests(unittest.TestCase):
