@@ -1,5 +1,7 @@
 import unittest
 
+import jieba
+
 from rag_textbook_qa.rag.tokenizer import BM25Tokenizer, heading_terms
 
 
@@ -20,6 +22,23 @@ class HeadingTermTests(unittest.TestCase):
 
 
 class TokenizerTests(unittest.TestCase):
+    def test_dictionary_does_not_mutate_other_instances_or_global_jieba(self):
+        text = "阿尔法贝塔伽马"
+        plain = BM25Tokenizer("jieba")
+        hybrid = BM25Tokenizer("hybrid")
+        before = plain(text), hybrid(text), list(jieba.cut(text))
+        dictionary = BM25Tokenizer("dictionary", terms=[text])
+        self.assertEqual(dictionary(text), [text])
+        self.assertEqual((plain(text), hybrid(text), list(jieba.cut(text))), before)
+        self.assertEqual(BM25Tokenizer("jieba")(text), before[0])
+
+    def test_dictionary_instances_keep_their_own_terms(self):
+        first = BM25Tokenizer("dictionary", terms=["阿尔法贝塔伽马"])
+        before = first("贝塔伽马德尔塔")
+        second = BM25Tokenizer("dictionary", terms=["贝塔伽马德尔塔"])
+        self.assertEqual(first("贝塔伽马德尔塔"), before)
+        self.assertEqual(second("贝塔伽马德尔塔"), ["贝塔伽马德尔塔"])
+
     def test_unknown_mode_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "未知的 BM25 分词模式"):
             BM25Tokenizer("word2vec")
