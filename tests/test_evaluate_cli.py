@@ -102,6 +102,7 @@ class EvaluateCliTests(unittest.TestCase):
                         "mean_recall_at_k": 1.0,
                         "hit_rate_at_k": 1.0,
                         "mrr": 1.0,
+                        "mean_ndcg_at_k": 1.0,
                         "mean_latency_seconds": 0.01,
                     }
                     for strategy in ("bm25", "embedding", "hybrid", "hybrid-rerank")

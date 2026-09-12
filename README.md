@@ -408,7 +408,16 @@ v2修正证据章节并替换3道题，每题附答案要点、源文件行号�
 模型据原文生成的题使 BM25 的 Recall@5 达到 0.975，人工措辞的题只有 0.680，而向量检索几乎不变。
 改写后候选题的字面重合度中位数由 0.394 降至 0.345，接近人工 50 题的 0.319。详见同名 `.md`。
 
-该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
+该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR、nDCG@K 与平均检索耗时。
+
+相关性按四级评分而非命中与否：命中标注小节记 3 分，命中同一父节下的兄弟小节记 2 分，同章记 1 分，
+其余记 0 分。这样设计的原因是失败样本分析显示，检索常落在标注小节的相邻小节上（需要 3.5.3 却返回
+3.5.2），二元指标把这种情况与召回到完全无关的章节同等对待。nDCG 的理想排序固定为标注小节排在最前、
+其余位置填兄弟小节，使分数有上界 1；覆盖程度仍由 Recall@K 负责。
+
+**重排环节不是完全可复现的。** BM25 与向量路径逐题结果稳定，但交叉编码器运行在 MPS 上，
+候选分数接近时浮点微差会改变名次，实测可使 Recall@5 在 0.877 与 0.892 之间波动，幅度约一道题。
+解读含重排的结论时须考虑这一抖动。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
 
 分词和融合权重都是用这套评测调出来的。
 

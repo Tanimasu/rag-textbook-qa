@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -91,6 +93,69 @@ def _normalized(value: object) -> str:
     return "".join(str(value or "").lower().split())
 
 
+# Relevance is not binary here. Failure analysis showed the retriever landing on
+# a sibling of the annotated section — 3.5.2 when 3.5.3 was wanted — which a
+# hit/miss metric scores the same as retrieving a different chapter entirely.
+EXACT_GRADE = 3
+SIBLING_GRADE = 2
+CHAPTER_GRADE = 1
+_SECTION_NUMBER = re.compile(r"\d+(?:\.\d+)+|\d+")
+
+
+def _numbers(text: str) -> list[tuple[str, ...]]:
+    """Section numbers in a heading, each split into its components."""
+
+    return [tuple(match.group().split("."))
+            for match in _SECTION_NUMBER.finditer(str(text or ""))]
+
+
+def grade_result(result: dict[str, Any], markers: Sequence[str]) -> int:
+    """Grade one result against the annotated sections.
+
+    Exact means the annotated heading appears in the result's own path. Sibling
+    means the two section numbers share every component but the last, so the
+    result sits beside the annotated section under the same parent. Chapter
+    means only the leading component agrees. A marker carrying no section
+    number can only reach exact or chapter, since nothing identifies its parent.
+    """
+
+    path = _normalized(result_section(result))
+    if any(_normalized(marker) in path for marker in markers):
+        return EXACT_GRADE
+
+    found = _numbers(result_section(result))
+    best = 0
+    for marker in markers:
+        for wanted in _numbers(marker):
+            for seen in found:
+                if len(wanted) > 1 and len(seen) >= 1 and wanted[:-1] == seen[: len(wanted) - 1]:
+                    best = max(best, SIBLING_GRADE)
+                elif wanted[0] == seen[0]:
+                    best = max(best, CHAPTER_GRADE)
+    return best
+
+
+def _dcg(grades: Sequence[int]) -> float:
+    return sum((2 ** grade - 1) / math.log2(rank + 1)
+               for rank, grade in enumerate(grades, 1))
+
+
+def ndcg_at_k(grades: Sequence[int], wanted: int, top_k: int) -> float:
+    """Normalized DCG against an ideal of `wanted` exact hits, then siblings.
+
+    The ideal cannot be read off the corpus, so it is fixed: every annotated
+    section retrieved first, the remaining ranks filled with siblings, which a
+    numbered textbook always has. That keeps the score bounded by one and
+    rewards ordering the best evidence first. Coverage stays Recall@K's job.
+    """
+
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+    ideal = ([EXACT_GRADE] * wanted + [SIBLING_GRADE] * top_k)[:top_k]
+    best = _dcg(ideal)
+    return _dcg(list(grades)[:top_k]) / best if best else 0.0
+
+
 def result_section(result: dict[str, Any]) -> str:
     """Return the visible heading hierarchy used for relevance matching."""
 
@@ -115,9 +180,11 @@ def score_ranked_results(
     matched: set[str] = set()
     first_relevant_rank: int | None = None
     top_sections: list[str] = []
+    grades: list[int] = []
     for rank, result in enumerate(results[:top_k], 1):
         section = result_section(result)
         top_sections.append(section)
+        grades.append(grade_result(result, list(expected.values())))
         normalized_section = _normalized(section)
         current_matches = {
             marker
@@ -131,6 +198,8 @@ def score_ranked_results(
     return {
         "recall_at_k": len(matched) / len(expected),
         "reciprocal_rank": 0.0 if first_relevant_rank is None else 1 / first_relevant_rank,
+        "ndcg_at_k": ndcg_at_k(grades, len(expected), top_k),
+        "grades": grades,
         "first_relevant_rank": first_relevant_rank,
         "matched_sections": sorted(matched),
         "top_sections": top_sections,
@@ -175,6 +244,7 @@ def evaluate_retrieval(
         "mean_recall_at_k": sum(case["recall_at_k"] for case in cases) / count,
         "hit_rate_at_k": sum(case["first_relevant_rank"] is not None for case in cases) / count,
         "mrr": sum(case["reciprocal_rank"] for case in cases) / count,
+        "mean_ndcg_at_k": sum(case["ndcg_at_k"] for case in cases) / count,
         "mean_latency_seconds": sum(case["elapsed_seconds"] for case in cases) / count,
         "cases": cases,
     }
