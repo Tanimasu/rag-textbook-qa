@@ -92,14 +92,16 @@ def _summarize_provider_calls(calls: list[ProviderCall]) -> dict[str, Any] | Non
     }
 
 
-# Re-swept after BM25 tokenization improved its Recall@5 from 0.400 to 0.700.
-# Reranked Recall@5 holds at 1.000 across weights 0.1-0.6 and falls off at 0.8,
-# and hybrid MRR varies by less than one question inside that band, so this
-# takes the middle of the safe region rather than an endpoint. A stronger BM25
-# earns more say than the 0.2 it had while its tokenizer was breaking terms.
-# Ten questions only: re-sweep whenever the tokenizer or the set changes.
+# Swept on the fifty human-written annotations. With the reranker on, which
+# is how this ships, Recall@5 plateaus at 0.900 across weights 0.4-0.6 and
+# falls away on both sides, so this takes the middle of that plateau. Weight
+# 0.4 edges it out on the no-reranker path (MRR 0.701 against 0.681) but sits
+# at the plateau edge, and that gap is worth about one question.
+# BM25 now carries real weight: at 0.0 the reranked Recall@5 drops to 0.820,
+# four questions' worth, against one question before the tokenizer was fixed.
+# Re-sweep whenever the tokenizer, the corpus, or the annotation set changes.
 DEFAULT_FUSION_WEIGHTS: Mapping[str, float] = MappingProxyType(
-    {"embedding": 1.0, "bm25": 0.3}
+    {"embedding": 1.0, "bm25": 0.5}
 )
 
 
