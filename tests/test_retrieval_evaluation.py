@@ -14,6 +14,7 @@ from rag_textbook_qa.evaluation.retrieval import (
     save_retrieval_report,
     score_ranked_results,
     search_with_strategy,
+    select_split,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +95,49 @@ class RetrievalEvaluationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "relevant_sections"):
                 load_retrieval_questions(path)
+
+    def test_questions_without_a_split_default_to_dev(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "questions.json"
+            path.write_text(
+                '[{"question":"问题","book_name":"os","relevant_sections":["3.5"]}]',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(load_retrieval_questions(path)[0].split, "dev")
+
+    def test_an_unknown_split_value_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "questions.json"
+            path.write_text(
+                '[{"question":"问题","book_name":"os","relevant_sections":["3.5"],'
+                '"split":"test"}]',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "split"):
+                load_retrieval_questions(path)
+
+    def test_select_split_filters_and_refuses_an_empty_selection(self):
+        dev = RetrievalQuestion("问题1", "os", ("3.5",), "dev")
+        holdout = RetrievalQuestion("问题2", "os", ("3.6",), "holdout")
+
+        self.assertEqual(select_split([dev, holdout], "dev"), [dev])
+        self.assertEqual(select_split([dev, holdout], "all"), [dev, holdout])
+        with self.assertRaisesRegex(ValueError, "没有问题"):
+            select_split([dev], "holdout")
+
+    def test_repository_holdout_is_stratified_and_untouched_by_tuning(self):
+        questions = load_retrieval_questions(
+            REPOSITORY_ROOT / "data" / "evaluation" / "retrieval_questions.json"
+        )
+        holdout = [question for question in questions if question.split == "holdout"]
+
+        self.assertEqual(len(holdout), 15)
+        self.assertEqual(
+            Counter(question.book_name for question in holdout),
+            {book_name: 3 for book_name in CHUNK_FILES},
+        )
 
     def test_repository_annotations_cover_ten_questions_per_book(self):
         questions = load_retrieval_questions(

@@ -4,161 +4,184 @@
     "book_name": "os",
     "relevant_sections": [
       "1.OS作为用户与计算机硬件系统之间的接口"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "计算机中常说的\"进程\"具体是指什么？系统为什么要引入这个概念？",
     "book_name": "os",
     "relevant_sections": [
       "2.2.1 进程的定义与特征"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "既然操作系统中已经有了进程，为什么还要引入\"线程\"？这样做有什么好处？",
     "book_name": "os",
     "relevant_sections": [
       "2.5.1 线程的引入"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机运行中所谓的\"死锁\"现象，具体指的是一种什么情况？",
     "book_name": "os",
     "relevant_sections": [
       "3.5.3 死锁的定义、必要条件与处理方法"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "计算机的物理内存通常有限，为什么却能运行比实际内存大得多的软件或游戏？",
     "book_name": "os",
     "relevant_sections": [
       "6.1.2 虚拟存储器的定义与特征"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机有时会卡顿并频繁读写硬盘，这在操作系统中被称为\"抖动\"，请问产生抖动的原因是什么？",
     "book_name": "os",
     "relevant_sections": [
       "6.4.1 多道程序度与“抖动”"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机在处理如打印、读写U盘等输入输出操作时，为什么经常需要使用\"缓冲区\"？",
     "book_name": "os",
     "relevant_sections": [
       "7.7.1 缓冲的引入"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "多个人同时向一台打印机发送打印任务时，为什么打印机不会出现混乱？操作系统是如何处理的？",
     "book_name": "os",
     "relevant_sections": [
       "7.6.2 假脱机系统"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机中的文件通常被组织成树形目录结构，这种层次化的设计有什么好处？",
     "book_name": "os",
     "relevant_sections": [
       "8.3.3　树形目录"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "操作系统中提供\"文件共享\"功能的主要目的是什么？如果不能共享文件会带来哪些问题？",
     "book_name": "os",
     "relevant_sections": [
       "8.4 文件共享"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "现在的电脑通常被称为冯·诺依曼架构，这种架构最核心的思想是什么？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "1.1 计算机发展历程"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "电脑中区分寄存器、Cache、内存和硬盘等多种存储设备的目的是什么？为什么不统一使用一种存储设备？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "4.1.3　存储系统层次结构"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "CPU中的Cache（高速缓存）是如何提高运行速度的？它的工作原理是什么？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "4.5.1　cache 工作原理"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "为什么电脑主存（DRAM）里的数据如果不定期刷新就会丢失？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "4.2.2　动态 MOS 存储器"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "现代CPU的流水线技术具体是指什么？它是否缩短了单条指令的执行时间？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "7.1.1　流水线的基本概念"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机内部的CPU、内存和各种外设是如何连接并互相传输数据的？总线在其中起到了什么作用？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "8.1 总线概述"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "电脑运行程序时，用户敲击键盘或者点击鼠标，计算机是如何立刻感知并做出反应的？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "9.5 程序中断控制方式"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机在硬盘和内存之间拷贝大文件时，数据搬运工作是由CPU一直负责的吗？如果不是，是哪个部件在处理？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "9.6.1　DMA 的基本概念"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "计算机内部表示小数时为什么要使用浮点数？相比定点数有什么优势？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "2.2.3　浮点数表示"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "复杂指令集（CISC）和精简指令集（RISC）这两种处理器设计路线的主要区别在哪里？",
     "book_name": "computer_organization",
     "relevant_sections": [
       "5.6 CISC 和 RISC"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "计算机网络体系结构中，OSI提出了七层模型，而TCP/IP是四层模型。在实际学习和研究网络原理时，通常采用五层协议体系结构的原因是什么？",
     "book_name": "computer_network",
     "relevant_sections": [
       "1.7.3具有五层协议的体系结构"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "既然每个网络设备都有全球唯一的IP地址，为什么在局域网里传输数据时，还必须通过ARP协议去查找设备的MAC地址？",
     "book_name": "computer_network",
     "relevant_sections": [
       "4.2.4地址解析协议 ARP"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "现在的网络普遍采用无分类编址（CIDR），这种改变主要是为了解决传统的A类、B类、C类地址存在的什么问题？",
     "book_name": "computer_network",
     "relevant_sections": [
       "4.3.3无分类编址CIDR（构造超网）"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "路由器在计算最短路径时，RIP协议和OSPF协议在交换路由信息的范围和内容上有什么本质区别？",
@@ -166,188 +189,215 @@
     "relevant_sections": [
       "4.5.2内部网关协议 RIP",
       "1.OSPF协议的基本特点"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "很多在线视频会议和实时游戏底层使用的是UDP协议而不是TCP协议，TCP既然能保证数据不丢失，为什么不全都用TCP？",
     "book_name": "computer_network",
     "relevant_sections": [
       "5.2.1 UDP 概述"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "TCP建立连接时必须要进行\"三次握手\"，如果简化成\"两次握手\"，也就是客户端发送请求、服务器回复确认就建立连接，会产生什么严重的后果？",
     "book_name": "computer_network",
     "relevant_sections": [
       "5.9.1TCP 的连接建立"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "TCP的拥塞控制里有个\"慢开始\"算法，既然叫慢开始，为什么网络带宽允许的时候它发送数据的窗口大小增长得反而非常快？",
     "book_name": "computer_network",
     "relevant_sections": [
       "5.8.2TCP 的拥塞控制方法"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "在浏览器输入网址后需要通过DNS解析IP地址，本地域名服务器在向根域名服务器查询时，通常采用迭代查询而不是递归查询，这是出于什么考虑？",
     "book_name": "computer_network",
     "relevant_sections": [
       "6.1.3域名服务器"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "HTTP协议本身被设计成无状态的，在电商网站购物时，服务器是如何记住用户的登录状态和购物车信息的？",
     "book_name": "computer_network",
     "relevant_sections": [
       "1.HTTP的操作过程"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "在网络安全传输中，公钥密码体制（非对称加密）比对称密钥体制更安全，为什么现在HTTPS等协议还要把这两种加密方式混合起来使用？",
     "book_name": "computer_network",
     "relevant_sections": [
       "7.2.2公钥密码体制"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "写代码时经常用数组存数据，为什么还要发明链表这种结构？数组有什么局限性？",
     "book_name": "data_structure",
     "relevant_sections": [
       "2.6 顺序表和链表的比较"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "栈这种数据结构只能在同一端进行插入和删除，这种后进先出的限制在实际开发中有什么具体用途？",
     "book_name": "data_structure",
     "relevant_sections": [
       "3.1.1 栈的定义和特点"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "队列是先进先出的结构，普通队列在数组装满但头部还有空闲时会报错，如何解决这种假溢出问题？",
     "book_name": "data_structure",
     "relevant_sections": [
       "3.5.2　循环队列——队列的顺序表示和实现"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "KMP算法在做字符串匹配时，为什么比普通的暴力匹配方法快那么多？它省略了哪些步骤？",
     "book_name": "data_structure",
     "relevant_sections": [
       "2.KMP 算法"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "二叉树有前序、中序、后序好几种遍历方式，区分这几种遍历方式的标准是什么？",
     "book_name": "data_structure",
     "relevant_sections": [
       "5.5.1　遍历二叉树"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "线索二叉树里面说的\"线索\"到底是指什么？把普通二叉树变成线索二叉树有什么好处？",
     "book_name": "data_structure",
     "relevant_sections": [
       "5.5.2　线索二叉树"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "图的深度优先搜索（DFS）和广度优先搜索（BFS）在遍历思路上有什么本质的不同？",
     "book_name": "data_structure",
     "relevant_sections": [
       "6.5 图的遍历"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "在铺设通信网络时，想要用最低的成本把所有城市连起来，数据结构中用什么算法可以解决这种问题？",
     "book_name": "data_structure",
     "relevant_sections": [
       "6.6.1　最小生成树"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "哈希表（散列表）宣称能实现非常快的数据查找，它内部是怎么做到直接找到数据位置的？",
     "book_name": "data_structure",
     "relevant_sections": [
       "7.4.1 散列表的基本概念"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "快速排序被称为最快的内部排序算法之一，它的核心排序思想是怎么样的？",
     "book_name": "data_structure",
     "relevant_sections": [
       "8.3.2　快速排序"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "数据库的事务到底是什么？为什么转账这种操作一定要用事务来处理？",
     "book_name": "database",
     "relevant_sections": [
       "9.2.1　事务的概念"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "给数据库表建索引能让查询变快，索引底层是怎么做到的？有没有什么缺点？",
     "book_name": "database",
     "relevant_sections": [
       "7.3.1 索引的作用"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "设计数据库表的时候经常提到要符合第三范式（3NF），这是为了解决什么问题？如果不遵循会怎样？",
     "book_name": "database",
     "relevant_sections": [
       "12.3.4　第三范式"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "在动手写SQL建表之前，为什么要先画E-R图？实体和联系是怎么转换成真正的数据库表的？",
     "book_name": "database",
     "relevant_sections": [
       "13.1.2 概念模型的E-R表示方式"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "写SQL查询时经常用到内连接（Inner Join）和左连接（Left Join），这两者在匹配数据时有什么根本的区别？",
     "book_name": "database",
     "relevant_sections": [
       "6.2.2　内连接查询"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "多个用户同时修改数据库里的同一行数据时很容易出错，数据库是怎么解决这种并发冲突的？",
     "book_name": "database",
     "relevant_sections": [
       "9.5.1 封锁粒度"
-    ]
+    ],
+    "split": "holdout"
   },
   {
     "question": "数据库里的视图（View）和普通的物理表有什么不一样？建视图有什么实际用处？",
     "book_name": "database",
     "relevant_sections": [
       "7.1.1 视图概述"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "触发器这个功能听起来很自动化，它一般用在什么样的业务场景下？",
     "book_name": "database",
     "relevant_sections": [
       "16.1.1 触发器概述"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "设计表结构时，主键和唯一索引都能保证某一列的数据不重复，它们之间到底有什么区别？",
     "book_name": "database",
     "relevant_sections": [
       "2.3.1　候选码和主码"
-    ]
+    ],
+    "split": "dev"
   },
   {
     "question": "课本里讲的关系代数理论，比如选择、投影、连接，这些数学符号和我们平时写的SQL语句是什么关系？",
     "book_name": "database",
     "relevant_sections": [
       "2.1.1 关系的形式化定义"
-    ]
+    ],
+    "split": "holdout"
   }
 ]

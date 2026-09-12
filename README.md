@@ -360,7 +360,13 @@ NaN；实测同一道判断题，开启思考耗时 7.2 秒且判错，关闭后
 
 ```bash
 rag-qa evaluate-retrieval --strategy all --top-k 5
+rag-qa evaluate-retrieval --split holdout   # 仅在确认最终结论时使用
 ```
+
+标注集按教材分层切成 dev 35 题与 holdout 15 题。`--split` 默认取 dev，调参过程中不会读到
+留出集；holdout 只用于最终验证，避免参数被同一批问题反复拟合。需要旧口径的整体数字时用
+`--split all`。注意：当前的融合权重是在切分之前用全部 50 题扫出来的，因此这一版参数对
+holdout 而言并不干净，留出集从下一轮调参开始才真正生效。
 
 该命令使用 `data/evaluation/retrieval_questions.json`，依次比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR 与平均检索耗时。Hybrid 使用 RRF（Reciprocal Rank Fusion）按名次融合两路结果，同时去除重复 chunk 和明确的习题候选，避免直接混合量纲不同的 BM25 与向量分数。评测会关闭 HyDE，不调用 LLM，也不会消耗 LLM API token；为保证结果可比，远程 Worker 不可用时会直接报错，不会静默回退到本地。JSON 报告默认写入 `artifacts/evaluations/retrieval/`。
 

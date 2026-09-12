@@ -136,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="检索策略；默认依次评测全部策略",
     )
     retrieval_evaluate.add_argument("--top-k", type=int, default=5)
+    retrieval_evaluate.add_argument(
+        "--split",
+        choices=("dev", "holdout", "all"),
+        default="dev",
+        help="评测划分；默认只用 dev，留出集不参与调参",
+    )
 
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
@@ -344,6 +350,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
         load_retrieval_questions,
         run_retrieval_strategies,
         save_retrieval_report,
+        select_split,
     )
     from rag_textbook_qa.rag import RAGEngine
 
@@ -352,7 +359,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
     questions_path = args.questions or (
         settings.paths.evaluation_data / "retrieval_questions.json"
     )
-    questions = load_retrieval_questions(questions_path)
+    questions = select_split(load_retrieval_questions(questions_path), args.split)
     strategies = RETRIEVAL_STRATEGIES if args.strategy == "all" else (args.strategy,)
 
     # A benchmark must fail visibly instead of silently mixing remote and local results.
@@ -379,7 +386,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
         report,
         args.output_dir or settings.paths.evaluations / "retrieval",
     )
-    print(f"检索评测完成：{report['question_count']} 题，Top {report['top_k']}")
+    print(f"检索评测完成：{args.split} 划分 {report['question_count']} 题，Top {report['top_k']}")
     for strategy, result in report["strategies"].items():
         print(
             f"{strategy}: "
