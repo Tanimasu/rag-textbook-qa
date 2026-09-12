@@ -20,6 +20,48 @@ class EvaluationTests(unittest.TestCase):
         ):
             self.assertEqual(_ragas_embedding_model(), "example/embedding-model")
 
+    def test_relevancy_sample_count_is_configurable_and_validated(self):
+        from rag_textbook_qa.evaluation.ragas import (
+            DEFAULT_RELEVANCY_SAMPLES,
+            relevancy_samples,
+        )
+
+        self.assertEqual(relevancy_samples({}), DEFAULT_RELEVANCY_SAMPLES)
+        self.assertEqual(relevancy_samples({"RAGAS_RELEVANCY_SAMPLES": "5"}), 5)
+        with self.assertRaisesRegex(ValueError, "大于等于 1"):
+            relevancy_samples({"RAGAS_RELEVANCY_SAMPLES": "0"})
+        with self.assertRaisesRegex(ValueError, "必须是整数"):
+            relevancy_samples({"RAGAS_RELEVANCY_SAMPLES": "三"})
+
+    def test_averaging_ignores_rows_a_run_failed_to_score(self):
+        from rag_textbook_qa.evaluation.ragas import average_samples
+
+        averaged = average_samples([[0.8, 0.4, float("nan")], [0.6, None, float("nan")]])
+        self.assertAlmostEqual(averaged[0], 0.7)
+        self.assertAlmostEqual(averaged[1], 0.4)
+        self.assertIsNone(averaged[2])
+        self.assertEqual(average_samples([]), [])
+        with self.assertRaisesRegex(ValueError, "行数不一致"):
+            average_samples([[0.5], [0.5, 0.5]])
+
+    def test_averaged_result_replaces_only_its_own_column(self):
+        import pandas as pd
+
+        from rag_textbook_qa.evaluation.ragas import _AveragedResult
+
+        class Stub:
+            marker = "kept"
+
+            def to_pandas(self):
+                return pd.DataFrame({"answer_relevancy": [0.1, 0.2], "faithfulness": [1.0, 1.0]})
+
+        wrapped = _AveragedResult(Stub(), "answer_relevancy", [0.5, 0.6])
+        frame = wrapped.to_pandas()
+
+        self.assertEqual(list(frame["answer_relevancy"]), [0.5, 0.6])
+        self.assertEqual(list(frame["faithfulness"]), [1.0, 1.0])
+        self.assertEqual(wrapped.marker, "kept")
+
     def test_judge_thinking_is_only_disabled_when_asked(self):
         from rag_textbook_qa.evaluation.ragas import judge_model_kwargs
 

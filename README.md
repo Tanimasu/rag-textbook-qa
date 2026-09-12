@@ -349,6 +349,11 @@ RAGAS 的上下文现在使用实际发送给生成模型的文本，质量均�
 （Qwen3 系列如此），需设置 `RAGAS_DISABLE_THINKING=true`，否则 faithfulness 会因超时全部变成
 NaN；实测同一道判断题，开启思考耗时 7.2 秒且判错，关闭后 0.5 秒且判对。该参数只在端点支持时发送。
 
+四项指标中只有 answer_relevancy 依赖向量模型：它先让评判模型从答案反推出一个问题，再比较
+反推问题与原问题的向量相似度。该指标单次采样噪声很大，同一批答案重测两次平均绝对差 0.033、
+最差一题 0.367。RAGAS 原本通过一次请求返回多个候选来平均，而 SiliconFlow 拒绝 `n>1`，
+因此改为独立重复 `RAGAS_RELEVANCY_SAMPLES` 轮（默认 3）后取平均，设为 1 可恢复单次行为。
+
 如需同时运行无 RAG 基线对比，使用 `rag-qa evaluate --baseline`（会额外消耗 token）。原来的 `python project/ragas_evaluation.py` 保留为兼容入口，并延续同时运行 baseline 的旧行为。
 
 在运行会调用 LLM 的 RAGAS 评估前，可以先只比较检索链路：

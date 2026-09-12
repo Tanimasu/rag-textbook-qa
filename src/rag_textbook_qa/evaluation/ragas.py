@@ -6,7 +6,7 @@ import copy
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,69 @@ def judge_model_kwargs(environ: Mapping[str, str] | None = None) -> dict[str, An
     if requested not in {"1", "true", "yes", "on"}:
         return {}
     return {"extra_body": {"enable_thinking": False}}
+
+
+DEFAULT_RELEVANCY_SAMPLES = 3
+
+
+def relevancy_samples(environ: Mapping[str, str] | None = None) -> int:
+    """How many times to score answer relevancy before averaging.
+
+    The metric reverse-generates a question from the answer and compares
+    embeddings, so one sample is one draw from a noisy process: re-scoring the
+    same answers moved rows by up to 0.37 and the mean by 0.03. RAGAS averages
+    `strictness` draws from a single `n=N` completion, which SiliconFlow
+    rejects with "n must be 1", so the draws are taken as separate runs.
+    """
+
+    values = os.environ if environ is None else environ
+    raw = values.get("RAGAS_RELEVANCY_SAMPLES", "").strip()
+    if not raw:
+        return DEFAULT_RELEVANCY_SAMPLES
+    try:
+        samples = int(raw)
+    except ValueError as exc:
+        raise ValueError("RAGAS_RELEVANCY_SAMPLES 必须是整数") from exc
+    if samples < 1:
+        raise ValueError("RAGAS_RELEVANCY_SAMPLES 必须大于等于 1")
+    return samples
+
+
+def average_samples(runs: Sequence[Sequence[float | None]]) -> list[float | None]:
+    """Average per-row scores across runs, ignoring rows a run failed to score."""
+
+    if not runs:
+        return []
+    widths = {len(run) for run in runs}
+    if len(widths) != 1:
+        raise ValueError("各轮评分行数不一致，无法平均")
+    averaged: list[float | None] = []
+    for row in zip(*runs):
+        usable = [
+            float(value)
+            for value in row
+            if value is not None and not math.isnan(float(value))
+        ]
+        averaged.append(sum(usable) / len(usable) if usable else None)
+    return averaged
+
+
+class _AveragedResult:
+    """RAGAS result with one column replaced by its multi-sample average."""
+
+    def __init__(self, result: Any, column: str, values: Sequence[float | None]) -> None:
+        self._result = result
+        self._column = column
+        self._values = list(values)
+
+    def to_pandas(self) -> Any:
+        dataframe = self._result.to_pandas()
+        if self._column in dataframe.columns and len(self._values) == len(dataframe):
+            dataframe[self._column] = self._values
+        return dataframe
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._result, name)
 
 
 def _dataset_from_dict(data: dict[str, list[Any]]) -> Any:
@@ -277,7 +340,40 @@ class RAGASEvaluator:
             ),
         )
         print("评估完成\n")
-        return result
+        return self._stabilize_relevancy(dataset, metrics, result)
+
+    def _stabilize_relevancy(self, dataset: Any, metrics: list[Any], result: Any) -> Any:
+        """Average answer relevancy over several runs to damp its sampling noise."""
+
+        name = self._answer_relevancy.name
+        samples = relevancy_samples()
+        if samples < 2 or not any(metric.name == name for metric in metrics):
+            return result
+
+        frame = result.to_pandas() if hasattr(result, "to_pandas") else None
+        if frame is None or name not in frame.columns:
+            return result
+
+        runs = [list(frame[name])]
+        for index in range(2, samples + 1):
+            print(f"重复评分 {name} 第 {index}/{samples} 轮（单次采样噪声较大）")
+            repeat = self._evaluate(
+                dataset,
+                metrics=[self._answer_relevancy],
+                llm=self.llm,
+                embeddings=self.embeddings,
+                raise_exceptions=False,
+                run_config=self._run_config_type(max_retries=5, timeout=600, max_workers=2),
+            )
+            repeat_frame = repeat.to_pandas() if hasattr(repeat, "to_pandas") else None
+            if repeat_frame is None or name not in repeat_frame.columns:
+                break
+            runs.append(list(repeat_frame[name]))
+
+        if len(runs) < 2:
+            return result
+        print(f"{name} 已对 {len(runs)} 轮取平均\n")
+        return _AveragedResult(result, name, average_samples(runs))
 
     def print_results(self, result: Any) -> Any | None:
         """Print metric summaries and return a reduced DataFrame when available."""
