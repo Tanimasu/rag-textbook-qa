@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.cli import main
+from rag_textbook_qa.evaluation import RetrievalQuestion
 
 
 class EvaluateCliTests(unittest.TestCase):
@@ -86,7 +87,13 @@ class EvaluateCliTests(unittest.TestCase):
             database_path = root / "custom-db"
             output_path = root / "retrieval-results"
             saved_path = output_path / "retrieval_test.json"
-            questions = [object()]
+            questions = [
+                RetrievalQuestion(
+                    question="什么是死锁？",
+                    book_name="os",
+                    relevant_sections=("3.5 死锁概述",),
+                )
+            ]
             report = {
                 "question_count": 1,
                 "top_k": 7,

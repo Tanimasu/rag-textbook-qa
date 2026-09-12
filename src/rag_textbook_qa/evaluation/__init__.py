@@ -15,6 +15,7 @@ from rag_textbook_qa.evaluation.retrieval import (
     save_retrieval_report,
     score_ranked_results,
     search_with_strategy,
+    select_split,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "save_retrieval_report",
     "score_ranked_results",
     "search_with_strategy",
+    "select_split",
 ]

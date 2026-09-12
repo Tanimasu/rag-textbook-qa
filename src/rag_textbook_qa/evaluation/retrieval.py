@@ -11,6 +11,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+RETRIEVAL_SPLITS = ("dev", "holdout")
+DEFAULT_SPLIT = "dev"
+
 RETRIEVAL_STRATEGIES = (
     "bm25",
     "embedding",
@@ -26,6 +29,9 @@ class RetrievalQuestion:
     question: str
     book_name: str
     relevant_sections: tuple[str, ...]
+    # Tuning runs see "dev" only, so the holdout cannot leak into a choice of
+    # parameters. Unlabelled questions count as dev.
+    split: str = DEFAULT_SPLIT
 
 
 def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
@@ -51,14 +57,34 @@ def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
             raise ValueError(f"第 {index} 条缺少 relevant_sections")
         if not all(isinstance(value, str) and value.strip() for value in relevant_sections):
             raise ValueError(f"第 {index} 条 relevant_sections 必须是非空字符串数组")
+        split = item.get("split", DEFAULT_SPLIT)
+        if split not in RETRIEVAL_SPLITS:
+            raise ValueError(f"第 {index} 条 split 只能是 {' 或 '.join(RETRIEVAL_SPLITS)}")
         questions.append(
             RetrievalQuestion(
                 question=question.strip(),
                 book_name=book_name.strip(),
                 relevant_sections=tuple(value.strip() for value in relevant_sections),
+                split=split,
             )
         )
     return questions
+
+
+def select_split(
+    questions: Sequence[RetrievalQuestion],
+    split: str,
+) -> list[RetrievalQuestion]:
+    """Filter questions by split; "all" keeps everything."""
+
+    if split == "all":
+        return list(questions)
+    if split not in RETRIEVAL_SPLITS:
+        raise ValueError(f"未知的评测划分: {split}")
+    selected = [question for question in questions if question.split == split]
+    if not selected:
+        raise ValueError(f"划分 {split} 中没有问题")
+    return selected
 
 
 def _normalized(value: object) -> str:
