@@ -213,6 +213,24 @@ class ChunkerTests(unittest.TestCase):
         self.assertEqual(chunks[0].chapter, "第1章")
         self.assertEqual(chunks[0].content, code)
 
+    def test_inline_tables_remain_whole_including_cell_formulas(self):
+        for opening, closing in (("<table>", "</table>"), ("<TABLE class='x'>", "</TABLE>")):
+            with self.subTest(opening=opening):
+                table = opening + "<tr><td>$$x$$" + "甲" * 100 + "</td></tr>\n" + closing
+                text = "说明文字 " + table + " 完成\n" + "后续正文。" * 40
+                chunker = SmartTextbookChunker(
+                    max_chunk_size=40, min_chunk_size=1, overlap_size=0
+                )
+                chunks = chunker.split_section(text, 2)
+                containing = [chunk for chunk in chunks if opening in chunk.content]
+                self.assertEqual(len(containing), 1)
+                self.assertIn(table, containing[0].content)
+                self.assertTrue(all(chunk.char_count <= 40 for chunk in chunks[1:]))
+                self.assertEqual(
+                    "".join("".join(chunk.content.split()) for chunk in chunks),
+                    "".join(text.split()),
+                )
+
     def test_existing_output_is_not_silently_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
