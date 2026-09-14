@@ -54,6 +54,19 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
                 help="会在检索前额外调用一次 LLM；默认关闭以降低等待时间和费用。",
             )
 
+        with st.expander("实验功能（默认关闭）", expanded=False):
+            st.caption("效果仍在验证，稳定使用时保持关闭。")
+            enable_decomposition = st.toggle(
+                "启用查询分解（实验）",
+                value=False,
+                help="适合包含多个独立问题的提问；额外调用一次模型规划。成功分解时不使用 HyDE，失败时恢复普通检索。",
+            )
+
+            verify_citations = st.toggle(
+                "核对答案引用（实验）", value=False,
+                help="增加两次模型核对；完成后才显示答案，核对失败时不会显示未经核对的草稿。模型核对仍可能出错。",
+            )
+
         st.markdown("---")
         if st.button("清空对话", width="stretch"):
             st.session_state.messages = []
@@ -66,6 +79,8 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
         "temperature": temperature,
         "max_tokens": max_tokens,
         "enable_hyde": enable_hyde,
+        "enable_decomposition": enable_decomposition,
+        "verify_citations": verify_citations,
     }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -29,7 +30,10 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.rag.conflicts import find_source_conflicts, render_source_conflicts
 from rag_textbook_qa.rag.context import evidence_excerpt
+from rag_textbook_qa.rag.decomposition import context_budgets, diverse_results, plan_queries
+from rag_textbook_qa.rag.grounding import verify_answer
 from rag_textbook_qa.rag.tokenizer import (
     DEFAULT_BM25_MODE,
     BM25Tokenizer,
@@ -584,10 +588,43 @@ class RAGEngine:
                 all_results[book_name] = results
         return all_results
 
+    def search_decomposed(
+        self, query: str, subqueries: list[str], book_name: str | None, top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Retrieve original and subqueries, then rerank once with the original question."""
+        books = [book_name] if book_name else sorted(
+            c.name.removeprefix("textbook_") for c in self.vectorizer.client.list_collections()
+            if c.name.startswith("textbook_")
+        )
+        routes = []
+        for query_id, text in enumerate([query, *subqueries]):
+            for book in books:
+                rows = self.search_single_book(
+                    book, text, top_k=top_k * 3, use_hyde=False, use_reranker=False,
+                )
+                routes.append((query_id, rows))
+        # Interleave routes so early books or queries cannot exhaust the rerank budget.
+        candidates: dict[tuple[str, str], dict[str, Any]] = {}
+        for rank in range(top_k * 3):
+            for query_id, rows in routes:
+                if rank >= len(rows):
+                    continue
+                row = rows[rank]
+                key = _candidate_key(row)
+                if key not in candidates:
+                    if len(candidates) >= 60:
+                        continue
+                    candidates[key] = {**row, "query_ids": []}
+                if query_id not in candidates[key]["query_ids"]:
+                    candidates[key]["query_ids"].append(query_id)
+        ranked = self._rerank(query, list(candidates.values()), len(candidates))
+        return diverse_results(ranked, len(subqueries), top_k)
+
     @staticmethod
     def select_context(
         results: list[dict[str, Any]],
         max_length: int = 2000,
+        *, fair_share: bool = False,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Pack evidence and return exactly the excerpts supplied to generation."""
         if max_length <= 0:
@@ -595,7 +632,20 @@ class RAGEngine:
         blocks = []
         sources = []
         remaining = max_length
-        for result in results:
+        slots = None
+        if fair_share:
+            lengths = []
+            for index, result in enumerate(results, 1):
+                content = str(result.get("content", "")).strip()
+                full, _, compacted = evidence_excerpt(content, max(len(content) * 100, max_length))
+                heading = " - ".join(str(result.get(field, "")) for field in
+                                     ("chapter", "section_h2", "section_h3", "section_h4")
+                                     if result.get(field))
+                prefix = f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
+                # Table rendering uses boundary newlines removed by excerpt.strip().
+                lengths.append(len(prefix) + len(full) + len("\n---\n") + (2 if compacted else 0))
+            slots = context_budgets(results, lengths, max_length)
+        for result_index, result in enumerate(results):
             content = str(result.get("content", "")).strip()
             if not content:
                 continue
@@ -607,10 +657,16 @@ class RAGEngine:
             )
             prefix = f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
             suffix = "\n---\n"
-            available = remaining - len(prefix) - len(suffix)
+            slot = min(remaining, slots[result_index]) if slots is not None else remaining
+            available = slot - len(prefix) - len(suffix)
             if available <= 0:
                 continue
             excerpt, truncated, table_compacted = evidence_excerpt(content, available)
+            if fair_share and truncated and not table_compacted:
+                notice = "\n[片段未完整装入，请勿推断省略内容]"
+                end = max((m.end() for m in re.finditer(r"[。！？!?]|\n\n", excerpt)
+                           if m.end() + len(notice) <= available), default=0)
+                excerpt = excerpt[:end].rstrip() + notice if end else ""
             if not excerpt:
                 continue
             block = prefix + excerpt + suffix
@@ -676,6 +732,8 @@ class RAGEngine:
         max_tokens: int = 2000,
         use_hyde: bool | None = None,
         on_answer_chunk: Callable[[str], None] | None = None,
+        use_decomposition: bool = False,
+        verify_citations: bool = False,
     ) -> dict[str, Any]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -683,11 +741,16 @@ class RAGEngine:
             print(f"\n{'=' * 70}\n查询: {query}\n{'=' * 70}\n")
 
         total_started = time.monotonic()
+        plan = {"status": "disabled", "queries": [], "reason": None}
+        if use_decomposition:
+            plan = plan_queries(query, self.llm if use_llm and self.enable_llm else None, top_k)
         embedding_provider = self.vectorizer.embedding_provider
         retrieval_started = time.monotonic()
 
         with provider_trace() as trace_id:
-            if book_name:
+            if plan["status"] == "active":
+                results = self.search_decomposed(query, plan["queries"], book_name, top_k)
+            elif book_name:
                 results = self.search_single_book(
                     book_name,
                     query,
@@ -708,7 +771,9 @@ class RAGEngine:
                 results = self._rerank(query, results, top_k)
         retrieval_seconds = time.monotonic() - retrieval_started
 
-        context, context_sources = self.select_context(results)
+        context, context_sources = self.select_context(results, fair_share=plan["status"] == "active")
+        covered = {i for source in context_sources for i in source.get("query_ids", [])}
+        plan["uncovered_query_ids"] = [i for i in range(1, len(plan["queries"]) + 1) if i not in covered]
         if not context_sources:
             message = "没有找到相关内容" if not results else "检索资料无法完整装入上下文，请缩小问题范围"
             execution = self._execution_summary(
@@ -720,6 +785,8 @@ class RAGEngine:
             )
             return {
                 "query": query,
+                "decomposition": plan,
+                "grounding": {"status": "not_run" if verify_citations else "disabled"},
                 "results": results,
                 "context_sources": [],
                 "context": "",
@@ -731,14 +798,52 @@ class RAGEngine:
                 "execution": execution,
             }
 
+        conflicts = find_source_conflicts(context_sources)
+        if conflicts and use_llm:
+            answer = render_source_conflicts(conflicts)
+            if on_answer_chunk is not None:
+                on_answer_chunk(answer)
+            return {
+                "query": query,
+                "decomposition": plan,
+                "grounding": {"status": "not_run" if verify_citations else "disabled",
+                              "reason": "source_conflict"},
+                "source_conflicts": conflicts,
+                "response_type": "source_conflict",
+                "results": results,
+                "context": context,
+                "context_sources": context_sources,
+                "prompt": "",
+                "answer": answer,
+                "llm_response": None,
+                "error": None,
+                "success": True,
+                "execution": self._execution_summary(
+                    embedding_provider=embedding_provider,
+                    trace_id=trace_id,
+                    retrieval_seconds=retrieval_seconds,
+                    generation_seconds=0.0,
+                    total_seconds=time.monotonic() - total_started,
+                ),
+            }
+
         prompt = self.build_prompt(query, context)
+        if plan["status"] == "active":
+            prompt += "\n子问题清单（仅用于组织回答，不是教材证据）：" + json.dumps(
+                plan["queries"], ensure_ascii=False,
+            )
+            if plan["uncovered_query_ids"]:
+                prompt += "\n以下子问题没有装入检索证据，须明确说明证据不足：" + json.dumps(
+                    [plan["queries"][i - 1] for i in plan["uncovered_query_ids"]], ensure_ascii=False,
+                )
         llm_response = None
         answer = None
         generation_error = None
+        grounding = {"status": "not_run" if verify_citations else "disabled"}
         generation_started = time.monotonic()
         first_token_seconds: float | None = None
         if use_llm and self.enable_llm and self.llm:
-            if on_answer_chunk is None:
+            if on_answer_chunk is None or verify_citations:
                 llm_response = self.llm.generate_answer(
                     prompt,
                     temperature=temperature,
@@ -780,6 +885,16 @@ class RAGEngine:
                         "streamed": True,
                     }
             answer = llm_response["answer"]
+            if verify_citations and llm_response["success"]:
+                grounding = verify_answer(query, answer, context_sources, self.llm)
+                answer = grounding["answer"]
+                llm_response = {**llm_response, "answer": answer,
+                                "success": grounding["status"] == "checked"}
+                if grounding["status"] != "checked":
+                    llm_response["error"] = "引用核对未完成"
+                if on_answer_chunk is not None:
+                    first_token_seconds = time.monotonic() - generation_started
+                    on_answer_chunk(answer)
             if not llm_response["success"]:
                 generation_error = llm_response.get("error") or "LLM 生成失败"
             if self.verbose and llm_response["success"]:
@@ -811,6 +926,9 @@ class RAGEngine:
 
         return {
             "query": query,
+            "decomposition": plan,
+            "grounding": grounding,
+            "source_conflicts": conflicts,
             "results": results,
             "context": context,
             "context_sources": context_sources,

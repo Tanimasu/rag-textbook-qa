@@ -99,39 +99,42 @@ def _normalized(value: object) -> str:
 EXACT_GRADE = 3
 SIBLING_GRADE = 2
 CHAPTER_GRADE = 1
-_SECTION_NUMBER = re.compile(r"\d+(?:\.\d+)+|\d+")
+_SECTION_NUMBER = re.compile(r"^\s*(\d+(?:\.\d+)+)(?![\d.])")
+_CHAPTER_NUMBER = re.compile(r"^\s*第\s*(\d+)\s*章")
 
 
-def _numbers(text: str) -> list[tuple[str, ...]]:
-    """Section numbers in a heading, each split into its components."""
-
-    return [tuple(match.group().split("."))
-            for match in _SECTION_NUMBER.finditer(str(text or ""))]
+def _section_number(text: str) -> tuple[str, ...] | None:
+    match = _SECTION_NUMBER.match(text)
+    return tuple(match[1].split(".")) if match else None
 
 
 def grade_result(result: dict[str, Any], markers: Sequence[str]) -> int:
-    """Grade one result against the annotated sections.
+    """Grade exact headings, same-depth siblings and explicit chapters.
 
-    Exact means the annotated heading appears in the result's own path. Sibling
-    means the two section numbers share every component but the last, so the
-    result sits beside the annotated section under the same parent. Chapter
-    means only the leading component agrees. A marker carrying no section
-    number can only reach exact or chapter, since nothing identifies its parent.
+    Local list numbers such as 1.OS are not chapter identifiers. Without a
+    numbered annotation, only an exact heading match can establish relevance.
     """
-
     path = _normalized(result_section(result))
     if any(_normalized(marker) in path for marker in markers):
         return EXACT_GRADE
-
-    found = _numbers(result_section(result))
+    sections = [_section_number(str(result.get(field, "")))
+                for field in ("section_h2", "section_h3", "section_h4")]
+    chapter_match = _CHAPTER_NUMBER.match(str(result.get("chapter", "")))
+    chapter = chapter_match[1] if chapter_match else None
     best = 0
     for marker in markers:
-        for wanted in _numbers(marker):
-            for seen in found:
-                if len(wanted) > 1 and len(seen) >= 1 and wanted[:-1] == seen[: len(wanted) - 1]:
-                    best = max(best, SIBLING_GRADE)
-                elif wanted[0] == seen[0]:
-                    best = max(best, CHAPTER_GRADE)
+        wanted = _section_number(marker)
+        explicit_chapter = _CHAPTER_NUMBER.match(marker)
+        if wanted:
+            if chapter and chapter != wanted[0]:
+                continue
+            if any(seen and len(seen) == len(wanted) and seen != wanted
+                   and seen[:-1] == wanted[:-1] for seen in sections):
+                best = max(best, SIBLING_GRADE)
+            elif chapter == wanted[0]:
+                best = max(best, CHAPTER_GRADE)
+        elif explicit_chapter and chapter == explicit_chapter[1]:
+            best = max(best, CHAPTER_GRADE)
     return best
 
 
@@ -140,20 +143,18 @@ def _dcg(grades: Sequence[int]) -> float:
                for rank, grade in enumerate(grades, 1))
 
 
-def ndcg_at_k(grades: Sequence[int], wanted: int, top_k: int) -> float:
-    """Normalized DCG against an ideal of `wanted` exact hits, then siblings.
-
-    The ideal cannot be read off the corpus, so it is fixed: every annotated
-    section retrieved first, the remaining ranks filled with siblings, which a
-    numbered textbook always has. That keeps the score bounded by one and
-    rewards ordering the best evidence first. Coverage stays Recall@K's job.
-    """
-
+def ndcg_at_k(grades: Sequence[int], ideal_grades: Sequence[int], top_k: int) -> float:
+    """Normalize chunk-level gains against the same graded candidate universe."""
     if top_k <= 0:
         raise ValueError("top_k 必须大于 0")
-    ideal = ([EXACT_GRADE] * wanted + [SIBLING_GRADE] * top_k)[:top_k]
+    if any(grade not in (0, 1, 2, 3) for grade in (*grades, *ideal_grades)):
+        raise ValueError("相关性等级必须在 0 到 3 之间")
+    ideal = sorted(ideal_grades, reverse=True)[:top_k]
     best = _dcg(ideal)
-    return _dcg(list(grades)[:top_k]) / best if best else 0.0
+    actual = _dcg(list(grades)[:top_k])
+    if actual > best + 1e-9:
+        raise ValueError("实际收益超过候选全集的理想收益，请检查候选全集或重复结果")
+    return actual / best if best else 0.0
 
 
 def result_section(result: dict[str, Any]) -> str:
@@ -168,6 +169,7 @@ def score_ranked_results(
     relevant_sections: Sequence[str],
     *,
     top_k: int = 5,
+    candidates: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Score one ranked list with section Recall@K and reciprocal rank."""
 
@@ -177,6 +179,17 @@ def score_ranked_results(
     if not expected or "" in expected:
         raise ValueError("relevant_sections 不能为空")
 
+    # Repeated chunk IDs must not manufacture extra relevance gain.
+    seen_ids: set[str] = set()
+    unique_results = []
+    for result in results:
+        chunk_id = result.get("chunk_id")
+        if chunk_id is not None:
+            if chunk_id in seen_ids:
+                continue
+            seen_ids.add(chunk_id)
+        unique_results.append(result)
+    results = unique_results
     matched: set[str] = set()
     first_relevant_rank: int | None = None
     top_sections: list[str] = []
@@ -198,7 +211,13 @@ def score_ranked_results(
     return {
         "recall_at_k": len(matched) / len(expected),
         "reciprocal_rank": 0.0 if first_relevant_rank is None else 1 / first_relevant_rank,
-        "ndcg_at_k": ndcg_at_k(grades, len(expected), top_k),
+        "ndcg_at_k": ndcg_at_k(
+            grades,
+            [grade_result(item, list(expected.values())) for item in candidates]
+            if candidates is not None else grades,
+            top_k,
+        ),
+        "ndcg_scope": "corpus" if candidates is not None else "returned_results_only",
         "grades": grades,
         "first_relevant_rank": first_relevant_rank,
         "matched_sections": sorted(matched),
@@ -211,6 +230,7 @@ def evaluate_retrieval(
     search: Callable[[RetrievalQuestion, int], Sequence[dict[str, Any]]],
     *,
     top_k: int = 5,
+    candidates_by_book: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Run a search strategy and return JSON-serializable aggregate metrics."""
 
@@ -226,6 +246,7 @@ def evaluate_retrieval(
             results,
             question.relevant_sections,
             top_k=top_k,
+            candidates=candidates_by_book[question.book_name] if candidates_by_book else None,
         )
         cases.append(
             {
@@ -295,16 +316,30 @@ def run_retrieval_strategies(
     if unknown:
         raise ValueError(f"未知检索策略: {', '.join(unknown)}")
 
+    candidates_by_book = None
+    if getattr(engine, "vectorizer", None) is not None:
+        candidates_by_book = {}
+        for book in sorted({question.book_name for question in questions}):
+            collection = engine.vectorizer.client.get_collection(f"textbook_{book}")
+            data = collection.get(include=["metadatas"])
+            candidates_by_book[book] = [
+                {**metadata, "chunk_id": chunk_id}
+                for chunk_id, metadata in zip(data["ids"], data["metadatas"])
+            ]
+
     results = {
         strategy: evaluate_retrieval(
             questions,
             partial(search_with_strategy, engine, strategy=strategy),
             top_k=top_k,
+            candidates_by_book=candidates_by_book,
         )
         for strategy in selected
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "ndcg_scope": "corpus" if candidates_by_book is not None else "returned_results_only",
+        "relevance_policy": "heading_hierarchy_v2",
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "question_count": len(questions),
         "top_k": top_k,

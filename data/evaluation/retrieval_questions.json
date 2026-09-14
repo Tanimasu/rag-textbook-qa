@@ -452,7 +452,8 @@
     "question": "写SQL查询时经常用到内连接（Inner Join）和左连接（Left Join），这两者在匹配数据时有什么根本的区别？",
     "book_name": "database",
     "relevant_sections": [
-      "6.2.2　内连接查询"
+      "6.2.1　多关系查询结构",
+      "6.2.3　外连接查询"
     ],
     "split": "dev"
   },
@@ -484,7 +485,7 @@
     "question": "设计表结构时，主键和唯一索引都能保证某一列的数据不重复，它们之间到底有什么区别？",
     "book_name": "database",
     "relevant_sections": [
-      "2.3.1　候选码和主码"
+      "7.3.2 索引类型 > 1.根据索引特征进行分类"
     ],
     "split": "dev"
   },

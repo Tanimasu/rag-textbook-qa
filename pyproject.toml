@@ -58,6 +58,19 @@ dev = [
 [project.scripts]
 rag-qa = "rag_textbook_qa.cli:main"
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/project/*.py",
+    "/data/evaluation",
+    "/README.md",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/LICENSE*",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rag_textbook_qa"]
 
