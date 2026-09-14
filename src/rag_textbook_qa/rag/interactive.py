@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from rag_textbook_qa.config import Settings
+from rag_textbook_qa.rag.context import DEFAULT_CONTEXT_BUDGET
 from rag_textbook_qa.rag.engine import RAGEngine
 
 TEST_QUERIES = (
@@ -23,6 +24,7 @@ def interactive_main(
     enable_llm: bool = True,
     enable_reranker: bool = True,
     enable_hyde: bool = True,
+    context_budget: int = DEFAULT_CONTEXT_BUDGET,
 ) -> None:
     settings = Settings.load(workspace)
     load_dotenv(settings.paths.root / "project" / ".env", override=False)
@@ -31,6 +33,7 @@ def interactive_main(
         enable_llm=enable_llm,
         enable_reranker=enable_reranker,
         enable_hyde=enable_hyde,
+        context_budget=context_budget,
         verbose=True,
     )
 

@@ -31,7 +31,11 @@ from rag_textbook_qa.providers import (
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
-from rag_textbook_qa.rag.context import build_prompt, select_context
+from rag_textbook_qa.rag.context import (
+    DEFAULT_CONTEXT_BUDGET,
+    build_prompt,
+    select_context,
+)
 from rag_textbook_qa.rag.decomposition import diverse_results, plan_queries
 from rag_textbook_qa.rag.grounding import verify_answer
 from rag_textbook_qa.rag.presentation import render_search_results
@@ -256,6 +260,7 @@ class RAGEngine:
         llm_client: AnswerGenerator | None = None,
         fusion_weights: Mapping[str, float] | None = None,
         bm25_mode: str | None = None,
+        context_budget: int = DEFAULT_CONTEXT_BUDGET,
     ) -> None:
         print("初始化 RAG 引擎...")
         self.verbose = verbose
@@ -263,6 +268,9 @@ class RAGEngine:
         self.fusion_weights = normalized_fusion_weights(fusion_weights)
         self.bm25_mode = bm25_mode or DEFAULT_BM25_MODE
         self.bm25_tokenizer: BM25Tokenizer | None = None
+        if context_budget <= 0:
+            raise ValueError("上下文预算必须大于 0")
+        self.context_budget = context_budget
 
         if compute_settings is None:
             providers_fully_injected = embedding_provider is not None and (
@@ -621,41 +629,22 @@ class RAGEngine:
         ranked = self._rerank(query, list(candidates.values()), len(candidates))
         return diverse_results(ranked, len(subqueries), top_k)
 
-    def ask(
+    def _retrieve(
         self,
         query: str,
-        book_name: str | None = None,
-        top_k: int = 5,
-        use_llm: bool = True,
-        temperature: float = 0.7,
-        max_tokens: int = 2000,
-        use_hyde: bool | None = None,
-        on_answer_chunk: Callable[[str], None] | None = None,
-        use_decomposition: bool = False,
-        verify_citations: bool = False,
-    ) -> dict[str, Any]:
-        if top_k <= 0:
-            raise ValueError("top_k 必须大于 0")
-        if self.verbose:
-            print(f"\n{'=' * 70}\n查询: {query}\n{'=' * 70}\n")
+        plan: dict[str, Any],
+        book_name: str | None,
+        top_k: int,
+        use_hyde: bool | None,
+    ) -> tuple[list[dict[str, Any]], str, float]:
+        """Run the planned retrieval route, returning its telemetry trace and duration."""
 
-        total_started = time.monotonic()
-        plan = {"status": "disabled", "queries": [], "reason": None}
-        if use_decomposition:
-            plan = plan_queries(query, self.llm if use_llm and self.enable_llm else None, top_k)
-        embedding_provider = self.vectorizer.embedding_provider
-        retrieval_started = time.monotonic()
-
+        started = time.monotonic()
         with provider_trace() as trace_id:
             if plan["status"] == "active":
                 results = self.search_decomposed(query, plan["queries"], book_name, top_k)
             elif book_name:
-                results = self.search_single_book(
-                    book_name,
-                    query,
-                    top_k,
-                    use_hyde=use_hyde,
-                )
+                results = self.search_single_book(book_name, query, top_k, use_hyde=use_hyde)
             else:
                 grouped = self.search_all_books(
                     query,
@@ -668,40 +657,17 @@ class RAGEngine:
                     reverse=True,
                 )
                 results = self._rerank(query, results, top_k)
-        retrieval_seconds = time.monotonic() - retrieval_started
+        return results, trace_id, time.monotonic() - started
 
-        context, context_sources = select_context(
-            results, fair_share=plan["status"] == "active"
-        )
-        covered = {i for source in context_sources for i in source.get("query_ids", [])}
-        plan["uncovered_query_ids"] = [i for i in range(1, len(plan["queries"]) + 1) if i not in covered]
-        if not context_sources:
-            message = "没有找到相关内容" if not results else "检索资料无法完整装入上下文，请缩小问题范围"
-            execution = self._execution_summary(
-                embedding_provider=embedding_provider,
-                trace_id=trace_id,
-                retrieval_seconds=retrieval_seconds,
-                generation_seconds=0.0,
-                total_seconds=time.monotonic() - total_started,
-            )
-            return {
-                "query": query,
-                "decomposition": plan,
-                "grounding": {"status": "not_run" if verify_citations else "disabled"},
-                "results": results,
-                "context_sources": [],
-                "context": "",
-                "prompt": "",
-                "answer": f"❌ {message}",
-                "llm_response": None,
-                "error": message,
-                "success": False,
-                "execution": execution,
-            }
+    def _compose_prompt(
+        self,
+        query: str,
+        context: str,
+        conflicts: list[dict[str, Any]],
+        plan: dict[str, Any],
+    ) -> str:
+        """Build the prompt, disclosing reviewed conflicts and uncovered sub-questions."""
 
-        # A reviewed disagreement is disclosed inside the answer rather than replacing
-        # it: blocking generation cost the reader everything else the evidence supported.
-        conflicts = find_source_conflicts(context_sources)
         prompt = build_prompt(query, context)
         if conflicts:
             prompt += "\n" + conflict_prompt_note(conflicts)
@@ -711,8 +677,161 @@ class RAGEngine:
             )
             if plan["uncovered_query_ids"]:
                 prompt += "\n以下子问题没有装入检索证据，须明确说明证据不足：" + json.dumps(
-                    [plan["queries"][i - 1] for i in plan["uncovered_query_ids"]], ensure_ascii=False,
+                    [plan["queries"][i - 1] for i in plan["uncovered_query_ids"]],
+                    ensure_ascii=False,
                 )
+        return prompt
+
+    def _generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float,
+        max_tokens: int,
+        on_answer_chunk: Callable[[str], None] | None,
+        started: float,
+    ) -> tuple[dict[str, Any], float | None]:
+        """Generate one answer, streamed when a sink is given, normalising SDK errors."""
+
+        if on_answer_chunk is None:
+            response = self.llm.generate_answer(
+                prompt, temperature=temperature, max_tokens=max_tokens
+            )
+            return response, None
+
+        first_token_seconds: float | None = None
+        model = getattr(self.llm, "default_model", "stream")
+        try:
+            chunks = []
+            for chunk in self.llm.stream_answer(
+                prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                raise_on_error=True,
+            ):
+                if first_token_seconds is None:
+                    first_token_seconds = time.monotonic() - started
+                chunks.append(chunk)
+                on_answer_chunk(chunk)
+            streamed_answer = "".join(chunks)
+            if not streamed_answer.strip():
+                raise RuntimeError("LLM 流式响应为空")
+            return (
+                {
+                    "success": True,
+                    "answer": streamed_answer,
+                    "model": model,
+                    "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    "time": round(time.monotonic() - started, 2),
+                    "finish_reason": None,
+                    "streamed": True,
+                },
+                first_token_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize SDK stream errors
+            return (
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "answer": None,
+                    "model": model,
+                    "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    "time": round(time.monotonic() - started, 2),
+                    "streamed": True,
+                },
+                first_token_seconds,
+            )
+
+    def _no_context_result(
+        self,
+        *,
+        query: str,
+        plan: dict[str, Any],
+        results: list[dict[str, Any]],
+        verify_citations: bool,
+        embedding_provider: Any,
+        trace_id: str,
+        retrieval_seconds: float,
+        total_started: float,
+    ) -> dict[str, Any]:
+        """Nothing packed: say why, without pretending generation was attempted."""
+
+        message = "没有找到相关内容" if not results else "检索资料无法完整装入上下文，请缩小问题范围"
+        return {
+            "query": query,
+            "decomposition": plan,
+            "grounding": {"status": "not_run" if verify_citations else "disabled"},
+            "results": results,
+            "context_sources": [],
+            "context": "",
+            "prompt": "",
+            "answer": f"❌ {message}",
+            "llm_response": None,
+            "error": message,
+            "success": False,
+            "execution": self._execution_summary(
+                embedding_provider=embedding_provider,
+                trace_id=trace_id,
+                retrieval_seconds=retrieval_seconds,
+                generation_seconds=0.0,
+                total_seconds=time.monotonic() - total_started,
+            ),
+        }
+
+    def ask(
+        self,
+        query: str,
+        book_name: str | None = None,
+        top_k: int = 5,
+        use_llm: bool = True,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        use_hyde: bool | None = None,
+        on_answer_chunk: Callable[[str], None] | None = None,
+        use_decomposition: bool = False,
+        verify_citations: bool = False,
+        context_budget: int | None = None,
+    ) -> dict[str, Any]:
+        if top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        if self.verbose:
+            print(f"\n{'=' * 70}\n查询: {query}\n{'=' * 70}\n")
+
+        total_started = time.monotonic()
+        plan = {"status": "disabled", "queries": [], "reason": None}
+        if use_decomposition:
+            plan = plan_queries(query, self.llm if use_llm and self.enable_llm else None, top_k)
+        embedding_provider = self.vectorizer.embedding_provider
+
+        results, trace_id, retrieval_seconds = self._retrieve(
+            query, plan, book_name, top_k, use_hyde
+        )
+
+        budget = self.context_budget if context_budget is None else context_budget
+        context, context_sources = select_context(
+            results, budget, fair_share=plan["status"] == "active"
+        )
+        covered = {i for source in context_sources for i in source.get("query_ids", [])}
+        plan["uncovered_query_ids"] = [
+            i for i in range(1, len(plan["queries"]) + 1) if i not in covered
+        ]
+        if not context_sources:
+            return self._no_context_result(
+                query=query,
+                plan=plan,
+                results=results,
+                verify_citations=verify_citations,
+                embedding_provider=embedding_provider,
+                trace_id=trace_id,
+                retrieval_seconds=retrieval_seconds,
+                total_started=total_started,
+            )
+
+        # A reviewed disagreement is disclosed inside the answer rather than replacing
+        # it: blocking generation cost the reader everything else the evidence supported.
+        conflicts = find_source_conflicts(context_sources)
+        prompt = self._compose_prompt(query, context, conflicts, plan)
+
         llm_response = None
         answer = None
         generation_error = None
@@ -720,47 +839,14 @@ class RAGEngine:
         generation_started = time.monotonic()
         first_token_seconds: float | None = None
         if use_llm and self.enable_llm and self.llm:
-            if on_answer_chunk is None or verify_citations:
-                llm_response = self.llm.generate_answer(
-                    prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            else:
-                try:
-                    chunks = []
-                    for chunk in self.llm.stream_answer(
-                        prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        raise_on_error=True,
-                    ):
-                        if first_token_seconds is None:
-                            first_token_seconds = time.monotonic() - generation_started
-                        chunks.append(chunk)
-                        on_answer_chunk(chunk)
-                    streamed_answer = "".join(chunks)
-                    if not streamed_answer.strip():
-                        raise RuntimeError("LLM 流式响应为空")
-                    llm_response = {
-                        "success": True,
-                        "answer": streamed_answer,
-                        "model": getattr(self.llm, "default_model", "stream"),
-                        "tokens": {"prompt": 0, "completion": 0, "total": 0},
-                        "time": round(time.monotonic() - generation_started, 2),
-                        "finish_reason": None,
-                        "streamed": True,
-                    }
-                except Exception as exc:  # noqa: BLE001 - normalize SDK stream errors
-                    llm_response = {
-                        "success": False,
-                        "error": str(exc),
-                        "answer": None,
-                        "model": getattr(self.llm, "default_model", "stream"),
-                        "tokens": {"prompt": 0, "completion": 0, "total": 0},
-                        "time": round(time.monotonic() - generation_started, 2),
-                        "streamed": True,
-                    }
+            llm_response, first_token_seconds = self._generate(
+                prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                # Citation checking rewrites the answer, so it cannot be streamed live.
+                on_answer_chunk=None if verify_citations else on_answer_chunk,
+                started=generation_started,
+            )
             answer = llm_response["answer"]
             if verify_citations and llm_response["success"]:
                 grounding = verify_answer(query, answer, context_sources, self.llm)
@@ -792,14 +878,6 @@ class RAGEngine:
                 print(render_search_results(results))
                 print(prompt[:800] + ("..." if len(prompt) > 800 else ""))
         generation_seconds = time.monotonic() - generation_started
-        execution = self._execution_summary(
-            embedding_provider=embedding_provider,
-            trace_id=trace_id,
-            retrieval_seconds=retrieval_seconds,
-            generation_seconds=generation_seconds,
-            first_token_seconds=first_token_seconds,
-            total_seconds=time.monotonic() - total_started,
-        )
 
         return {
             "query": query,
@@ -814,8 +892,16 @@ class RAGEngine:
             "llm_response": llm_response,
             "error": generation_error,
             "success": llm_response["success"] if llm_response else False,
-            "execution": execution,
+            "execution": self._execution_summary(
+                embedding_provider=embedding_provider,
+                trace_id=trace_id,
+                retrieval_seconds=retrieval_seconds,
+                generation_seconds=generation_seconds,
+                first_token_seconds=first_token_seconds,
+                total_seconds=time.monotonic() - total_started,
+            ),
         }
+
 
     def _execution_summary(
         self,

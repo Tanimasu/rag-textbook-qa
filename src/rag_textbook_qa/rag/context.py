@@ -8,6 +8,13 @@ from typing import Any
 from rag_textbook_qa.rag.decomposition import context_budgets
 from rag_textbook_qa.rag.tables import evidence_excerpt
 
+# Raised from 2000 on 2026-09-15: at 2000 the measured evidence retention dropped 37
+# of 191 relevant chunks on the 65-question set, while 4000 delivered all of them and
+# grew the mean context only from 1601 to 2336 characters. The justification is
+# retention, which is deterministic; whether more delivered evidence yields better
+# answers is NOT measured. Scores from before this change are not comparable.
+DEFAULT_CONTEXT_BUDGET = 4000
+
 SOURCE_SUFFIX = "\n---\n"
 _HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 
@@ -28,7 +35,7 @@ def _source_prefix(result: dict[str, Any], index: int) -> str:
 
 def select_context(
     results: list[dict[str, Any]],
-    max_length: int = 2000,
+    max_length: int = DEFAULT_CONTEXT_BUDGET,
     *, fair_share: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Pack evidence and return exactly the excerpts supplied to generation."""

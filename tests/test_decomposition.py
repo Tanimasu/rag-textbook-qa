@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from rag_textbook_qa.llm.client import LLMClient
-from rag_textbook_qa.rag.context import select_context
+from rag_textbook_qa.rag.context import DEFAULT_CONTEXT_BUDGET, select_context
 from rag_textbook_qa.rag.decomposition import plan_queries
 from rag_textbook_qa.rag.engine import RAGEngine
 
@@ -22,6 +22,7 @@ class DecompositionTests(unittest.TestCase):
         engine.llm = self.planner(["进程定义", "线程定义"])
         engine.llm.generate_answer.return_value = {"success": True, "answer": "答案"}
         engine.vectorizer = SimpleNamespace(embedding_provider=None)
+        engine.context_budget = DEFAULT_CONTEXT_BUDGET
         engine._execution_summary = MagicMock(return_value={})
         engine.search_single_book = MagicMock(return_value=[
             {"book_name": "os", "content": "原文证据", "similarity": 1.0}])
@@ -105,7 +106,7 @@ class DecompositionTests(unittest.TestCase):
             {"book_name": "os", "content": "线程证据", "query_ids": [2]}])
         result = engine.ask("比较", book_name="os", use_decomposition=True)
         self.assertEqual(len(result["context_sources"]), 2)
-        self.assertLessEqual(len(result["context"]), 2000)
+        self.assertLessEqual(len(result["context"]), DEFAULT_CONTEXT_BUDGET)
         self.assertEqual(result["decomposition"]["uncovered_query_ids"], [])
         engine.search_decomposed.return_value = engine.search_decomposed.return_value[:1]
         result = engine.ask("比较", book_name="os", use_decomposition=True)

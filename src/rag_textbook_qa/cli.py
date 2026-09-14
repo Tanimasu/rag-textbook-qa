@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
     doctor = commands.add_parser("doctor", help="执行不会加载模型的环境检查")
     doctor.add_argument("--json", action="store_true", help="输出 JSON")
+    doctor.add_argument(
+        "--index",
+        action="store_true",
+        help="额外检查向量库内容与已登记的冲突规则；会导入 chromadb，但不加载模型",
+    )
 
     ingest = commands.add_parser("ingest", help="清洗、分块和检查教材中间产物")
     ingest_commands = ingest.add_subparsers(dest="ingest_command", required=True)
@@ -101,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--no-llm", action="store_true", help="只检索，不调用 LLM")
     chat.add_argument("--no-reranker", action="store_true", help="禁用重排序")
     chat.add_argument("--no-hyde", action="store_true", help="禁用 HyDE")
+    chat.add_argument(
+        "--context-budget",
+        type=int,
+        help="送入模型的上下文字符预算；默认 4000",
+    )
 
     evaluate = commands.add_parser("evaluate", help="运行 RAGAS 质量评估")
     evaluate.add_argument("--questions", type=Path, help="覆盖评估问题 JSON")
@@ -145,8 +155,8 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval_evaluate.add_argument(
         "--context-budget",
         type=int,
-        default=2000,
-        help="按该字符预算装入上下文并统计证据保留率；设为 0 只评测检索",
+        default=4000,
+        help="按该字符预算装入上下文并统计证据保留率；默认与问答一致，设为 0 只评测检索",
     )
     retrieval_evaluate.add_argument(
         "--split",
@@ -321,6 +331,50 @@ def _conflict_pin_problems(
     return problems, sum(len(list(rule.pins())) for rule in rules)
 
 
+def _index_health(db_path: Path) -> dict[str, Any]:
+    """Inspect what is actually indexed. Imports chromadb, so it stays out of doctor.py.
+
+    `collect_diagnostics` is asserted to import no heavy runtime, and reporting
+    `artifact:vector-db: ok` for a directory that exists says nothing about whether
+    the collections inside it hold anything.
+    """
+
+    from rag_textbook_qa.indexing import list_indexed_books
+
+    books = list_indexed_books(db_path)
+    problems, pinned = _conflict_pin_problems(db_path)
+    return {
+        "db_path": str(db_path),
+        "books": books,
+        "empty_books": [book["book_name"] for book in books if not book["count"]],
+        "conflict_pins": pinned,
+        "conflict_problems": problems,
+    }
+
+
+def _render_index_health(report: dict[str, Any]) -> str:
+    lines = ["", "向量库检查", "=" * 40, f"路径: {report['db_path']}"]
+    if not report["books"]:
+        lines.append("[WARNING ] 没有任何 textbook_* 集合，索引尚未构建")
+    for book in report["books"]:
+        status = "OK      " if book["count"] else "WARNING "
+        model = book["embedding_model"] or "未知模型"
+        lines.append(f"[{status}] {book['book_name']}: {book['count']} chunks（{model}）")
+
+    pinned, problems = report["conflict_pins"], report["conflict_problems"]
+    if not pinned:
+        lines.append("[OK      ] 没有登记的教材冲突规则")
+    elif problems:
+        lines.append(
+            f"[WARNING ] {pinned} 条冲突原文引用中有 {len(problems)} 条无法命中；"
+            "详情运行 rag-qa index check"
+        )
+    else:
+        lines.append(f"[OK      ] {pinned} 条冲突原文引用仍能在索引中找到")
+    lines.append("=" * 40)
+    return "\n".join(lines)
+
+
 def _run_index(args: argparse.Namespace, settings: Settings) -> int:
     from rag_textbook_qa.catalog import book_id_from_chunk_stem
     from rag_textbook_qa.indexing import MultiBookVectorizer, list_indexed_books
@@ -387,6 +441,7 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
 
 def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
     from rag_textbook_qa.rag import interactive_main
+    from rag_textbook_qa.rag.context import DEFAULT_CONTEXT_BUDGET
 
     _load_project_environment(settings.paths.root / "project" / ".env")
     interactive_main(
@@ -395,6 +450,7 @@ def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
         enable_llm=not args.no_llm,
         enable_reranker=not args.no_reranker,
         enable_hyde=not args.no_hyde,
+        context_budget=args.context_budget or DEFAULT_CONTEXT_BUDGET,
     )
     return 0
 
@@ -783,10 +839,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         from dotenv import load_dotenv
 
         load_dotenv(settings.paths.root / "project" / ".env")
+        index_report = _index_health(settings.paths.vector_db) if args.index else None
         if args.json:
-            print(json.dumps(diagnostics_as_dict(settings), ensure_ascii=False, indent=2))
+            payload = diagnostics_as_dict(settings)
+            if index_report is not None:
+                payload["index"] = index_report
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(render_diagnostics(settings))
+            if index_report is not None:
+                print(_render_index_health(index_report))
         return 0
 
     if args.command == "ingest":

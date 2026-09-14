@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from rag_textbook_qa.rag.context import select_context
+from rag_textbook_qa.rag.context import DEFAULT_CONTEXT_BUDGET, select_context
 from rag_textbook_qa.rag.engine import RAGEngine
 from rag_textbook_qa.rag.tables import evidence_excerpt
 
@@ -59,6 +59,7 @@ class TableContextTests(unittest.TestCase):
         engine.vectorizer = MagicMock()
         engine.reranker = None
         engine.llm = MagicMock()
+        engine.context_budget = DEFAULT_CONTEXT_BUDGET
         engine.search_single_book = MagicMock(return_value=[{
             "book_name": "os",
             "content": "<table><caption>不可省略的单位</caption><tr><td>10</td></tr></table>",

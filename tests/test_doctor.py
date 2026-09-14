@@ -106,5 +106,53 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("pyarrow 24.0.0", compatibility.detail)
 
 
+class DoctorIndexTests(unittest.TestCase):
+    def test_index_check_is_opt_in_and_reports_empty_collections(self):
+        books = [
+            {
+                "book_name": "database",
+                "collection_name": "textbook_database",
+                "count": 1127,
+                "embedding_model": "bge-large-zh",
+                "embedding_fingerprint": "fp",
+            },
+            {
+                "book_name": "os",
+                "collection_name": "textbook_os",
+                "count": 0,
+                "embedding_model": None,
+                "embedding_fingerprint": None,
+            },
+        ]
+        output = io.StringIO()
+
+        with (
+            patch("rag_textbook_qa.indexing.list_indexed_books", return_value=books),
+            patch("rag_textbook_qa.indexing.fetch_indexed_chunks", return_value={}),
+            contextlib.redirect_stdout(output),
+        ):
+            exit_code = main(
+                ["--workspace", str(REPOSITORY_ROOT), "doctor", "--index", "--json"]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["index"]["empty_books"], ["os"])
+        # Every pin is dead in this fake corpus, so the check must say so.
+        self.assertTrue(payload["index"]["conflict_problems"])
+
+    def test_plain_doctor_does_not_inspect_the_index(self):
+        output = io.StringIO()
+        with (
+            patch("rag_textbook_qa.indexing.list_indexed_books") as list_books,
+            contextlib.redirect_stdout(output),
+        ):
+            exit_code = main(["--workspace", str(REPOSITORY_ROOT), "doctor", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        list_books.assert_not_called()
+        self.assertNotIn("index", json.loads(output.getvalue()))
+
+
 if __name__ == "__main__":
     unittest.main()
