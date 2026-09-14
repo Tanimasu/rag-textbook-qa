@@ -143,6 +143,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="评测划分；默认只用 dev，留出集不参与调参",
     )
 
+    generation_evaluate = commands.add_parser(
+        "evaluate-generation",
+        help="固定上下文重复采样，逐条核对回答陈述（会调用生成与评判 API）",
+    )
+    generation_evaluate.add_argument(
+        "--cases", type=Path, required=True, help="冻结了实际上下文的题目 JSON"
+    )
+    generation_evaluate.add_argument(
+        "--arm",
+        action="append",
+        required=True,
+        help="方案：名称=上下文@温度 或 名称=上下文@stored；第一个方案作为对照基准",
+    )
+    generation_evaluate.add_argument(
+        "--output-dir", type=Path, required=True, help="实验目录；中断后用同样参数重跑即可续跑"
+    )
+    generation_evaluate.add_argument("--samples", type=int, default=5, help="每题每个方案的采样次数")
+    generation_evaluate.add_argument("--concurrency", type=int, default=3)
+    generation_evaluate.add_argument("--seed", type=int, default=0)
+    generation_evaluate.add_argument("--max-tokens", type=int, default=2000)
+
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
         "--backend",
@@ -400,6 +421,83 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
     return 0
 
 
+def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> int:
+    _load_project_environment(settings.paths.root / "project" / ".env")
+    import hashlib
+    from urllib.parse import urlsplit
+
+    from rag_textbook_qa.evaluation.generation import load_generation_cases, parse_arm
+    from rag_textbook_qa.evaluation.generation_runner import (
+        llm_pair_from_env,
+        openai_generator,
+        openai_judge,
+        run_generation_experiment,
+    )
+
+    for option, value in (
+        ("--samples", args.samples),
+        ("--concurrency", args.concurrency),
+        ("--max-tokens", args.max_tokens),
+    ):
+        if value <= 0:
+            raise ValueError(f"{option} 必须大于 0")
+    arms = [parse_arm(spec) for spec in args.arm]
+    cases = load_generation_cases(args.cases)
+    generator_llm, judge_llm, extra = llm_pair_from_env()
+    protocol = {
+        "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
+        "generator": {
+            "host": urlsplit(generator_llm.base_url).hostname,
+            "model": generator_llm.default_model,
+            "max_tokens": args.max_tokens,
+        },
+        "judge": {
+            "host": urlsplit(judge_llm.base_url).hostname,
+            "model": judge_llm.default_model,
+            "extra": extra,
+        },
+    }
+    report = run_generation_experiment(
+        cases,
+        arms,
+        output_dir=args.output_dir,
+        generator=openai_generator(
+            generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens
+        ),
+        judge=openai_judge(judge_llm.client, judge_llm.default_model, extra=extra),
+        samples=args.samples,
+        seed=args.seed,
+        concurrency=args.concurrency,
+        protocol=protocol,
+    )
+
+    def shown(value: float | None) -> str:
+        return "—" if value is None else f"{value:.3f}"
+
+    print(
+        f"生成评测：计划 {report['planned']} 份回答，"
+        f"已生成 {report['generated']}，已评判 {report['judged']}"
+    )
+    for name, arm in report["arms"].items():
+        print(
+            f"{name}: 实质问题={shown(arm['problem_claims'])} 条/份，"
+            f"实质问题比例={shown(arm['problem_rate'])}，严格口径={shown(arm['strict_rate'])}，"
+            f"覆盖={shown(arm['coverage'])}，样本相似度={shown(arm['overlap'])}"
+        )
+    for name, comparison in report["comparisons"].items():
+        primary = comparison["problem_claims"]
+        if primary:
+            low, high = primary["ci95"]
+            print(
+                f"{name} 相对 {report['reference_arm']}："
+                f"实质问题条数差 {primary['mean_difference']:+.3f}"
+                f"（95% CI {low:+.3f} ~ {high:+.3f}，p={primary['p_value']:.3f}，"
+                f"{primary['cases']} 题）"
+            )
+    print(f"报告: {args.output_dir / 'report.json'}")
+    return 0
+
+
 def _require_app_dependencies(compute: ComputeSettings) -> None:
     required = {"streamlit": "ui"}
     if compute.backend == "local" or compute.query_fallback_to_local:
@@ -646,6 +744,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             settings = Settings.load(args.workspace)
             return _run_retrieval_evaluate(args, settings)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "evaluate-generation":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_generation_evaluate(args, settings)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
