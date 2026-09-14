@@ -137,120 +137,29 @@ LLM_MODEL=gemini-3-flash-preview
 
 ```bash
 rag-qa doctor
+rag-qa doctor --index   # 额外检查向量库内容
 ```
 
 该命令检查 Python、工作目录、基础依赖和可选组件，且不会加载模型或访问网络。安装本地模型组件后，可另外用 `project/check_env.py` 检查 PyTorch、CUDA 与 GPU。
+
+加上 `--index` 会多做一层：列出每个 `textbook_*` 集合的条数与 embedding 模型、标出空集合，
+并核对已登记的冲突规则是否仍能命中。默认的 `doctor` 只看配置，`artifacts/vector_db/` 目录存在
+就报 ok，空索引和缺书都察觉不到。这一层要导入 chromadb（仍不加载模型），所以做成可选项。
 
 ---
 
 ## 本地与远程模型计算
 
-Embedding 和 Reranker 使用统一 Provider 接口，可在两种模式间切换：
+Embedding 和 Reranker 走统一 Provider 接口，可在两种模式间切换：`local` 在当前机器上运行
+（`cpu`/`cuda`/`mps`）；`remote` 让 Mac 只通过 Tailscale 请求 Windows Worker，而 ChromaDB、
+BM25、LLM 和界面仍留在本地。
 
-- `local`：模型运行在当前机器，可指定 `cpu`、`cuda` 或 `mps`。
-- `remote`：Mac 只通过 Tailscale 请求 Windows Worker；ChromaDB、BM25、LLM 和 UI 仍在 Mac 本地。
+向量化任务一旦启动就固定使用同一个后端，网络故障不会悄悄换模型。查询可以只在连接超时这类
+瞬时故障时回退到相同的本地模型；**认证失败和模型指纹不一致始终直接报错，不降级**。
 
-向量化任务启动后会固定使用同一个后端，网络故障不会悄悄切换模型。查询可选择只在连接超时等瞬时故障时回退到相同的本地模型；认证失败和模型指纹不一致始终直接报错。
+两端的环境变量、Windows Worker 的一键启动脚本与安全约束、以及 `rag-qa worker check` 的用法，
+见 [远程 Worker 部署](docs/remote-worker.md)。
 
-### Mac 本地 CPU 模式
-
-先安装本地模型依赖：
-
-```bash
-UV_PROJECT_ENVIRONMENT="$CONDA_PREFIX" uv sync --inexact --extra local-models
-```
-
-在 `project/.env` 中设置：
-
-```env
-RAG_QA_COMPUTE_BACKEND=local
-RAG_QA_DEVICE=cpu
-RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
-```
-
-### Windows 4070 Super Worker
-
-Windows 拉取同一分支后，在 PowerShell 中创建环境并安装 Worker 与本地模型依赖：
-
-```powershell
-conda env create -f environment.yml
-conda activate rag-textbook-qa
-$env:UV_PROJECT_ENVIRONMENT=$env:CONDA_PREFIX
-uv sync --inexact --extra worker --extra local-models
-```
-
-用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一个随机 token，并写入 Windows 的 `project/.env`。Worker token 必须是非空 ASCII 字符串，且不能包含首尾空格、内部空白或控制字符：
-
-```env
-RAG_QA_WORKER_TOKEN=替换为随机token
-RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
-RAG_QA_DEVICE=cuda
-```
-
-通过 `tailscale ip -4` 查看台式机 Tailscale IP，然后只监听该地址：
-
-```powershell
-rag-qa worker serve --host 100.x.y.z --port 8765 --device cuda
-```
-
-配置完成后，也可以从仓库根目录直接运行一键启动脚本，不需要先执行
-`conda activate`：
-
-```powershell
-.\scripts\windows\start-worker.ps1
-```
-
-脚本会根据自身位置定位仓库，自动查找 Conda 和 Tailscale IPv4，检查
-`project/.env` 中是否存在格式有效的 Worker token，并在确认 8765 端口空闲后，
-通过 `conda run` 启动 CUDA Worker。脚本不会显示 token，也不会修改防火墙、
-开机启动项或持久环境变量。即使当前 PowerShell 中残留旧的 Worker 配置，脚本也会
-仅为本次子进程清除这些覆盖值，以仓库的 `project/.env` 为准。
-
-脚本也可以通过绝对路径从其他目录启动，或按需覆盖环境名和端口：
-
-```powershell
-& "D:\CodeField\rag-textbook-qa-worker\scripts\windows\start-worker.ps1"
-.\scripts\windows\start-worker.ps1 -EnvironmentName rag-textbook-qa -Port 8765
-```
-
-若希望把首次请求的模型加载等待移到 Worker 启动阶段，可显式启用预热：
-
-```powershell
-.\scripts\windows\start-worker.ps1 -Warmup
-# 等价的 CLI 参数：rag-qa worker serve ... --warmup
-```
-
-预热只会在 Windows 本地分别执行一次最小的 embedding 和 reranker 推理，
-不会调用 LLM 或外部 API，也不会修改教材索引。启用后，Worker 会在两个模型
-加载完成后再开始监听；未指定 `-Warmup` 时仍保持原有的首次请求懒加载行为。
-
-不要把 Worker 端口映射到公网。监听非 localhost 地址时，程序会强制要求 `RAG_QA_WORKER_TOKEN`。如果 PowerShell 或终端进程中的 token 与 `project/.env` 不同，进程环境变量优先，命令会给出不含 token 内容的警告；修改 token 后应重启 Worker。
-
-### Mac 连接远程 Worker
-
-在 Mac 的 `project/.env` 写入相同 token 和 Windows Tailscale 地址：
-
-```env
-RAG_QA_COMPUTE_BACKEND=remote
-RAG_QA_REMOTE_URL=http://100.x.y.z:8765
-RAG_QA_WORKER_TOKEN=与Windows相同的随机token
-RAG_QA_REMOTE_TIMEOUT=120
-RAG_QA_QUERY_FALLBACK_TO_LOCAL=false
-RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
-```
-
-先执行安全健康检查：
-
-```bash
-rag-qa worker check
-# 或输出结构化结果
-rag-qa worker check --json
-```
-
-该命令只请求 `/health`，校验认证、协议版本、设备以及 embedding/reranker 模型指纹，不会调用推理接口，也不会输出 token。`rag-qa doctor` 则只检查当前选择的后端配置，不会连接 Worker。Worker 首次收到 embedding 或 rerank 请求时才会加载并下载模型。若要启用查询回退，Mac 还需安装 `local-models`，并将 `RAG_QA_QUERY_FALLBACK_TO_LOCAL` 改为 `true`。
 
 ---
 
@@ -363,11 +272,9 @@ RAGAS 是验收指标而非优化目标，验收标准须在看到数字之前�
 见[验收标准](docs/evaluation-methodology.md#ragas-验收标准)。
 需要无 RAG 基线对比时用 `rag-qa evaluate --baseline`（额外消耗 token）。
 
-**生成层**（`rag-qa evaluate-generation`）针对采样噪声：同一个提示词在温度 0.7 下会得出不同回答，
-2026-09-14 的对照里有一题两轮输入逐字相同而审查结论翻转，所以单次采样的 A/B 对照无法归因。
-它冻结生成模型实际看到的上下文，每题重复采样，再由另一家族的评判模型把回答拆成事实陈述逐条
-核对；判为有依据的陈述必须附原文摘录，程序在上下文里找到该摘录才算数。方案之间先按题取平均，
-再做配对的符号翻转检验。输出目录可断点续跑，首次运行即冻结实验协议，换了参数的重跑会被拒绝。
+**生成层**（`rag-qa evaluate-generation`）针对采样噪声：温度 0.7 下同一个提示词会得出不同回答，
+2026-09-14 有一题两轮输入逐字相同而审查结论翻转，所以单次采样的 A/B 对照无法归因。它冻结上下文、
+每题重复采样，由另一家族的评判模型把回答拆成事实陈述逐条核对，最后做配对的符号翻转检验。
 
 ```bash
 rag-qa evaluate-generation --cases <cases.json> \
@@ -403,7 +310,10 @@ Web 问答默认使用流式输出，答案会在模型生成过程中逐步显�
 “启用 HyDE 增强检索”默认关闭；开启后会在每次检索前额外调用一次 LLM，可能
 提高部分复杂问题的召回效果，但会增加等待时间和 API 费用。流式回答完成后，
 执行摘要还会显示首字等待时间。答案引用区只显示实际送入模型的资料片段；
-上下文默认限制为 2000 字符，超过剩余预算的正文会截取可容纳的部分。
+上下文默认限制为 4000 字符（`--context-budget` 可调），超过剩余预算的正文会截取可容纳的部分。
+这个默认值 2026-09-15 由 2000 提高：实测 2000 时 191 条相关片段只有 154 条真正装进上下文，
+4000 则全部送达而平均上下文只从 1601 涨到 2336 字符。依据是证据保留率，**答案质量未验证**，
+且此后的 RAGAS 分数与更早的运行不可比。
 
 启动命令会检查当前模式所需的依赖并显示不含 token 的配置摘要，但不会主动连接 Worker 或加载模型。远程模式只需安装 `ui`，本地模式以及启用本地回退时还需安装 `local-models`。界面支持教材选择、top-k 调整、对话历史与 RAGAS 评估结果查看。
 
@@ -452,40 +362,31 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 
 | 文件 | 题数 | 说明 |
 |------|------|------|
-| `data/evaluation/test_questions.json` | 50 条 | 覆盖五本教材，`ragas_evaluation.py` 默认使用 |
-| `data/evaluation/retrieval_questions.json` | 65 条 | 五本教材各13题，dev 35 / holdout 30；holdout中15题曾参与调参，须与新增15题分别解释 |
-| `data/evaluation/retrieval_holdout_candidates_v4.json` | 15 条 | 经过人工初览并纳入主标注集的新增holdout题；此文件保留审计记录 |
+| `data/evaluation/test_questions.json` | 50 条 | RAGAS 使用，覆盖五本教材 |
+| `data/evaluation/retrieval_questions.json` | 65 条 | 检索评测使用，dev 35 / holdout 30 |
+| `retrieval_holdout_candidates_v{1..4}.json` | 15 条 | 已并入主集的新增 holdout 题，保留审计记录 |
 
-2026-09-14 修正两道数据库开发题的章节标注，原因及同排序计分对照见 [数据库证据复核](docs/database-evidence-review.md)。这属于标注修正，不代表检索或答案质量提升；holdout未改动。
+题集来源、holdout 中 15 题的调参污染范围、以及 2026-09-14 那次标注修正（属于标注修正，
+不代表检索或答案质量提升），见
+[标注集的由来与污染范围](docs/evaluation-methodology.md#标注集的由来与污染范围)。
 
+---
 
-### 表格回答上下文
+## 当前行为与已知限制
 
-完整 HTML 表格在生成前转换为紧凑行列文本，合并单元格按占用位置展开，
-只纳入预算内的完整行；省略后续行时明确标记。含图片、标题或无法安全解释的结构暂时跳过，
-继续尝试后续资料；如果没有可用证据，不调用生成模型。
-界面引用与 RAGAS 使用的仍是实际送入模型的片段，原始检索结果保留不变。
-这项改动只作用于回答上下文，不改变索引；长表格在 embedding 阶段的输入截断仍需另行验证。
+**表格**：完整 HTML 表格在生成前转为紧凑行列文本，合并单元格按占用位置展开，只纳入预算内的完整行，
+省略时明确标记；含图片或无法安全解释的结构整块跳过而不是切碎，没有可用证据时不调用生成模型。
+只作用于回答上下文，不改索引；长表格在 embedding 阶段的输入截断仍需另行验证。
 
-### 当前稳定使用方式
+**默认路径**：普通问答用原问题检索加重排，默认关闭 HyDE、查询分解和引用核对。最新真实 API 验收见
+[15 题主线验收](docs/mainline-acceptance-20260914.md)——接口 15/15 正常结束，但答案依据与完整性
+仍有待修正项；工作区快照见 [稳定基线](docs/stable-baseline.md)。
 
-普通问答使用原问题检索和重排，默认关闭 HyDE、查询分解和答案引用核对。
-查询分解、引用核对收纳在侧栏「实验功能（默认关闭）」中。
-模型服务或引擎初始化出现常见异常时，页面显示可读的失败提示，可以继续提问。
-当前工作区的检查结果、快照与已知限制见 [稳定基线](docs/stable-baseline.md)。
-普通问答的最新真实API验收见 [15题主线验收](docs/mainline-acceptance-20260914.md)：接口15/15正常结束，答案依据与完整性仍有待修正项。
+**已知教材冲突**：只覆盖数据库教材 UNIQUE／唯一索引的 NULL 数量分歧，且两侧原文都进入上下文才触发；
+触发后不拦截回答，而是要求并列给出两种说法。**没有匹配到规则不代表不存在冲突**——这是针对一处已核实
+问题的硬编码保护，不是通用冲突检测。详见 [证据复核](docs/database-evidence-review.md)。
 
-### 已知教材冲突保护
-
-普通问答在生成前检查实际上下文中的已登记冲突。目前覆盖数据库教材中UNIQUE／唯一索引的NULL数量分歧；只有经核实的两侧片段及完整原文都在上下文中时触发。
-触发后不拦截回答：两侧原文和引用编号会作为附加要求写进提示词，要求回答并列给出两种说法、说明仅凭本次片段无法确定统一结论，其余部分照常作答。
-没有匹配到登记规则不代表不存在冲突。这是针对已知教材问题的保护，不是通用语义冲突检测；详见 [证据复核与处理](docs/database-evidence-review.md)。
-
-### 实验功能
-
-- **查询分解**：`engine.ask(..., use_decomposition=True)`。最多3个独立子问题，同时保留原问题检索，合并后统一重排；优先保留每个子问题的完整证据。简单题可本地跳过规划，规划失败恢复原检索方式。已完成小样本回归，尚未证明整体答案准确率提升。见 [实现与验证记录](docs/query-decomposition-plan.md)。
-- **答案引用核对**：`engine.ask(..., verify_citations=True)`。草稿生成后最多增加两次模型请求，提取陈述与原文摘录、校验摘录、核对支持关系，最后直接渲染通过的陈述。开启时等待核对完成再显示；格式错误、超时或无通过陈述时不展示草稿。两轮使用同一配置模型，仍可能误判或遗漏信息。目前仅通过离线流程测试，尚无真实效果验收。
-
-`grounding` 返回核对状态、通过的陈述及摘录、调用数与耗时；答案 token 字段仍仅统计草稿生成。
-引用编号存在、片段完整或模型核对通过，都不等于答案中的每个细节已被原文充分支持。
-实验记录入口见 [稳定基线](docs/stable-baseline.md#历史验证记录)。
+**实验功能（默认关闭，都没通过真实效果验收）**：`use_decomposition=True` 最多拆 3 个子问题并保留
+原问题检索，合并后统一重排（[记录](docs/query-decomposition-plan.md)）；`verify_citations=True`
+在草稿后追加最多两次模型请求核对引用，核对未完成时不展示草稿。引用编号存在、或模型核对通过，
+都不等于答案里每个细节都有原文支撑。
