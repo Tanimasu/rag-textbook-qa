@@ -101,7 +101,9 @@ def find_source_conflicts(sources: list[dict[str, Any]]) -> list[dict[str, Any]]
     return conflicts
 
 
-def validate_conflict_rules(lookup: ChunkLookup) -> list[dict[str, str]]:
+def validate_conflict_rules(
+    lookup: ChunkLookup, *, book_name: str | None = None
+) -> list[dict[str, str]]:
     """Report registered pins that no longer resolve against the indexed corpus.
 
     Chunk ids are chunking-dependent: re-chunking rewrites them, so a rule that
@@ -109,10 +111,15 @@ def validate_conflict_rules(lookup: ChunkLookup) -> list[dict[str, str]]:
     goes quiet and every answer looks normal. The pinned corpus is not committed,
     so no offline test can prove the rules are still live; callers resolve each
     pin against whatever corpus is actually indexed and get back the dead ones.
+
+    Pass ``book_name`` to check only the rules for one textbook, which is what a
+    single-book index rebuild can invalidate.
     """
 
     problems = []
     for rule in CONFLICT_RULES:
+        if book_name is not None and rule.book_name != book_name:
+            continue
         for pin in rule.pins():
             content = lookup(rule.book_name, pin.chunk_id)
             if content is None:

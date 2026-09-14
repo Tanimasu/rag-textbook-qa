@@ -10,6 +10,14 @@ from unittest.mock import MagicMock, patch
 from rag_textbook_qa.cli import main
 
 
+def _indexed_pins() -> dict[str, str]:
+    """Every registered conflict pin, as a corpus that still resolves."""
+
+    from rag_textbook_qa.rag.conflicts import CONFLICT_RULES
+
+    return {pin.chunk_id: pin.quote for rule in CONFLICT_RULES for pin in rule.pins()}
+
+
 class IndexCliTests(unittest.TestCase):
     def make_workspace(self, root: Path, *, env_text: str = "") -> None:
         (root / "src" / "rag_textbook_qa").mkdir(parents=True)
@@ -35,6 +43,10 @@ class IndexCliTests(unittest.TestCase):
                     "rag_textbook_qa.indexing.MultiBookVectorizer",
                     return_value=vectorizer,
                 ) as vectorizer_class,
+                patch(
+                    "rag_textbook_qa.indexing.fetch_indexed_chunks",
+                    return_value=_indexed_pins(),
+                ),
                 contextlib.redirect_stdout(output),
             ):
                 exit_code = main(
@@ -95,12 +107,42 @@ class IndexCliTests(unittest.TestCase):
             self.assertNotIn(secret, output.getvalue())
 
 
-    def test_check_passes_when_every_pinned_quote_is_still_indexed(self):
-        from rag_textbook_qa.rag.conflicts import CONFLICT_RULES
+    def test_build_warns_when_the_rebuilt_book_lost_its_conflict_pins(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(
+                root,
+                env_text="RAG_QA_COMPUTE_BACKEND=local\nRAG_QA_DEVICE=cpu\n",
+            )
+            chunks_path = root / "数据库原理及应用教程_chunks.json"
+            vectorizer = MagicMock()
+            vectorizer.vectorize_book.return_value = "textbook_database"
+            errors = io.StringIO()
 
-        indexed = {
-            pin.chunk_id: pin.quote for rule in CONFLICT_RULES for pin in rule.pins()
-        }
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "rag_textbook_qa.indexing.MultiBookVectorizer",
+                    return_value=vectorizer,
+                ),
+                patch(
+                    "rag_textbook_qa.indexing.fetch_indexed_chunks",
+                    return_value={},
+                ) as fetch,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(errors),
+            ):
+                exit_code = main(
+                    ["--workspace", str(root), "index", "build", str(chunks_path)]
+                )
+
+            # The build itself succeeded; only the pinned rule is now dead.
+            self.assertEqual(exit_code, 0)
+            self.assertIn("rag-qa index check", errors.getvalue())
+            self.assertEqual(fetch.call_args.args[1], "database")
+
+    def test_check_passes_when_every_pinned_quote_is_still_indexed(self):
+        indexed = _indexed_pins()
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             self.make_workspace(root)

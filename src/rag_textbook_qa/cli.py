@@ -290,6 +290,37 @@ def _load_project_environment(env_path: Path) -> None:
     load_dotenv(env_path, override=False)
 
 
+def _conflict_pin_problems(
+    db_path: Path, book_name: str | None = None
+) -> tuple[list[dict[str, str]], int]:
+    """Resolve every registered conflict pin against the live index."""
+
+    from rag_textbook_qa.indexing import fetch_indexed_chunks
+    from rag_textbook_qa.rag.conflicts import CONFLICT_RULES, validate_conflict_rules
+
+    rules = [
+        rule
+        for rule in CONFLICT_RULES
+        if book_name is None or rule.book_name == book_name
+    ]
+    # One fetch per book, because a rule pins several ids in the same collection.
+    resolved: dict[str, dict[str, str]] = {}
+
+    def lookup(book: str, chunk_id: str) -> str | None:
+        if book not in resolved:
+            wanted = [
+                pin.chunk_id
+                for rule in rules
+                if rule.book_name == book
+                for pin in rule.pins()
+            ]
+            resolved[book] = fetch_indexed_chunks(db_path, book, wanted)
+        return resolved[book].get(chunk_id)
+
+    problems = validate_conflict_rules(lookup, book_name=book_name)
+    return problems, sum(len(list(rule.pins())) for rule in rules)
+
+
 def _run_index(args: argparse.Namespace, settings: Settings) -> int:
     from rag_textbook_qa.catalog import book_id_from_chunk_stem
     from rag_textbook_qa.indexing import MultiBookVectorizer, list_indexed_books
@@ -303,16 +334,25 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
             db_path=db_path,
             compute_settings=compute,
         )
+        book_id = args.book or book_id_from_chunk_stem(args.input.stem)
         try:
             collection_name = vectorizer.vectorize_book(
                 args.input,
-                args.book or book_id_from_chunk_stem(args.input.stem),
+                book_id,
                 batch_size=args.batch_size,
                 clear_existing=not args.append,
             )
         finally:
             vectorizer.close()
         print(f"索引已就绪: {collection_name}")
+        # Re-chunking rewrites chunk ids, which is exactly when a pinned rule dies.
+        problems, pinned = _conflict_pin_problems(db_path, book_id)
+        if problems:
+            print(
+                f"警告: 本教材已登记的 {pinned} 条冲突原文引用中有 {len(problems)} 条无法命中；"
+                "运行 rag-qa index check 查看详情。",
+                file=sys.stderr,
+            )
         return 0
 
     if args.index_command == "list":
@@ -328,28 +368,7 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
         return 0
 
     if args.index_command == "check":
-        from rag_textbook_qa.indexing import fetch_indexed_chunks
-        from rag_textbook_qa.rag.conflicts import (
-            CONFLICT_RULES,
-            validate_conflict_rules,
-        )
-
-        # One fetch per book, because a rule pins several ids in the same collection.
-        resolved: dict[str, dict[str, str]] = {}
-
-        def lookup(book_name: str, chunk_id: str) -> str | None:
-            if book_name not in resolved:
-                wanted = [
-                    pin.chunk_id
-                    for rule in CONFLICT_RULES
-                    if rule.book_name == book_name
-                    for pin in rule.pins()
-                ]
-                resolved[book_name] = fetch_indexed_chunks(db_path, book_name, wanted)
-            return resolved[book_name].get(chunk_id)
-
-        problems = validate_conflict_rules(lookup)
-        pinned = sum(len(list(rule.pins())) for rule in CONFLICT_RULES)
+        problems, pinned = _conflict_pin_problems(db_path)
         if args.json:
             payload = {"pinned": pinned, "problems": problems}
             print(json.dumps(payload, ensure_ascii=False, indent=2))
