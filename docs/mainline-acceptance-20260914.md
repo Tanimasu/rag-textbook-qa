@@ -62,3 +62,6 @@ API报告输入20016 token、输出17488 token，合计37504 token。所有上�
 - [运行脚本](../artifacts/evaluations/mainline-acceptance-20260914/run.py)（脚本拒绝覆盖现有结果；复跑需复制到新的同级实验目录，且会产生新的API请求）、[离线检查脚本](../artifacts/evaluations/mainline-acceptance-20260914/check.py)
 
 下一轮优先做普通上下文选择的离线对照，再验证受影响的答案；生成忠实性问题另建小范围对照，保留本轮原始答案供回归，避免一次同时改动多个环节。
+
+
+后续记录：[上下文选择对照与回退](query-context-experiment-20260914.md)。候选恢复了关键依据；答案层那道“回归”题两轮输入逐字相同，属于采样差异，单次对照无法定论，暂未替换默认流程。
