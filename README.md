@@ -326,9 +326,15 @@ rag-qa ingest check artifacts/chunks/数据结构_mineru_chunks.json
 ```bash
 rag-qa index build artifacts/chunks/教材_chunks.json
 rag-qa index list
+rag-qa index check
 ```
 
 `index build` 根据 `project/.env` 选择本地或远程 embedding Provider，将向量写入 `artifacts/vector_db/`；默认先完整构建临时集合，成功后再替换旧集合。已知教材会根据文件名推断稳定 ID，也可用 `--book database` 显式指定。原来的 `python project/vectorize_chunks.py` 仍保留为批量交互式兼容入口。
+
+`index check` 核对 `rag/conflicts.py` 里已登记的冲突规则：把每条规则的片段ID拿到当前索引里查，
+再确认完整原文摘录仍在该片段中，找不到片段或原文已改写就逐条打印并以退出码 1 结束。
+片段ID由分块决定，重新分块后同一段原文会换一个ID，冲突保护会就此静默失效而回答看起来一切正常——
+这个命令把静默失效变成明确报错。它只读取集合内容，不加载模型、不调用 LLM，也不消耗 token。
 
 ### Step 5 — 问答
 

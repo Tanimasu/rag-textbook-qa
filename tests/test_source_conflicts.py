@@ -5,7 +5,12 @@ import unittest
 
 import test_decomposition as fixtures
 
-from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
+from rag_textbook_qa.rag.conflicts import (
+    CONFLICT_RULES,
+    conflict_prompt_note,
+    find_source_conflicts,
+    validate_conflict_rules,
+)
 from rag_textbook_qa.rag.engine import RAGEngine
 
 
@@ -90,6 +95,45 @@ class SourceConflictTests(unittest.TestCase):
         self.assertEqual(result["answer"], "答案")
         self.assertEqual(result["source_conflicts"], [])
         self.assertNotIn("已核实的表述冲突", prompt)
+
+    def test_validation_passes_when_every_pinned_quote_is_still_indexed(self):
+        corpus = {
+            (rule.book_name, pin.chunk_id): f"前言。{pin.quote}后文。"
+            for rule in CONFLICT_RULES
+            for pin in rule.pins()
+        }
+        problems = validate_conflict_rules(
+            lambda book, chunk: corpus.get((book, chunk))
+        )
+
+        self.assertTrue(corpus)
+        self.assertEqual(problems, [])
+
+    def test_validation_separates_a_vanished_chunk_from_a_rewritten_quote(self):
+        pins = [(rule.book_name, pin) for rule in CONFLICT_RULES for pin in rule.pins()]
+        self.assertGreaterEqual(len(pins), 2)
+        corpus = {(book, pin.chunk_id): pin.quote for book, pin in pins}
+        del corpus[(pins[0][0], pins[0][1].chunk_id)]
+        corpus[(pins[1][0], pins[1][1].chunk_id)] = "改版后重写的句子。"
+
+        problems = validate_conflict_rules(
+            lambda book, chunk: corpus.get((book, chunk))
+        )
+
+        self.assertEqual(
+            [(problem["chunk_id"], problem["status"]) for problem in problems],
+            [
+                (pins[0][1].chunk_id, "missing"),
+                (pins[1][1].chunk_id, "quote_changed"),
+            ],
+        )
+
+    def test_every_registered_rule_needs_two_sides_to_be_a_conflict(self):
+        self.assertTrue(CONFLICT_RULES)
+        for rule in CONFLICT_RULES:
+            with self.subTest(rule=rule.id):
+                self.assertGreaterEqual(len(rule.sides), 2)
+                self.assertTrue(all(side for side in rule.sides))
 
     def test_retrieval_only_keeps_no_answer_semantics(self):
         engine = self.engine()

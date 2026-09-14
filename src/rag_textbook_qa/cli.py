@@ -89,6 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
     index_list = index_commands.add_parser("list", help="列出已索引教材，不加载模型")
     index_list.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
     index_list.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    index_check = index_commands.add_parser(
+        "check",
+        help="核对已登记的冲突规则在当前索引中是否仍然命中，不加载模型",
+    )
+    index_check.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    index_check.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     chat = commands.add_parser("chat", help="启动交互式教材问答")
     chat.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
@@ -320,6 +326,42 @@ def _run_index(args: argparse.Namespace, settings: Settings) -> int:
                 model = book["embedding_model"] or "未知模型"
                 print(f"{book['book_name']}: {book['count']} chunks ({model})")
         return 0
+
+    if args.index_command == "check":
+        from rag_textbook_qa.indexing import fetch_indexed_chunks
+        from rag_textbook_qa.rag.conflicts import (
+            CONFLICT_RULES,
+            validate_conflict_rules,
+        )
+
+        # One fetch per book, because a rule pins several ids in the same collection.
+        resolved: dict[str, dict[str, str]] = {}
+
+        def lookup(book_name: str, chunk_id: str) -> str | None:
+            if book_name not in resolved:
+                wanted = [
+                    pin.chunk_id
+                    for rule in CONFLICT_RULES
+                    if rule.book_name == book_name
+                    for pin in rule.pins()
+                ]
+                resolved[book_name] = fetch_indexed_chunks(db_path, book_name, wanted)
+            return resolved[book_name].get(chunk_id)
+
+        problems = validate_conflict_rules(lookup)
+        pinned = sum(len(list(rule.pins())) for rule in CONFLICT_RULES)
+        if args.json:
+            payload = {"pinned": pinned, "problems": problems}
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        elif not problems:
+            print(f"已登记冲突规则核对通过：{pinned} 条原文引用仍能在索引中找到。")
+        else:
+            print(f"已登记冲突规则已失效：{pinned} 条引用中有 {len(problems)} 条无法命中。")
+            for problem in problems:
+                reason = "片段不在索引中" if problem["status"] == "missing" else "原文已改变"
+                print(f"  {problem['rule']} / {problem['chunk_id']}: {reason}")
+            print("重新分块会改变片段ID；须按原文重新核实后再更新 rag/conflicts.py。")
+        return 1 if problems else 0
 
     raise ValueError(f"未知 index 命令: {args.index_command}")
 

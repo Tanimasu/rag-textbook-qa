@@ -108,6 +108,38 @@ def list_indexed_books(db_path: str | Path) -> list[dict[str, Any]]:
         client.close()
 
 
+def fetch_indexed_chunks(
+    db_path: str | Path, book_name: str, chunk_ids: list[str]
+) -> dict[str, str]:
+    """Resolve chunk ids to the text actually indexed, without creating a provider.
+
+    A chunk id is the Chroma record id, so a pinned id maps straight back to its
+    stored content. Ids that are gone are simply absent from the result.
+    """
+
+    wanted = list(dict.fromkeys(chunk_ids))
+    if not wanted:
+        return {}
+
+    client = chromadb.PersistentClient(path=str(Path(db_path).expanduser().resolve()))
+    try:
+        collection_name = f"textbook_{book_name}"
+        if collection_name not in {item.name for item in client.list_collections()}:
+            return {}
+        found = client.get_collection(collection_name).get(
+            ids=wanted, include=["documents"]
+        )
+        return {
+            chunk_id: document
+            for chunk_id, document in zip(
+                found.get("ids") or [], found.get("documents") or [], strict=False
+            )
+            if document is not None
+        }
+    finally:
+        client.close()
+
+
 class MultiBookVectorizer:
     """Build and query one Chroma collection per textbook."""
 

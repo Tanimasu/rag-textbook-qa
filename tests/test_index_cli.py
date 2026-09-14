@@ -95,5 +95,58 @@ class IndexCliTests(unittest.TestCase):
             self.assertNotIn(secret, output.getvalue())
 
 
+    def test_check_passes_when_every_pinned_quote_is_still_indexed(self):
+        from rag_textbook_qa.rag.conflicts import CONFLICT_RULES
+
+        indexed = {
+            pin.chunk_id: pin.quote for rule in CONFLICT_RULES for pin in rule.pins()
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(root)
+            output = io.StringIO()
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "rag_textbook_qa.indexing.fetch_indexed_chunks",
+                    return_value=indexed,
+                ),
+                patch("rag_textbook_qa.indexing.MultiBookVectorizer") as vectorizer_class,
+                contextlib.redirect_stdout(output),
+            ):
+                exit_code = main(
+                    ["--workspace", str(root), "index", "check", "--json"]
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["problems"], [])
+            self.assertEqual(payload["pinned"], len(indexed))
+            vectorizer_class.assert_not_called()
+
+    def test_check_fails_loudly_when_rechunking_dropped_the_pinned_ids(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            secret = "中文-secret"
+            self.make_workspace(root, env_text=f"RAG_QA_WORKER_TOKEN={secret}\n")
+            output = io.StringIO()
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("rag_textbook_qa.indexing.fetch_indexed_chunks", return_value={}),
+                patch("rag_textbook_qa.indexing.MultiBookVectorizer") as vectorizer_class,
+                contextlib.redirect_stdout(output),
+            ):
+                exit_code = main(["--workspace", str(root), "index", "check"])
+
+            rendered = output.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertIn("已失效", rendered)
+            self.assertIn("片段不在索引中", rendered)
+            self.assertNotIn(secret, rendered)
+            vectorizer_class.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
