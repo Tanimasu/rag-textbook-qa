@@ -1,0 +1,52 @@
+{
+  "review_date": "2026-09-14",
+  "reviewer": "assistant inspection of current textbook index; not independent human annotation",
+  "scope": "Only two dev labels changed; questions and holdout unchanged. Directly explanatory sections, not an exhaustive list of all related chapters.",
+  "metrics_note": "Section recall measures listed-section coverage, not coverage of every answer fact. Score changes on identical rankings are annotation changes, not retrieval gains.",
+  "before_sha256": "003aa398dd4ec3dae9fa03e9b5bf09cc5ef671f3d0d48a8f7ac7459f116635ec",
+  "after_sha256": "5cf898db0680bcdedddb6edac633d6750f3e4adadf976dfb79840e25702ca53a",
+  "changes": [
+    {
+      "question": "写SQL查询时经常用到内连接（Inner Join）和左连接（Left Join），这两者在匹配数据时有什么根本的区别？",
+      "book_name": "database",
+      "split": "dev",
+      "before": [
+        "6.2.2　内连接查询"
+      ],
+      "after": [
+        "6.2.1　多关系查询结构",
+        "6.2.3　外连接查询"
+      ],
+      "reason": "原标签仅指向内连接示例；两处新标签正文直接对比匹配条件、左表未匹配行及NULL补齐。",
+      "evidence_chunk_ids": [
+        "ch6_s6_2_p374",
+        "ch6_s6_2_p382"
+      ]
+    },
+    {
+      "question": "设计表结构时，主键和唯一索引都能保证某一列的数据不重复，它们之间到底有什么区别？",
+      "book_name": "database",
+      "split": "dev",
+      "before": [
+        "2.3.1　候选码和主码"
+      ],
+      "after": [
+        "7.3.2 索引类型 > 1.根据索引特征进行分类"
+      ],
+      "reason": "原候选码/主码定义未说明唯一索引；索引特征分类正文直接说明两类索引的唯一性、NULL及数量区别。",
+      "evidence_chunk_ids": [
+        "ch7_s7_3_p467"
+      ]
+    }
+  ],
+  "source_conflict": {
+    "book_name": "database",
+    "chunk_ids": [
+      "ch5_p281",
+      "ch5_p285",
+      "ch7_s7_3_p467"
+    ],
+    "description": "第5章称UNIQUE最多一个NULL，第7章称唯一索引允许多个NULL。原始教材与索引保持原样；不在本轮判定外部数据库规则。",
+    "status": "unresolved textbook inconsistency; should be included in future answer-grounding cases"
+  }
+}

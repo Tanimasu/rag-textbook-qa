@@ -1,0 +1,161 @@
+{
+  "purpose": "Synthetic development routing checks; not held-out or answer-quality labels",
+  "cases": [
+    {
+      "id": "simple-1",
+      "group": "simple",
+      "question": "什么是进程？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-2",
+      "group": "simple",
+      "question": "请解释虚拟存储器。",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-3",
+      "group": "simple",
+      "question": "栈是什么意思？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-4",
+      "group": "simple",
+      "question": "线程指什么？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-5",
+      "group": "simple",
+      "question": "为什么DRAM需要定期刷新？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-6",
+      "group": "simple",
+      "question": "什么是数据库事务？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-7",
+      "group": "simple",
+      "question": "请简要介绍页表。",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "simple-8",
+      "group": "simple",
+      "question": "Cache是什么？",
+      "expected_reason": "local_simple"
+    },
+    {
+      "id": "comparison-9",
+      "group": "comparison",
+      "question": "进程和线程的区别是什么？",
+      "expected_reason": null
+    },
+    {
+      "id": "comparison-10",
+      "group": "comparison",
+      "question": "比较分页与分段。",
+      "expected_reason": null
+    },
+    {
+      "id": "comparison-11",
+      "group": "comparison",
+      "question": "TCP、UDP分别适合哪些场景？",
+      "expected_reason": null
+    },
+    {
+      "id": "comparison-12",
+      "group": "comparison",
+      "question": "栈与队列有什么异同？",
+      "expected_reason": null
+    },
+    {
+      "id": "comparison-13",
+      "group": "comparison",
+      "question": "Cache和DRAM是什么？",
+      "expected_reason": null
+    },
+    {
+      "id": "comparison-14",
+      "group": "comparison",
+      "question": "请介绍内连接以及左连接。",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-15",
+      "group": "compound",
+      "question": "Cache如何提高访问速度？DRAM为什么需要刷新？",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-16",
+      "group": "compound",
+      "question": "什么是进程。线程是什么？",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-17",
+      "group": "compound",
+      "question": "解释栈；再说明循环队列。",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-18",
+      "group": "compound",
+      "question": "分别说明事务的原子性和隔离性。",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-19",
+      "group": "compound",
+      "question": "分页的地址转换过程及缺页处理步骤是什么？",
+      "expected_reason": null
+    },
+    {
+      "id": "compound-20",
+      "group": "compound",
+      "question": "请比较内连接和外连接，并分别给出用途。",
+      "expected_reason": null
+    },
+    {
+      "id": "dependent-21",
+      "group": "dependent",
+      "question": "先查出教材中的排序算法，然后根据结果分析其复杂度。",
+      "expected_reason": "local_dependent"
+    },
+    {
+      "id": "dependent-22",
+      "group": "dependent",
+      "question": "根据上一问的答案解释它的局限。",
+      "expected_reason": "local_dependent"
+    },
+    {
+      "id": "dependent-23",
+      "group": "dependent",
+      "question": "根据第一问的结果选择合适的数据结构。",
+      "expected_reason": "local_dependent"
+    },
+    {
+      "id": "uncertain-24",
+      "group": "uncertain",
+      "question": "这个机制在真实系统里怎样工作？",
+      "expected_reason": null
+    },
+    {
+      "id": "uncertain-25",
+      "group": "uncertain",
+      "question": "系统资源不足时会出现哪些现象？",
+      "expected_reason": null
+    },
+    {
+      "id": "uncertain-26",
+      "group": "uncertain",
+      "question": "页面置换算法的优缺点有哪些？",
+      "expected_reason": null
+    }
+  ]
+}

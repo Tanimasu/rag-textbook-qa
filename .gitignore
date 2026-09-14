@@ -18,6 +18,11 @@ artifacts/chunks/
 artifacts/vector_db/
 artifacts/evaluations/retrieval/
 artifacts/evaluations/ragas/
+# 按轮次命名的 RAGAS 运行产物；结论记入 README，原始数据不入库
+artifacts/evaluations/ragas-*/
+# 本地验收原始片段、答案和构建快照；结论记录在 docs 中
+artifacts/evaluations/*-20[0-9][0-9][0-9][0-9][0-9][0-9]/
+artifacts/baselines/
 
 # ── PDF 原书（体积大 + 版权）────────────────────────────────
 data/raw/*

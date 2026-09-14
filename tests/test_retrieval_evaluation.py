@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from rag_textbook_qa.evaluation.retrieval import (
     RETRIEVAL_STRATEGIES,
@@ -191,21 +192,59 @@ class RetrievalEvaluationTests(unittest.TestCase):
         markers = ["1.OS作为用户与计算机硬件系统之间的接口"]
         sibling_ish = {"chapter": "第1章", "section_h2": "2.OS作为计算机系统资源的管理者"}
 
-        self.assertEqual(grade_result(sibling_ish, markers), 1)
+        self.assertEqual(grade_result(sibling_ish, markers), 0)
+
+    def test_real_engine_path_reads_corpus_once_per_book(self):
+        engine = FakeRetrievalEngine()
+        engine.vectorizer = MagicMock()
+        collection = engine.vectorizer.client.get_collection.return_value
+        collection.get.return_value = {
+            "ids": ["a", "b"],
+            "metadatas": [{"chapter": "第3章", "section_h2": "3.5 死锁概述"}] * 2,
+        }
+        report = run_retrieval_strategies(
+            engine, [RetrievalQuestion("问题", "os", ("3.5",))],
+            ("bm25", "embedding"), top_k=5,
+        )
+        collection.get.assert_called_once_with(include=["metadatas"])
+        self.assertEqual(report["ndcg_scope"], "corpus")
+        self.assertLess(report["strategies"]["bm25"]["mean_ndcg_at_k"], 1)
+
+    def test_repeated_chunk_id_does_not_inflate_gain(self):
+        result = {"chunk_id": "one", "section_h3": "3.5.3 避免"}
+        score = score_ranked_results([result] * 5, ["3.5.3 避免"], candidates=[result])
+        self.assertEqual(score["grades"], [3])
+        self.assertEqual(score["ndcg_at_k"], 1)
+
+    def test_multiple_exact_chunks_use_chunk_level_ideal(self):
+        results = [{"chunk_id": str(i), "chapter": "第3章", "section_h3": "3.5.3 避免"}
+                   for i in range(5)]
+        score = score_ranked_results(results, ["3.5.3 避免"], candidates=results)
+        self.assertEqual(score["ndcg_at_k"], 1.0)
+        self.assertEqual(score["ndcg_scope"], "corpus")
+
+    def test_local_number_and_ancestor_are_not_siblings(self):
+        self.assertEqual(grade_result({"chapter": "第8章", "section_h3": "1.概念"},
+                                     ["1.OS作为用户接口"]), 0)
+        self.assertEqual(grade_result({"chapter": "第3章", "section_h2": "3.5 父节"},
+                                     ["3.5.3 子节"]), 1)
+
+    def test_ndcg_uses_unretrieved_relevant_chunks_in_denominator(self):
+        self.assertLess(ndcg_at_k([2], [3, 2], 5), 1)
+        with self.assertRaises(ValueError):
+            ndcg_at_k([3, 3], [3, 0], 5)
 
     def test_ndcg_rewards_putting_the_exact_section_first(self):
-        first = ndcg_at_k([3, 0, 0, 0, 0], wanted=1, top_k=5)
-        third = ndcg_at_k([0, 0, 3, 0, 0], wanted=1, top_k=5)
+        first = ndcg_at_k([3, 0, 0, 0, 0], ideal_grades=[3, 2, 2, 2, 2], top_k=5)
+        third = ndcg_at_k([0, 0, 3, 0, 0], ideal_grades=[3, 2, 2, 2, 2], top_k=5)
 
         self.assertGreater(first, third)
-        self.assertEqual(ndcg_at_k([0, 0, 0, 0, 0], wanted=1, top_k=5), 0.0)
-        self.assertAlmostEqual(ndcg_at_k([3, 2, 2, 2, 2], wanted=1, top_k=5), 1.0)
+        self.assertEqual(ndcg_at_k([0, 0, 0, 0, 0], ideal_grades=[3, 2, 2, 2, 2], top_k=5), 0.0)
+        self.assertAlmostEqual(ndcg_at_k([3, 2, 2, 2, 2], ideal_grades=[3, 2, 2, 2, 2], top_k=5), 1.0)
 
     def test_ndcg_gives_partial_credit_a_hit_or_miss_metric_cannot(self):
         # The death-lock failure: every result sat beside the wanted section.
-        self.assertEqual(ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5), 
-                         ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5))
-        self.assertGreater(ndcg_at_k([2, 2, 2, 0, 0], wanted=1, top_k=5), 0.0)
+        self.assertGreater(ndcg_at_k([2, 2, 2, 0, 0], ideal_grades=[3, 2, 2, 2, 2], top_k=5), 0.0)
 
     def test_scores_section_recall_and_reciprocal_rank(self):
         score = score_ranked_results(
@@ -271,7 +310,7 @@ class RetrievalEvaluationTests(unittest.TestCase):
             top_k=3,
         )
 
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["question_count"], 1)
         self.assertEqual(report["top_k"], 3)
         self.assertEqual(set(report["strategies"]), {"bm25", "hybrid-rerank"})

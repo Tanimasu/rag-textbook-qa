@@ -101,6 +101,37 @@ class LLMClient:
             "time": 0,
         }
 
+    def plan_queries(self, prompt: str) -> str:
+        """One bounded planning request, without SDK or application retries."""
+        # Verified provider/model capability; do not send vendor options elsewhere.
+        options: dict[str, Any] = {}
+        if (urlsplit(getattr(self, "base_url", "")).hostname == "api.siliconflow.cn"
+                and self.default_model == "deepseek-ai/DeepSeek-V4-Pro"):
+            options["extra_body"] = {"enable_thinking": False}
+        response = self.client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
+            model=self.default_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500,
+            stream=False,
+            **options,
+        )
+        return response.choices[0].message.content or ""
+
+    def audit_citations(self, prompt: str) -> str:
+        """Bounded evidence checking; no SDK/application retries or reasoning text storage."""
+        options: dict[str, Any] = {}
+        if (urlsplit(self.base_url).hostname == "api.siliconflow.cn"
+                and self.default_model == "deepseek-ai/DeepSeek-V4-Pro"):
+            options["extra_body"] = {"enable_thinking": False}
+        response = self.client.with_options(timeout=40.0, max_retries=0).chat.completions.create(
+            model=self.default_model, messages=[{"role": "user", "content": prompt}],
+            temperature=0, max_tokens=2500, stream=False, **options,
+        )
+        if response.choices[0].finish_reason != "stop":
+            raise ValueError("Citation audit did not finish normally")
+        return response.choices[0].message.content or ""
+
     def generate_answer(
         self,
         prompt: str,
