@@ -43,18 +43,24 @@ def find_source_conflicts(sources: list[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
-def render_source_conflicts(conflicts: list[dict[str, Any]]) -> str:
-    """Show attributed excerpts without letting a model resolve the disagreement."""
-    blocks = ["本次检索到的教材片段存在已核实的表述冲突："]
+def conflict_prompt_note(conflicts: list[dict[str, Any]]) -> str:
+    """Require the answer to disclose a reviewed disagreement instead of picking a side.
+
+    Refusing to answer at all cost the reader everything else the evidence did
+    support — the NULL-count dispute is one detail of a question about primary keys
+    and unique indexes — so the note travels with the prompt and generation continues.
+    """
+
+    lines = ["以下资料之间存在已核实的表述冲突，回答时必须如实指出，不能只采用其中一种说法："]
     for conflict in conflicts:
-        blocks.append(f"关于{conflict['topic']}：")
+        lines.append(f"关于{conflict['topic']}：")
         for side in conflict["sides"]:
             for evidence in side:
-                blocks.append(
+                lines.append(
                     f"- 原文：“{evidence['quote']}”【参考资料 {evidence['citation_id']}】"
                 )
-    blocks.append(
-        "这些资料的说法不一致，仅凭本次片段无法确定适用条件或作出统一结论。"
-        "请结合教材勘误和对应数据库版本的说明核实。本次仅报告分歧，未继续生成其余回答。"
+    lines.append(
+        "请在回答中并列给出这两种说法及其资料编号，说明仅凭本次片段无法确定统一结论；"
+        "问题的其余部分照常依据资料回答。"
     )
-    return "\n\n".join(blocks)
+    return "\n".join(lines)
