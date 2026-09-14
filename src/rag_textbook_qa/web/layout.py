@@ -54,17 +54,29 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
                 help="会在检索前额外调用一次 LLM；默认关闭以降低等待时间和费用。",
             )
 
-        with st.expander("实验功能（默认关闭）", expanded=False):
-            st.caption("效果仍在验证，稳定使用时保持关闭。")
+        with st.expander("实验功能（默认关闭 · 未通过验收）", expanded=False):
+            st.warning(
+                "以下两项都**没有通过真实效果验收**：只做过离线流程测试和小样本回归，"
+                "没有证据表明它们会让答案更准。开启后结果可能更差，且都会增加模型调用、"
+                "费用和等待时间。",
+                icon="⚠️",
+            )
             enable_decomposition = st.toggle(
-                "启用查询分解（实验）",
+                "启用查询分解（实验 · 未验收）",
                 value=False,
-                help="适合包含多个独立问题的提问；额外调用一次模型规划。成功分解时不使用 HyDE，失败时恢复普通检索。",
+                help=(
+                    "适合包含多个独立问题的提问；额外调用一次模型规划。成功分解时不使用 HyDE，"
+                    "失败时恢复普通检索。仅完成小样本回归，未证明整体答案准确率提升。"
+                ),
             )
 
             verify_citations = st.toggle(
-                "核对答案引用（实验）", value=False,
-                help="增加两次模型核对；完成后才显示答案，核对失败时不会显示未经核对的草稿。模型核对仍可能出错。",
+                "核对答案引用（实验 · 未验收）",
+                value=False,
+                help=(
+                    "增加两次模型核对；完成后才显示答案，核对失败时不会显示未经核对的草稿。"
+                    "模型核对本身也会出错。目前只通过离线流程测试，没有真实效果验收。"
+                ),
             )
 
         st.markdown("---")
