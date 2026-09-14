@@ -104,6 +104,9 @@ class EvaluateCliTests(unittest.TestCase):
                         "mrr": 1.0,
                         "mean_ndcg_at_k": 1.0,
                         "mean_latency_seconds": 0.01,
+                        "mean_context_retention": 0.8,
+                        "relevant_dropped_total": 3,
+                        "relevant_truncated_total": 1,
                     }
                     for strategy in ("bm25", "embedding", "hybrid", "hybrid-rerank")
                 },
@@ -144,6 +147,8 @@ class EvaluateCliTests(unittest.TestCase):
                         "all",
                         "--top-k",
                         "7",
+                        "--context-budget",
+                        "3000",
                     ]
                 )
 
@@ -160,9 +165,11 @@ class EvaluateCliTests(unittest.TestCase):
                 questions,
                 ("bm25", "embedding", "hybrid", "hybrid-rerank"),
                 top_k=7,
+                context_budget=3000,
             )
             save_report.assert_called_once_with(report, output_path)
             self.assertIn("检索评测完成", output.getvalue())
+            self.assertIn("证据保留=0.800（丢弃 3 条，截断 1 条）", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -310,7 +310,9 @@ class RetrievalEvaluationTests(unittest.TestCase):
             top_k=3,
         )
 
-        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["schema_version"], 3)
+        self.assertIsNone(report["context_budget"])
+        self.assertNotIn("mean_context_retention", report["strategies"]["bm25"])
         self.assertEqual(report["question_count"], 1)
         self.assertEqual(report["top_k"], 3)
         self.assertEqual(set(report["strategies"]), {"bm25", "hybrid-rerank"})

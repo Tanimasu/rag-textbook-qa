@@ -137,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retrieval_evaluate.add_argument("--top-k", type=int, default=5)
     retrieval_evaluate.add_argument(
+        "--context-budget",
+        type=int,
+        default=2000,
+        help="按该字符预算装入上下文并统计证据保留率；设为 0 只评测检索",
+    )
+    retrieval_evaluate.add_argument(
         "--split",
         choices=("dev", "holdout", "all"),
         default="dev",
@@ -401,6 +407,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
             questions,
             strategies,
             top_k=args.top_k,
+            context_budget=args.context_budget or None,
         )
 
     report_path = save_retrieval_report(
@@ -409,7 +416,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
     )
     print(f"检索评测完成：{args.split} 划分 {report['question_count']} 题，Top {report['top_k']}")
     for strategy, result in report["strategies"].items():
-        print(
+        line = (
             f"{strategy}: "
             f"Recall@{args.top_k}={result['mean_recall_at_k']:.3f}，"
             f"Hit@{args.top_k}={result['hit_rate_at_k']:.3f}，"
@@ -417,6 +424,14 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
             f"nDCG@{args.top_k}={result['mean_ndcg_at_k']:.3f}，"
             f"平均检索={result['mean_latency_seconds']:.3f} 秒"
         )
+        retention = result.get("mean_context_retention")
+        if retention is not None:
+            line += (
+                f"，证据保留={retention:.3f}"
+                f"（丢弃 {result['relevant_dropped_total']} 条，"
+                f"截断 {result['relevant_truncated_total']} 条）"
+            )
+        print(line)
     print(f"报告: {report_path}")
     return 0
 
