@@ -35,51 +35,31 @@
 
 ---
 
-## 项目亮点
+## 系统概览
 
-- **面向教材问答的完整 RAG 流水线**：覆盖 PDF 解析、Markdown 清洗、分块、向量化、检索、生成与评估
-- **混合检索策略**：融合语义向量检索与 BM25 关键词匹配，兼顾语义相关性与术语命中率
-- **HyDE 查询增强**：先由 LLM 生成假设性教材原文，再进行向量检索，提升复杂问题的召回效果
-- **Cross-Encoder 重排序**：使用 `BAAI/bge-reranker-base` 对候选片段精排，提升最终上下文质量
-- **多教材独立向量库**：支持操作系统、计算机组成原理、计算机网络、数据结构、数据库原理及应用等多本教材
-- **评估闭环完整**：集成 RAGAS 指标评估，并支持无 RAG baseline 对比
-- **可视化交互界面**：基于 Streamlit 提供教材选择、参数调节、问答对话和评估结果查看
-- **计算后端可观测**：每次回答显示 Embedding/Reranker 实际运行于远程 CUDA 还是本地 MPS/CPU，以及检索、生成和总耗时
-
----
-
-## 技术栈
-
-- **语言与应用层**：Python、Streamlit
-- **文本解析与预处理**：Docling、MinerU、EasyOCR
-- **向量化与检索**：ChromaDB、sentence-transformers、`BAAI/bge-large-zh-v1.5`
-- **关键词检索**：rank-bm25、jieba
-- **重排序模型**：`BAAI/bge-reranker-base`
-- **大语言模型接入**：OpenAI-compatible API、openai SDK
-- **评估框架**：RAGAS、LangChain OpenAI、datasets
-- **数据处理**：pandas、openpyxl、tqdm
-
----
-
-## 系统架构
-
-```
-PDF
- ├─ parsingPDF.py         # Docling + EasyOCR → Markdown
- └─ parsingPDF_mineru.py  # MinerU (推荐，扫描页更完整) → *_mineru.md
-     └─ clean_markdown.py     # 标题层级规范化 → *_cleaned.md
-         └─ chunk_textbooks.py    # 按标题结构分块 → *_chunks.json
-             └─ vectorize_chunks.py   # BAAI/bge-large-zh-v1.5 → ChromaDB
-                 └─ rag_engine.py         # 混合检索 + HyDE + Reranker + LLM
-                     └─ app.py                # Streamlit 问答界面
+```text
+PDF ─→ Markdown ─→ 清洗 ─→ 按标题分块 ─→ ChromaDB（每本教材一个集合）
+                                              │
+       回答 ←─ LLM ←─ 上下文打包 ←─ 重排 ←─ 混合检索（向量 + BM25）
 ```
 
-**检索流程**
+检索链路四步：
 
-1. **HyDE**：用 LLM 将问题改写为假设性教材原文，用其嵌入向量检索，提升语义匹配质量
-2. **混合检索**：通过加权 RRF 按排名融合语义向量与 BM25，并过滤习题、去除重复候选。BM25 分词采用词 + 字符二元组混合，避免 jieba 把教材术语切碎；BM25 融合权重默认 0.5
-3. **Cross-Encoder 重排序**：`BAAI/bge-reranker-base` 对候选结果精排，取最优 top-k
-4. **LLM 生成**：将检索上下文与问题拼接为 Prompt，调用 LLM 生成结构化答案
+1. **HyDE**（默认关闭）：先让 LLM 写一段假设性教材原文，用它的向量去检索，改善复杂问题的语义匹配。
+   它是文档不是查询，因此用 `embed_documents` 嵌入，关闭时走带指令前缀的 `embed_queries`
+2. **混合检索**：向量与 BM25 各自取候选，按**名次**用加权 RRF 融合（BM25 权重默认 0.5），去重并过滤
+   习题。按名次而非分数融合是刻意的：余弦相似度有界而 BM25 无界、会随语料漂移。BM25 用词 + 字符
+   二元组混合分词，避免 jieba 把教材术语切碎（散列表 → 散/列表）
+3. **重排**：`BAAI/bge-reranker-base` 对候选精排，启用时由它决定最终顺序
+4. **生成**：按字符预算把片段打包成上下文，拼进提示词交给 LLM，答案标注【参考资料 N】
+
+每次回答会显示 Embedding/Reranker 实际跑在远程 CUDA 还是本地 MPS/CPU，以及检索、生成和总耗时。
+
+**技术栈**：Python + Streamlit；解析用 Docling / MinerU / EasyOCR；检索用 ChromaDB、
+sentence-transformers（`BAAI/bge-large-zh-v1.5`）、rank-bm25 + jieba；重排用
+`BAAI/bge-reranker-base`；LLM 走 OpenAI-compatible API；评估用 RAGAS。
+
+实现在 `src/rag_textbook_qa/`；`project/` 下的同名脚本是迁移期保留的兼容入口，不是主实现。
 
 ---
 
