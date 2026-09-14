@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from rag_textbook_qa.llm.client import LLMClient
+from rag_textbook_qa.rag.context import select_context
 from rag_textbook_qa.rag.decomposition import plan_queries
 from rag_textbook_qa.rag.engine import RAGEngine
 
@@ -131,7 +132,7 @@ class EvidenceAllocationTests(unittest.TestCase):
             {"book_name": "os", "query_ids": [2], "content": "队列介绍。" * 100 + "通过取模实现环状移动。"},
             {"book_name": "os", "query_ids": [0], "content": "其他资料。" * 100},
         ]
-        context, sources = RAGEngine.select_context(rows, max_length=1150, fair_share=True)
+        context, sources = select_context(rows, max_length=1150, fair_share=True)
         self.assertIn("通过取模实现环状移动。", context)
         self.assertEqual(len(sources), 2)
         self.assertTrue(all(not s["truncated"] for s in sources))
@@ -140,7 +141,7 @@ class EvidenceAllocationTests(unittest.TestCase):
     def test_oversized_required_blocks_end_on_sentence_and_warn(self):
         rows = [{"book_name": "os", "query_ids": [i], "content": "这是完整的证据句子。" * 200}
                 for i in (1, 2)]
-        context, sources = RAGEngine.select_context(rows, max_length=500, fair_share=True)
+        context, sources = select_context(rows, max_length=500, fair_share=True)
         self.assertEqual(len(sources), 2)
         self.assertTrue(all(s["content"].endswith("[片段未完整装入，请勿推断省略内容]") for s in sources))
         self.assertLessEqual(len(context), 500)
@@ -148,7 +149,7 @@ class EvidenceAllocationTests(unittest.TestCase):
     def test_short_required_block_releases_space_for_long_one(self):
         rows = [{"book_name": "os", "query_ids": [1], "content": "简短证据。"},
                 {"book_name": "os", "query_ids": [2], "content": "完整证据。" * 70}]
-        context, sources = RAGEngine.select_context(rows, max_length=500, fair_share=True)
+        context, sources = select_context(rows, max_length=500, fair_share=True)
         self.assertEqual(len(sources), 2)
         self.assertTrue(all(not s["truncated"] for s in sources))
         self.assertEqual(context, "".join(s["context_text"] for s in sources))
@@ -157,14 +158,14 @@ class EvidenceAllocationTests(unittest.TestCase):
         rows = [{"book_name": "os", "query_ids": [1], "content": "证据。"},
                 {"book_name": "os", "query_ids": [2],
                  "content": "<table><tr><td>表头</td></tr><tr><td>最后完整一行</td></tr></table>"}]
-        context, sources = RAGEngine.select_context(rows, max_length=300, fair_share=True)
+        context, sources = select_context(rows, max_length=300, fair_share=True)
         self.assertEqual(len(sources), 2)
         self.assertTrue(all(not s["truncated"] for s in sources))
         self.assertIn("最后完整一行", context)
 
     def test_unbreakable_oversized_prose_is_not_cut_into_fake_evidence(self):
         rows = [{"book_name": "os", "query_ids": [1], "content": "不可分割内容" * 200}]
-        context, sources = RAGEngine.select_context(rows, max_length=200, fair_share=True)
+        context, sources = select_context(rows, max_length=200, fair_share=True)
         self.assertEqual(context, "")
         self.assertEqual(sources, [])
 

@@ -11,7 +11,7 @@ from rag_textbook_qa.rag.conflicts import (
     find_source_conflicts,
     validate_conflict_rules,
 )
-from rag_textbook_qa.rag.engine import RAGEngine
+from rag_textbook_qa.rag.context import select_context
 
 
 class SourceConflictTests(unittest.TestCase):
@@ -66,7 +66,7 @@ class SourceConflictTests(unittest.TestCase):
     def test_truncated_away_opposing_statement_is_not_reported(self):
         results = copy.deepcopy(self.sources)
         results[1]["content"] = "前言。" * 100 + results[1]["content"]
-        _, sources = RAGEngine.select_context(results, max_length=180)
+        _, sources = select_context(results, max_length=180)
         self.assertFalse(find_source_conflicts(sources))
 
     def test_reordered_sources_use_new_citation_numbers(self):

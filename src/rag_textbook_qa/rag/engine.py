@@ -31,9 +31,10 @@ from rag_textbook_qa.providers import (
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
-from rag_textbook_qa.rag.context import evidence_excerpt
-from rag_textbook_qa.rag.decomposition import context_budgets, diverse_results, plan_queries
+from rag_textbook_qa.rag.context import build_prompt, select_context
+from rag_textbook_qa.rag.decomposition import diverse_results, plan_queries
 from rag_textbook_qa.rag.grounding import verify_answer
+from rag_textbook_qa.rag.presentation import render_search_results
 from rag_textbook_qa.rag.tokenizer import (
     DEFAULT_BM25_MODE,
     BM25Tokenizer,
@@ -620,108 +621,6 @@ class RAGEngine:
         ranked = self._rerank(query, list(candidates.values()), len(candidates))
         return diverse_results(ranked, len(subqueries), top_k)
 
-    @staticmethod
-    def select_context(
-        results: list[dict[str, Any]],
-        max_length: int = 2000,
-        *, fair_share: bool = False,
-    ) -> tuple[str, list[dict[str, Any]]]:
-        """Pack evidence and return exactly the excerpts supplied to generation."""
-        if max_length <= 0:
-            raise ValueError("上下文预算必须大于 0")
-        blocks = []
-        sources = []
-        remaining = max_length
-        slots = None
-        if fair_share:
-            lengths = []
-            for index, result in enumerate(results, 1):
-                content = str(result.get("content", "")).strip()
-                full, _, compacted = evidence_excerpt(content, max(len(content) * 100, max_length))
-                heading = " - ".join(str(result.get(field, "")) for field in
-                                     ("chapter", "section_h2", "section_h3", "section_h4")
-                                     if result.get(field))
-                prefix = f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
-                # Table rendering uses boundary newlines removed by excerpt.strip().
-                lengths.append(len(prefix) + len(full) + len("\n---\n") + (2 if compacted else 0))
-            slots = context_budgets(results, lengths, max_length)
-        for result_index, result in enumerate(results):
-            content = str(result.get("content", "")).strip()
-            if not content:
-                continue
-            index = len(sources) + 1
-            heading = " - ".join(
-                str(result.get(field, ""))
-                for field in ("chapter", "section_h2", "section_h3", "section_h4")
-                if result.get(field)
-            )
-            prefix = f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
-            suffix = "\n---\n"
-            slot = min(remaining, slots[result_index]) if slots is not None else remaining
-            available = slot - len(prefix) - len(suffix)
-            if available <= 0:
-                continue
-            excerpt, truncated, table_compacted = evidence_excerpt(content, available)
-            if fair_share and truncated and not table_compacted:
-                notice = "\n[片段未完整装入，请勿推断省略内容]"
-                end = max((m.end() for m in re.finditer(r"[。！？!?]|\n\n", excerpt)
-                           if m.end() + len(notice) <= available), default=0)
-                excerpt = excerpt[:end].rstrip() + notice if end else ""
-            if not excerpt:
-                continue
-            block = prefix + excerpt + suffix
-            blocks.append(block)
-            sources.append(
-                {
-                    **result,
-                    "content": excerpt,
-                    "citation_id": index,
-                    "context_text": block,
-                    "truncated": truncated,
-                    "table_compacted": table_compacted,
-                    "char_count": len(excerpt),
-                }
-            )
-            remaining -= len(block)
-        return "".join(blocks), sources
-
-    @staticmethod
-    def build_context(results: list[dict[str, Any]], max_length: int = 2000) -> str:
-        return RAGEngine.select_context(results, max_length)[0]
-
-    @staticmethod
-    def build_prompt(query: str, context: str) -> str:
-        system_prompt = """你是一个计算机课程的专业 AI 助教，请严格依据教材内容回答问题。
-
-要求：
-1. 不要编造教材没有的内容
-2. 先给出简明答案（2-3句话），再给出详细解释
-3. 如有多个要点，使用编号列表
-4. 在相关论述后标注【参考资料 N】，仅引用提供的资料编号，并在最后标注章节
-5. 如果资料不足以回答，请明确说明教材证据不足，不要补造答案
-
-回答格式示例：
-## 简明答案
-[2-3句话的核心答案]
-
-## 详细解释
-1. ...
-2. ...
-
-## 参考章节
-📚 [章节信息]
-"""
-        return f"""{system_prompt}
-
-## 学生问题
-{query}
-
-## 相关教材内容
-{context}
-
-请开始你的回答：
-"""
-
     def ask(
         self,
         query: str,
@@ -771,7 +670,9 @@ class RAGEngine:
                 results = self._rerank(query, results, top_k)
         retrieval_seconds = time.monotonic() - retrieval_started
 
-        context, context_sources = self.select_context(results, fair_share=plan["status"] == "active")
+        context, context_sources = select_context(
+            results, fair_share=plan["status"] == "active"
+        )
         covered = {i for source in context_sources for i in source.get("query_ids", [])}
         plan["uncovered_query_ids"] = [i for i in range(1, len(plan["queries"]) + 1) if i not in covered]
         if not context_sources:
@@ -801,7 +702,7 @@ class RAGEngine:
         # A reviewed disagreement is disclosed inside the answer rather than replacing
         # it: blocking generation cost the reader everything else the evidence supported.
         conflicts = find_source_conflicts(context_sources)
-        prompt = self.build_prompt(query, context)
+        prompt = build_prompt(query, context)
         if conflicts:
             prompt += "\n" + conflict_prompt_note(conflicts)
         if plan["status"] == "active":
@@ -882,13 +783,13 @@ class RAGEngine:
                 )
             elif self.verbose:
                 print(f"生成失败: {llm_response.get('error', '未知错误')}")
-                self.display_results({"results": results})
+                print(render_search_results(results))
         else:
             if use_llm:
                 detail = self.llm_initialization_error or "LLM 未启用"
                 generation_error = f"LLM 不可用：{detail}"
             if self.verbose:
-                self.display_results({"results": results})
+                print(render_search_results(results))
                 print(prompt[:800] + ("..." if len(prompt) > 800 else ""))
         generation_seconds = time.monotonic() - generation_started
         execution = self._execution_summary(
@@ -942,42 +843,3 @@ class RAGEngine:
         if first_token_seconds is not None:
             summary["first_token_seconds"] = round(first_token_seconds, 3)
         return summary
-
-    def answer(
-        self,
-        query: str,
-        book_name: str | None = None,
-        top_k: int = 5,
-    ) -> dict[str, Any]:
-        if self.verbose:
-            print("警告：answer() 已废弃，建议使用 ask(use_llm=False)")
-        return self.ask(
-            query=query,
-            book_name=book_name,
-            top_k=top_k,
-            use_llm=False,
-        )
-
-    @staticmethod
-    def display_results(result_dict: dict[str, Any]) -> None:
-        results = result_dict.get("results", [])
-        if not results:
-            print("没有找到相关内容")
-            return
-        print(f"找到 {len(results)} 条相关内容：\n")
-        for index, result in enumerate(results, 1):
-            print("─" * 70)
-            print(f"【结果 {index}】")
-            print(f"相似度: {result['similarity']:.4f} | 方法: {result['method']}")
-            print(f"教材: {result['book_name']}")
-            print(f"章节: {result['chapter']} | {result['section_h2']}")
-            content = result["content"]
-            print(f"内容: {content[:150]}{'...' if len(content) > 150 else ''}")
-            extra = []
-            if result.get("has_code"):
-                extra.append("含代码")
-            if result.get("has_image"):
-                extra.append("含图片")
-            if extra:
-                print(f"标签: {' | '.join(extra)}")
-        print("─" * 70 + "\n")

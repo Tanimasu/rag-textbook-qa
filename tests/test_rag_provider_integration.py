@@ -11,6 +11,7 @@ from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
+from rag_textbook_qa.rag.context import select_context
 from rag_textbook_qa.rag.engine import (
     _is_candidate_noise,
     _is_contents_listing,
@@ -460,7 +461,7 @@ class ContentsListingTests(unittest.TestCase):
 class ContextPackingTests(unittest.TestCase):
     def test_large_first_source_provides_evidence_within_budget(self):
         source = {"book_name": "os", "chapter": "第一章", "content": "甲" * 3000}
-        context, sources = RAGEngine.select_context([source], 200)
+        context, sources = select_context([source], 200)
         self.assertLessEqual(len(context), 200)
         self.assertEqual(len(sources), 1)
         self.assertTrue(sources[0]["truncated"])
@@ -473,7 +474,7 @@ class ContextPackingTests(unittest.TestCase):
             {"book_name": "os", "content": "", "chapter": "空"},
             {"book_name": "os", "content": "实际证据", "section_h4": "四级标题"},
         ]
-        context, sources = RAGEngine.select_context(results)
+        context, sources = select_context(results)
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["citation_id"], 1)
         self.assertIn("四级标题", context)

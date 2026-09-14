@@ -363,9 +363,10 @@ def run_generation_experiment(
     if concurrency < 1:
         raise ValueError("并发数至少为 1")
     if prompt_builder is None:
-        from rag_textbook_qa.rag.engine import RAGEngine
+        # The packing module is light; importing the engine would pull in Chroma.
+        from rag_textbook_qa.rag.context import build_prompt
 
-        prompt_builder = RAGEngine.build_prompt
+        prompt_builder = build_prompt
     keys = sample_keys(cases, arms, samples, seed)
     output_dir.mkdir(parents=True, exist_ok=True)
     judge_prompts = (EXTRACTION_PROMPT + VERIFICATION_PROMPT).encode("utf-8")

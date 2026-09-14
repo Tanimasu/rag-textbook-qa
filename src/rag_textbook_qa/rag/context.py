@@ -1,145 +1,117 @@
-"""Compact complete HTML tables without inventing or cutting cell values."""
+"""Pack retrieved evidence into exactly the context handed to generation."""
 
 from __future__ import annotations
 
 import re
-from html.parser import HTMLParser
+from typing import Any
 
-_TABLE = re.compile(r"<table\b[^>]*>.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+from rag_textbook_qa.rag.decomposition import context_budgets
+from rag_textbook_qa.rag.tables import evidence_excerpt
 
-
-class _TableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.rows: list[list[tuple[str, int, int]]] = []
-        self.row: list[tuple[str, int, int]] | None = None
-        self.cell: list[str] | None = None
-        self.spans = (1, 1)
-        self.depth = 0
-        self.invalid = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "table":
-            self.depth += 1
-            self.invalid |= self.depth > 1
-        elif tag == "tr":
-            if self.row is not None:
-                self.invalid = True
-            self.row = []
-        elif tag in {"td", "th"}:
-            if self.cell is not None or self.row is None:
-                self.invalid = True
-            self.cell = []
-            attributes = dict(attrs)
-            try:
-                self.spans = tuple(int(attributes.get(key) or 1) for key in ("rowspan", "colspan"))
-                if any(span < 1 or span > 100 for span in self.spans):
-                    self.invalid = True
-            except ValueError:
-                self.invalid = True
-        elif tag == "img":
-            # Images cannot be faithfully represented by stripping their tags.
-            self.invalid = True
-        elif tag == "br" and self.cell is not None:
-            self.cell.append(" ")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "table":
-            self.depth -= 1
-        elif tag in {"td", "th"}:
-            if self.cell is None or self.row is None:
-                self.invalid = True
-                return
-            self.row.append((" ".join("".join(self.cell).split()), *self.spans))
-            self.cell = None
-        elif tag == "tr":
-            if self.row is None or self.cell is not None:
-                self.invalid = True
-                return
-            self.rows.append(self.row)
-            self.row = None
-
-    def handle_data(self, data: str) -> None:
-        if self.cell is not None:
-            self.cell.append(data)
-        elif data.strip():
-            # Captions and text outside cells need a separate representation.
-            self.invalid = True
-
-    def render(self) -> str | None:
-        if self.invalid or not self.rows or self.cell is not None or self.row is not None:
-            return None
-        grid: dict[tuple[int, int], str] = {}
-        for row_index, row in enumerate(self.rows):
-            column = 0
-            for value, height, width in row:
-                while (row_index, column) in grid:
-                    column += 1
-                if row_index + height > len(self.rows):
-                    return None
-                for i in range(row_index, row_index + height):
-                    for j in range(column, column + width):
-                        if (i, j) in grid:
-                            return None
-                        grid[i, j] = value
-                column += width
-        width = max((column for _, column in grid), default=-1) + 1
-        if not width:
-            return None
-        return "\n".join(
-            "行" + str(i + 1) + ": " + " | ".join(
-                grid.get((i, j), "").replace("|", "｜") for j in range(width)
-            )
-            for i in range(len(self.rows))
-        )
+SOURCE_SUFFIX = "\n---\n"
+_HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 
 
-def evidence_excerpt(content: str, budget: int) -> tuple[str, bool, bool]:
-    """Return evidence, omission status and whether HTML was compacted.
+def _source_prefix(result: dict[str, Any], index: int) -> str:
+    """Render one citation header.
 
-    Table cells spanning rows or columns are repeated in their occupied slots.
-    Tables are admitted only as complete rendered rows; prose retains the
-    existing character budget. Unsupported tables are skipped, never sliced.
+    Defined once on purpose: the fair-share pre-pass budgets against exactly the
+    characters the packing loop later emits, so a format that drifted between the
+    two would misallocate every slot without raising anything.
     """
-    pieces: list[str] = []
-    remaining = budget
-    omitted = False
-    compacted = False
-    position = 0
-    for match in _TABLE.finditer(content):
-        prose = content[position:match.start()]
-        pieces.append(prose[:remaining])
-        omitted |= len(prose) > remaining
-        remaining -= min(len(prose), remaining)
-        parser = _TableParser()
-        parser.feed(match.group())
-        parser.close()
-        table = parser.render()
-        if table is None:
-            omitted = True
-        else:
-            compacted = True
-            header = "\n[表格；合并单元格按行列展开]\n"
-            rows = table.splitlines()
-            admitted = []
-            used = len(header)
-            notice = "[后续表格行已省略]\n"
-            full_length = used + sum(len(row) + 1 for row in rows)
-            row_budget = remaining if full_length <= remaining else remaining - len(notice)
-            for row in rows:
-                if used + len(row) + 1 > row_budget:
-                    break
-                admitted.append(row)
-                used += len(row) + 1
-            if admitted:
-                pieces.append(header + "\n".join(admitted) + "\n")
-                remaining -= used
-                if len(admitted) != len(rows):
-                    pieces.append(notice)
-                    remaining -= len(notice)
-            omitted |= len(admitted) != len(rows)
-        position = match.end()
-    tail = content[position:]
-    pieces.append(tail[:remaining])
-    omitted |= len(tail) > remaining
-    return "".join(pieces).strip(), omitted, compacted
+
+    heading = " - ".join(
+        str(result.get(field, "")) for field in _HEADING_FIELDS if result.get(field)
+    )
+    return f"【参考资料 {index}】\n教材: {result['book_name']}\n章节: {heading}\n内容:\n"
+
+
+def select_context(
+    results: list[dict[str, Any]],
+    max_length: int = 2000,
+    *, fair_share: bool = False,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Pack evidence and return exactly the excerpts supplied to generation."""
+    if max_length <= 0:
+        raise ValueError("上下文预算必须大于 0")
+    blocks = []
+    sources = []
+    remaining = max_length
+    slots = None
+    if fair_share:
+        lengths = []
+        for index, result in enumerate(results, 1):
+            content = str(result.get("content", "")).strip()
+            full, _, compacted = evidence_excerpt(
+                content, max(len(content) * 100, max_length)
+            )
+            # Table rendering uses boundary newlines removed by excerpt.strip().
+            estimated = len(_source_prefix(result, index)) + len(full)
+            lengths.append(estimated + len(SOURCE_SUFFIX) + (2 if compacted else 0))
+        slots = context_budgets(results, lengths, max_length)
+    for result_index, result in enumerate(results):
+        content = str(result.get("content", "")).strip()
+        if not content:
+            continue
+        index = len(sources) + 1
+        prefix = _source_prefix(result, index)
+        slot = min(remaining, slots[result_index]) if slots is not None else remaining
+        available = slot - len(prefix) - len(SOURCE_SUFFIX)
+        if available <= 0:
+            continue
+        excerpt, truncated, table_compacted = evidence_excerpt(content, available)
+        if fair_share and truncated and not table_compacted:
+            notice = "\n[片段未完整装入，请勿推断省略内容]"
+            end = max((m.end() for m in re.finditer(r"[。！？!?]|\n\n", excerpt)
+                       if m.end() + len(notice) <= available), default=0)
+            excerpt = excerpt[:end].rstrip() + notice if end else ""
+        if not excerpt:
+            continue
+        block = prefix + excerpt + SOURCE_SUFFIX
+        blocks.append(block)
+        sources.append(
+            {
+                **result,
+                "content": excerpt,
+                "citation_id": index,
+                "context_text": block,
+                "truncated": truncated,
+                "table_compacted": table_compacted,
+                "char_count": len(excerpt),
+            }
+        )
+        remaining -= len(block)
+    return "".join(blocks), sources
+
+
+def build_prompt(query: str, context: str) -> str:
+    system_prompt = """你是一个计算机课程的专业 AI 助教，请严格依据教材内容回答问题。
+
+要求：
+1. 不要编造教材没有的内容
+2. 先给出简明答案（2-3句话），再给出详细解释
+3. 如有多个要点，使用编号列表
+4. 在相关论述后标注【参考资料 N】，仅引用提供的资料编号，并在最后标注章节
+5. 如果资料不足以回答，请明确说明教材证据不足，不要补造答案
+
+回答格式示例：
+## 简明答案
+[2-3句话的核心答案]
+
+## 详细解释
+1. ...
+2. ...
+
+## 参考章节
+📚 [章节信息]
+"""
+    return f"""{system_prompt}
+
+## 学生问题
+{query}
+
+## 相关教材内容
+{context}
+
+请开始你的回答：
+"""

@@ -404,9 +404,11 @@ def run_retrieval_strategies(
 
     pack = None
     if context_budget is not None:
+        from rag_textbook_qa.rag.context import select_context
+
         if context_budget <= 0:
             raise ValueError("上下文预算必须大于 0")
-        pack = partial(engine.select_context, max_length=context_budget)
+        pack = partial(select_context, max_length=context_budget)
 
     results = {
         strategy: evaluate_retrieval(

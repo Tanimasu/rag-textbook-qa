@@ -1,8 +1,9 @@
 import unittest
 from unittest.mock import MagicMock
 
-from rag_textbook_qa.rag.context import evidence_excerpt
+from rag_textbook_qa.rag.context import select_context
 from rag_textbook_qa.rag.engine import RAGEngine
+from rag_textbook_qa.rag.tables import evidence_excerpt
 
 
 class TableContextTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class TableContextTests(unittest.TestCase):
         table = '<table><tr><td>' + '甲' * 1000 + '</td></tr></table>'
         results = [{'book_name': 'os', 'content': table},
                    {'book_name': 'os', 'content': '后续完整证据'}]
-        text, sources = RAGEngine.select_context(results, 100)
+        text, sources = select_context(results, 100)
         self.assertEqual(len(sources), 1)
         self.assertIn('后续完整证据', text)
         self.assertEqual(sources[0]['citation_id'], 1)
@@ -44,7 +45,7 @@ class TableContextTests(unittest.TestCase):
     def test_packed_evidence_matches_source_and_does_not_mutate_retrieval(self):
         table = '<table><tr><th>术语</th><th>值</th></tr><tr><td>缓存</td><td>快</td></tr></table>'
         result = {'book_name': 'os', 'content': table}
-        text, sources = RAGEngine.select_context([result], 300)
+        text, sources = select_context([result], 300)
         self.assertEqual(result['content'], table)
         self.assertEqual(text, ''.join(source['context_text'] for source in sources))
         self.assertIn('缓存 | 快', sources[0]['content'])
