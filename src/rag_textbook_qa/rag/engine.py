@@ -30,7 +30,7 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
-from rag_textbook_qa.rag.conflicts import find_source_conflicts, render_source_conflicts
+from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
 from rag_textbook_qa.rag.context import evidence_excerpt
 from rag_textbook_qa.rag.decomposition import context_budgets, diverse_results, plan_queries
 from rag_textbook_qa.rag.grounding import verify_answer
@@ -798,36 +798,12 @@ class RAGEngine:
                 "execution": execution,
             }
 
+        # A reviewed disagreement is disclosed inside the answer rather than replacing
+        # it: blocking generation cost the reader everything else the evidence supported.
         conflicts = find_source_conflicts(context_sources)
-        if conflicts and use_llm:
-            answer = render_source_conflicts(conflicts)
-            if on_answer_chunk is not None:
-                on_answer_chunk(answer)
-            return {
-                "query": query,
-                "decomposition": plan,
-                "grounding": {"status": "not_run" if verify_citations else "disabled",
-                              "reason": "source_conflict"},
-                "source_conflicts": conflicts,
-                "response_type": "source_conflict",
-                "results": results,
-                "context": context,
-                "context_sources": context_sources,
-                "prompt": "",
-                "answer": answer,
-                "llm_response": None,
-                "error": None,
-                "success": True,
-                "execution": self._execution_summary(
-                    embedding_provider=embedding_provider,
-                    trace_id=trace_id,
-                    retrieval_seconds=retrieval_seconds,
-                    generation_seconds=0.0,
-                    total_seconds=time.monotonic() - total_started,
-                ),
-            }
-
         prompt = self.build_prompt(query, context)
+        if conflicts:
+            prompt += "\n" + conflict_prompt_note(conflicts)
         if plan["status"] == "active":
             prompt += "\n子问题清单（仅用于组织回答，不是教材证据）：" + json.dumps(
                 plan["queries"], ensure_ascii=False,

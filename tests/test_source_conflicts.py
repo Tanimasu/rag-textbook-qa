@@ -2,11 +2,10 @@
 
 import copy
 import unittest
-from unittest.mock import MagicMock
 
 import test_decomposition as fixtures
 
-from rag_textbook_qa.rag.conflicts import find_source_conflicts
+from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
 from rag_textbook_qa.rag.engine import RAGEngine
 
 
@@ -32,29 +31,19 @@ class SourceConflictTests(unittest.TestCase):
         engine.search_single_book.return_value = copy.deepcopy(self.sources)
         return engine
 
-    def test_both_sides_are_reported_with_actual_citations(self):
-        callback = MagicMock()
+    def test_a_conflict_is_disclosed_in_the_prompt_and_the_answer_still_runs(self):
         engine = self.engine()
-        result = engine.ask(
-            "主键和唯一索引的区别？",
-            book_name="database",
-            on_answer_chunk=callback,
-            verify_citations=True,
-        )
+        result = engine.ask("主键和唯一索引的区别？", book_name="database")
+        prompt = engine.llm.generate_answer.call_args.args[0]
+
         self.assertTrue(result["success"])
-        self.assertEqual(result["response_type"], "source_conflict")
-        self.assertEqual(result["grounding"]["status"], "not_run")
-        self.assertIsNone(result["llm_response"])
-        self.assertEqual(result["prompt"], "")
-        self.assertIn("未继续生成其余回答", result["answer"])
+        self.assertEqual(result["answer"], "答案")
+        self.assertTrue(result["source_conflicts"])
+        self.assertNotIn("response_type", result)
+        self.assertIn(conflict_prompt_note(result["source_conflicts"]), prompt)
+        self.assertIn("必须如实指出", prompt)
         for source in result["context_sources"]:
-            self.assertIn(source["content"], result["answer"])
-            self.assertIn(f"【参考资料 {source['citation_id']}】", result["answer"])
-        engine.llm.generate_answer.assert_not_called()
-        engine.llm.stream_answer.assert_not_called()
-        engine.llm.audit_citations.assert_not_called()
-        callback.assert_called_once_with(result["answer"])
-        self.assertEqual(engine._execution_summary.call_args.kwargs["generation_seconds"], 0)
+            self.assertIn(f"【参考资料 {source['citation_id']}】", prompt)
 
     def test_one_side_or_unreviewed_sources_do_not_trigger(self):
         self.assertFalse(find_source_conflicts(self.sources[:1]))
@@ -79,8 +68,10 @@ class SourceConflictTests(unittest.TestCase):
         engine = self.engine()
         engine.search_single_book.return_value.reverse()
         result = engine.ask("问题", book_name="database")
-        self.assertIn("多个NULL值。”【参考资料 2】", result["answer"])
-        self.assertIn("一个NULL值。”【参考资料 1】", result["answer"])
+        note = conflict_prompt_note(result["source_conflicts"])
+
+        self.assertIn("多个NULL值。”【参考资料 2】", note)
+        self.assertIn("一个NULL值。”【参考资料 1】", note)
 
     def test_primary_key_section_also_triggers(self):
         self.sources[1].update(
@@ -89,17 +80,25 @@ class SourceConflictTests(unittest.TestCase):
         )
         self.assertTrue(find_source_conflicts(self.sources))
 
-    def test_nonconflicting_answer_still_uses_generator(self):
+    def test_answers_without_a_conflict_carry_no_note(self):
         engine = self.engine()
         engine.search_single_book.return_value = self.sources[:1]
         result = engine.ask("问题", book_name="database")
+        prompt = engine.llm.generate_answer.call_args.args[0]
+
         engine.llm.generate_answer.assert_called_once()
         self.assertEqual(result["answer"], "答案")
         self.assertEqual(result["source_conflicts"], [])
+        self.assertNotIn("已核实的表述冲突", prompt)
 
     def test_retrieval_only_keeps_no_answer_semantics(self):
         engine = self.engine()
         result = engine.ask("问题", book_name="database", use_llm=False)
+
         self.assertIsNone(result["answer"])
         self.assertTrue(result["source_conflicts"])
         engine.llm.generate_answer.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
