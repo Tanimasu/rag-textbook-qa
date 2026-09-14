@@ -225,12 +225,54 @@ def score_ranked_results(
     }
 
 
+def score_context_retention(
+    results: Sequence[dict[str, Any]],
+    sources: Sequence[dict[str, Any]],
+    relevant_sections: Sequence[str],
+    *,
+    top_k: int = 5,
+    minimum_grade: int = SIBLING_GRADE,
+) -> dict[str, Any]:
+    """How much of the relevant evidence retrieval found survives context packing.
+
+    Recall@K counts a question as a hit once the chunk is in the ranked list, and the
+    generation metrics blame the model for what it was never shown. The 2026-09-14
+    handshake failure sat between them: the explaining chunk ranked fourth and the
+    2000-character budget ran out first. Packing is deterministic, so this stage can be
+    measured without a judge. In-context is not the same as answerable, and packing more
+    but shorter excerpts raises retention, so read it with the source and character
+    counts and only against the same budget.
+    """
+
+    markers = [str(section) for section in relevant_sections]
+    kept = {source.get("chunk_id") for source in sources}
+    truncated = {source.get("chunk_id") for source in sources if source.get("truncated")}
+    relevant = [
+        result
+        for result in list(results)[:top_k]
+        if grade_result(result, markers) >= minimum_grade
+    ]
+    retained = [result for result in relevant if result.get("chunk_id") in kept]
+    exact = [result for result in relevant if grade_result(result, markers) == EXACT_GRADE]
+    return {
+        "relevant_retrieved": len(relevant),
+        "relevant_retained": len(retained),
+        "relevant_truncated": sum(result.get("chunk_id") in truncated for result in retained),
+        "exact_retrieved": len(exact),
+        "exact_retained": sum(result.get("chunk_id") in kept for result in exact),
+        "context_retention": len(retained) / len(relevant) if relevant else None,
+        "sources_packed": len(sources),
+        "context_chars": sum(len(str(source.get("content", ""))) for source in sources),
+    }
+
+
 def evaluate_retrieval(
     questions: Sequence[RetrievalQuestion],
     search: Callable[[RetrievalQuestion, int], Sequence[dict[str, Any]]],
     *,
     top_k: int = 5,
     candidates_by_book: dict[str, list[dict[str, Any]]] | None = None,
+    pack: Callable[[Sequence[dict[str, Any]]], tuple[str, list[dict[str, Any]]]] | None = None,
 ) -> dict[str, Any]:
     """Run a search strategy and return JSON-serializable aggregate metrics."""
 
@@ -248,18 +290,26 @@ def evaluate_retrieval(
             top_k=top_k,
             candidates=candidates_by_book[question.book_name] if candidates_by_book else None,
         )
+        retention = (
+            {}
+            if pack is None
+            else score_context_retention(
+                results, pack(results)[1], question.relevant_sections, top_k=top_k
+            )
+        )
         cases.append(
             {
                 "question": question.question,
                 "book_name": question.book_name,
                 "relevant_sections": list(question.relevant_sections),
                 **score,
+                **retention,
                 "elapsed_seconds": round(elapsed_seconds, 6),
             }
         )
 
     count = len(cases)
-    return {
+    aggregate: dict[str, Any] = {
         "question_count": count,
         "top_k": top_k,
         "mean_recall_at_k": sum(case["recall_at_k"] for case in cases) / count,
@@ -267,8 +317,27 @@ def evaluate_retrieval(
         "mrr": sum(case["reciprocal_rank"] for case in cases) / count,
         "mean_ndcg_at_k": sum(case["ndcg_at_k"] for case in cases) / count,
         "mean_latency_seconds": sum(case["elapsed_seconds"] for case in cases) / count,
-        "cases": cases,
     }
+    if pack is not None:
+        scored = [case for case in cases if case["context_retention"] is not None]
+        aggregate.update(
+            {
+                "mean_context_retention": (
+                    sum(case["context_retention"] for case in scored) / len(scored)
+                    if scored
+                    else None
+                ),
+                "questions_with_relevant_evidence": len(scored),
+                "relevant_dropped_total": sum(
+                    case["relevant_retrieved"] - case["relevant_retained"] for case in cases
+                ),
+                "relevant_truncated_total": sum(case["relevant_truncated"] for case in cases),
+                "mean_sources_packed": sum(case["sources_packed"] for case in cases) / count,
+                "mean_context_chars": sum(case["context_chars"] for case in cases) / count,
+            }
+        )
+    aggregate["cases"] = cases
+    return aggregate
 
 
 def search_with_strategy(
@@ -306,8 +375,14 @@ def run_retrieval_strategies(
     strategies: Sequence[str],
     *,
     top_k: int = 5,
+    context_budget: int | None = None,
 ) -> dict[str, Any]:
-    """Evaluate multiple retrieval strategies against the same annotations."""
+    """Evaluate multiple retrieval strategies against the same annotations.
+
+    With a context budget the report also covers packing: the same ranked results are
+    packed exactly as `ask()` packs them, so a chunk retrieval found but the budget
+    dropped shows up here instead of being blamed on the generator.
+    """
 
     selected = tuple(dict.fromkeys(strategies))
     if not selected:
@@ -327,22 +402,30 @@ def run_retrieval_strategies(
                 for chunk_id, metadata in zip(data["ids"], data["metadatas"])
             ]
 
+    pack = None
+    if context_budget is not None:
+        if context_budget <= 0:
+            raise ValueError("上下文预算必须大于 0")
+        pack = partial(engine.select_context, max_length=context_budget)
+
     results = {
         strategy: evaluate_retrieval(
             questions,
             partial(search_with_strategy, engine, strategy=strategy),
             top_k=top_k,
             candidates_by_book=candidates_by_book,
+            pack=pack,
         )
         for strategy in selected
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "ndcg_scope": "corpus" if candidates_by_book is not None else "returned_results_only",
         "relevance_policy": "heading_hierarchy_v2",
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "question_count": len(questions),
         "top_k": top_k,
+        "context_budget": context_budget,
         "strategies": results,
     }
 
