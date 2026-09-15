@@ -45,6 +45,10 @@ worker = [
     "fastapi",
     "uvicorn",
 ]
+api = [
+    "fastapi",
+    "uvicorn",
+]
 
 [dependency-groups]
 dev = [

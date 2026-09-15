@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>计算机教材问答</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1c2330; --muted: #5c6675; --line: #e3e6eb;
+  --accent: #2f6fed; --accent-soft: #e8f0fe; --user: #2f6fed; --user-text: #ffffff;
+  --warn-bg: #fff6e0; --warn-text: #7a5300; --err-bg: #fdecec; --err-text: #9b1c1c;
+  --code-bg: #f1f3f6; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #9aa4b2; --line: #2a3039;
+    --accent: #6ea0ff; --accent-soft: #1d2a42; --user: #3b6fd8; --user-text: #ffffff;
+    --warn-bg: #3a2e12; --warn-text: #f3d28a; --err-bg: #3d1a1a; --err-text: #f4a3a3;
+    --code-bg: #20252d; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+/* Author `display` rules (e.g. `.toolbar label { display: flex }`) beat the browser's
+   own `[hidden]` rule, which would leave hidden elements on screen. */
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+.app { max-width: 860px; margin: 0 auto; padding: 0 16px; min-height: 100%; display: flex; flex-direction: column; }
+header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
+.brand h1 { margin: 0; font-size: 20px; }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.header-links { display: flex; gap: 14px; font-size: 13px; }
+.header-links a { color: var(--muted); text-decoration: none; }
+.header-links a:hover { color: var(--accent); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.toolbar label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+select, input[type=password] {
+  font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel); color: var(--text); max-width: 100%;
+}
+.quota { margin-left: auto; font-size: 12px; color: var(--muted); }
+main { flex: 1; padding: 16px 0; }
+.empty { text-align: center; color: var(--muted); padding: 40px 0 20px; }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+.examples button {
+  font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); padding: 6px 12px; border-radius: 999px; cursor: pointer;
+}
+.examples button:hover { border-color: var(--accent); color: var(--accent); }
+.msg { margin: 14px 0; display: flex; }
+.msg.user { justify-content: flex-end; }
+.bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
+.msg.user .bubble { background: var(--user); color: var(--user-text); border-bottom-right-radius: 4px; }
+.answer { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
+.answer .body { word-break: break-word; }
+.answer .body h2, .answer .body h3 { font-size: 16px; margin: 14px 0 6px; }
+.answer .body > :first-child { margin-top: 0; }
+.answer .body p { margin: 6px 0; }
+.answer .body ul, .answer .body ol { margin: 6px 0; padding-left: 22px; }
+.answer .body code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+.answer .body pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+.answer .body pre code { background: none; padding: 0; }
+.cite {
+  font: inherit; font-size: 12px; border: 0; background: var(--accent-soft); color: var(--accent);
+  border-radius: 6px; padding: 0 6px; margin: 0 2px; cursor: pointer;
+}
+.cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.notice { margin-top: 10px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.notice.warn { background: var(--warn-bg); color: var(--warn-text); }
+.notice.error { background: var(--err-bg); color: var(--err-text); }
+.meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+details.sources { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.source { margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); transition: box-shadow .2s, border-color .2s; }
+.source.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.source .title { font-size: 13px; font-weight: 600; }
+.source .section { font-size: 12px; color: var(--muted); }
+.source .excerpt { font-size: 13px; margin-top: 4px; white-space: pre-wrap; max-height: 12em; overflow: auto; }
+.composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 14px; }
+.composer form {
+  display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 8px; box-shadow: var(--shadow);
+}
+.composer textarea {
+  flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent;
+  color: var(--text); font: inherit; max-height: 160px; padding: 6px;
+}
+.composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
+.composer button:disabled { opacity: .5; cursor: not-allowed; }
+footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
+@media (max-width: 520px) { .bubble { max-width: 92%; } .quota { margin-left: 0; width: 100%; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <h1>计算机教材问答</h1>
+      <p>基于五本计算机教材的检索增强问答，回答会标注引用的教材原文</p>
+    </div>
+    <nav class="header-links">
+      <a href="/docs" target="_blank" rel="noopener">API 文档</a>
+      <a href="https://github.com/Tanimasu/rag-textbook-qa" target="_blank" rel="noopener">源代码</a>
+    </nav>
+  </header>
+
+  <div class="toolbar">
+    <label>教材 <select id="book"><option value="">全部教材</option></select></label>
+    <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
+    <span class="quota" id="quota"></span>
+  </div>
+
+  <main id="thread">
+    <div class="empty" id="empty">
+      <div>可以问概念、比较或原理类的问题，回答会标注它依据的教材片段。</div>
+      <div class="examples">
+        <button type="button">什么是进程？它和程序有什么区别？</button>
+        <button type="button">主键和唯一索引有什么区别？</button>
+        <button type="button">散列表是怎样解决冲突的？</button>
+        <button type="button">Cache 在存储层次中起什么作用？</button>
+      </div>
+    </div>
+  </main>
+
+  <div class="composer">
+    <form id="form">
+      <textarea id="input" rows="1" maxlength="500" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+      <button id="send" type="submit">发送</button>
+    </form>
+  </div>
+  <footer>回答由大模型依据检索到的教材片段生成，可能出错，请以原文为准。查询分解、引用核对等尚未通过验收的实验功能在公开版中关闭。</footer>
+</div>
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const thread = $("thread"), empty = $("empty"), form = $("form"), input = $("input");
+  const send = $("send"), bookSelect = $("book"), codeField = $("code-field");
+  const codeInput = $("code"), quota = $("quota");
+  const CODE_KEY = "rag-qa-access-code";
+  let busy = false;
+
+  const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
+  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
+
+  const escapeHtml = (text) => text.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[character]));
+
+  // Runs on already-escaped text, so every tag it emits is one it chose to emit.
+  const inline = (text) => text
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/【参考资料\s*(\d+)】/g, '<button type="button" class="cite" data-cite="$1">资料 $1</button>');
+
+  function renderMarkdown(source) {
+    const out = [];
+    let list = null, code = null, paragraph = [];
+    const flushParagraph = () => {
+      if (paragraph.length) { out.push("<p>" + inline(paragraph.join("<br>")) + "</p>"); paragraph = []; }
+    };
+    const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
+    for (const line of escapeHtml(source).split("\n")) {
+      if (code !== null) {
+        if (/^\s*```/.test(line)) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = null; }
+        else code.push(line);
+        continue;
+      }
+      if (/^\s*```/.test(line)) { flushParagraph(); closeList(); code = []; continue; }
+      const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flushParagraph(); closeList();
+        const level = Math.min(heading[1].length + 1, 3);
+        out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        continue;
+      }
+      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+      const numbered = bullet ? null : line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        flushParagraph();
+        const kind = bullet ? "ul" : "ol";
+        if (list !== kind) {
+          closeList();
+          // Keep the model's own number. A paragraph between items closes the list,
+          // and a fresh <ol> would otherwise restart every item at 1.
+          out.push(numbered ? `<ol start="${numbered[1]}">` : "<ul>");
+          list = kind;
+        }
+        out.push("<li>" + inline(bullet ? bullet[1] : numbered[2]) + "</li>");
+        continue;
+      }
+      if (!line.trim()) { flushParagraph(); closeList(); continue; }
+      closeList();
+      paragraph.push(line);
+    }
+    if (code !== null) out.push("<pre><code>" + code.join("\n") + "</code></pre>");
+    flushParagraph(); closeList();
+    return out.join("");
+  }
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function addNotice(card, message, kind) {
+    card.append(element("div", "notice " + kind, message));
+  }
+
+  function addUser(text) {
+    empty.hidden = true;
+    const row = element("div", "msg user");
+    row.append(element("div", "bubble", text));
+    thread.append(row);
+  }
+
+  function addAnswer() {
+    const row = element("div", "msg");
+    const card = element("div", "answer");
+    card.append(element("div", "body cursor"));
+    row.append(card);
+    thread.append(row);
+    row.scrollIntoView({ block: "end" });
+    return card;
+  }
+
+  function renderSources(sources, open) {
+    const details = element("details", "sources");
+    details.open = open;
+    details.append(element("summary", "", `参考的教材片段（${sources.length}）`));
+    for (const source of sources) {
+      const item = element("div", "source");
+      item.dataset.citation = String(source.citation_id);
+      item.append(
+        element("div", "title", `资料 ${source.citation_id} · ${source.book}`),
+        element("div", "section", (source.section || "未标注章节") + (source.truncated ? " · 片段已截断" : "")),
+        element("div", "excerpt", source.excerpt),
+      );
+      details.append(item);
+    }
+    return details;
+  }
+
+  function finish(card, result) {
+    const body = card.querySelector(".body");
+    body.classList.remove("cursor");
+    body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
+    if (result.message) addNotice(card, result.message, result.status === "failed" ? "error" : "warn");
+    if (result.conflicts && result.conflicts.length) {
+      addNotice(card, `检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn");
+    }
+    const timing = result.timing || {};
+    const chips = [
+      ["retrieval_seconds", "检索"], ["first_token_seconds", "首字"], ["total_seconds", "总计"],
+    ].filter(([key]) => typeof timing[key] === "number")
+      .map(([key, label]) => `${label} ${timing[key].toFixed(2)} 秒`);
+    if (chips.length) {
+      const meta = element("div", "meta");
+      for (const chip of chips) meta.append(element("span", "chip", chip));
+      card.append(meta);
+    }
+    if (result.sources && result.sources.length) {
+      card.append(renderSources(result.sources, result.status !== "answered"));
+    }
+  }
+
+  function parseEvent(frame) {
+    let name = "message";
+    const data = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) name = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (!data.length) return null;
+    try { return { name, data: JSON.parse(data.join("\n")) }; } catch { return null; }
+  }
+
+  function requestHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const code = codeInput.value.trim();
+    if (code) { headers["X-Access-Code"] = code; sessionSet(CODE_KEY, code); }
+    return headers;
+  }
+
+  async function explainRefusal(card, response) {
+    let detail = "";
+    try { detail = (await response.json()).detail; } catch { /* body was not JSON */ }
+    if (response.status === 401) {
+      codeField.hidden = false;
+      codeInput.focus();
+      addNotice(card, "需要正确的访问口令，请在上方填写后重新提问。", "error");
+    } else if (response.status === 429) {
+      const wait = response.headers.get("Retry-After");
+      addNotice(card, wait ? `提问太频繁了，请 ${wait} 秒后再试。` : "提问太频繁了，请稍后再试。", "warn");
+    } else if (typeof detail === "string" && detail) {
+      addNotice(card, detail, "error");
+    } else {
+      addNotice(card, response.status === 422 ? "问题格式不正确，最多 500 字。" : "暂时无法完成回答，请稍后再试。", "error");
+    }
+  }
+
+  async function ask() {
+    const query = input.value.trim();
+    if (!query || busy) return;
+    busy = true;
+    send.disabled = true;
+    input.value = "";
+    autosize();
+    addUser(query);
+    const card = addAnswer();
+    const body = card.querySelector(".body");
+    let text = "", frame = 0, settled = false;
+    const paint = () => {
+      frame = 0;
+      const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+      body.innerHTML = renderMarkdown(text);
+      if (nearBottom) card.scrollIntoView({ block: "end" });
+    };
+    try {
+      const response = await fetch("/v1/ask/stream", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({ query, book_id: bookSelect.value || null }),
+      });
+      if (!response.ok) {
+        body.classList.remove("cursor");
+        await explainRefusal(card, response);
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const event = parseEvent(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+          if (!event) continue;
+          if (event.name === "chunk") {
+            text += event.data.text;
+            if (!frame) frame = requestAnimationFrame(paint);
+          } else if (event.name === "result") {
+            settled = true;
+            if (frame) cancelAnimationFrame(frame);
+            finish(card, event.data);
+          } else if (event.name === "error") {
+            settled = true;
+            if (frame) cancelAnimationFrame(frame);
+            body.classList.remove("cursor");
+            body.innerHTML = text ? renderMarkdown(text) : "";
+            addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
+          }
+        }
+      }
+      if (!settled) {
+        body.classList.remove("cursor");
+        addNotice(card, "连接中断了，回答没有完整返回。", "error");
+      }
+    } catch {
+      body.classList.remove("cursor");
+      addNotice(card, "网络异常，请稍后重试。", "error");
+    } finally {
+      busy = false;
+      send.disabled = false;
+      input.focus();
+      refreshStatus();
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const health = await (await fetch("/health")).json();
+      if (health.access_code_required) {
+        codeField.hidden = false;
+        if (!codeInput.value) codeInput.value = sessionGet(CODE_KEY);
+      }
+      quota.textContent = typeof health.generations_remaining_today === "number"
+        ? `今日剩余生成次数：${health.generations_remaining_today}` : "";
+    } catch {
+      quota.textContent = "";
+    }
+  }
+
+  async function loadBooks() {
+    try {
+      for (const book of await (await fetch("/v1/books")).json()) {
+        const option = element("option", "", book.label);
+        option.value = book.book_id;
+        bookSelect.append(option);
+      }
+    } catch { /* the page still works across all books */ }
+  }
+
+  function autosize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  }
+
+  thread.addEventListener("click", (event) => {
+    const example = event.target.closest(".examples button");
+    if (example) { input.value = example.textContent; ask(); return; }
+    const cite = event.target.closest(".cite");
+    if (!cite) return;
+    const details = cite.closest(".answer")?.querySelector("details.sources");
+    const target = details?.querySelector(`.source[data-citation="${cite.dataset.cite}"]`);
+    if (!target) return;
+    details.open = true;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("flash");
+    setTimeout(() => target.classList.remove("flash"), 1600);
+  });
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", (event) => {
+    // isComposing: Enter that confirms a Chinese IME candidate must not send.
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); }
+  });
+  form.addEventListener("submit", (event) => { event.preventDefault(); ask(); });
+  loadBooks();
+  refreshStatus();
+})();
+</script>
+</body>
+</html>

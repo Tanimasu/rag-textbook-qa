@@ -323,6 +323,31 @@ Web 界面的正式实现位于 `src/rag_textbook_qa/web/`；`project/app.py` �
 
 ---
 
+## 对外问答服务
+
+```bash
+uv sync --inexact --extra api --extra local-models
+rag-qa serve                     # http://127.0.0.1:8000
+```
+
+一个进程同时提供聊天页（`/`）、REST API（`/v1/ask`、`/v1/ask/stream`、`/v1/books`）和自动生成的
+接口文档（`/docs`）。公开接口只开放 `query`、`book_id`、`top_k`：查询分解、引用核对和 HyDE 一律关闭，
+因为它们未通过验收且会额外调用模型；上游错误文本不会出现在任何响应里。
+
+对外开放前要配好费用控制，全部通过环境变量：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `RAG_QA_ACCESS_CODE` | 不设 | 访问口令（仅 ASCII），放在请求头 `X-Access-Code` |
+| `RAG_QA_RATE_LIMIT` / `RAG_QA_RATE_WINDOW_SECONDS` | 10 / 600 | 每个 IP 的滑动窗口限流 |
+| `RAG_QA_DAILY_GENERATIONS` | 200 | 每日生成上限，用完后只返回检索到的原文、不调用大模型 |
+| `RAG_QA_TRUST_PROXY` | false | 前面恰有一层可信代理时才开启 |
+
+监听非本机地址时，必须设置 `RAG_QA_ACCESS_CODE`，或显式加 `--public` 确认无口令开放。
+计数器存在进程内存里，重启即清零，只适合单进程演示。
+
+---
+
 ## 持续集成
 
 GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：

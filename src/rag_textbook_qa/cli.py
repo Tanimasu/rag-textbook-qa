@@ -201,6 +201,24 @@ def build_parser() -> argparse.ArgumentParser:
     app.add_argument("--port", type=int, default=8501, help="Web 界面监听端口")
     app.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
 
+    serve_api = commands.add_parser(
+        "serve",
+        help="启动对外问答服务：聊天页、REST API 与接口文档",
+    )
+    serve_api.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="监听地址；对外开放需设置 RAG_QA_ACCESS_CODE，或显式加 --public",
+    )
+    serve_api.add_argument("--port", type=int, default=8000)
+    serve_api.add_argument("--db-path", type=Path, help="覆盖 artifacts/vector_db")
+    serve_api.add_argument(
+        "--public",
+        action="store_true",
+        help="确认在没有访问口令时对外开放；限流和每日生成上限仍然生效",
+    )
+    serve_api.add_argument("--no-warmup", action="store_true", help="跳过启动时的模型预热")
+
     worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     serve = worker_commands.add_parser("serve", help="启动模型 Worker HTTP 服务")
@@ -794,6 +812,20 @@ def _run_worker_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_serve(args: argparse.Namespace, settings: Settings) -> int:
+    _load_project_environment(settings.paths.root / "project" / ".env")
+    from rag_textbook_qa.api.app import run_api_server
+
+    run_api_server(
+        host=args.host,
+        port=args.port,
+        db_path=args.db_path or settings.paths.vector_db,
+        public=args.public,
+        warmup=not args.no_warmup,
+    )
+    return 0
+
+
 def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
     _load_project_environment(settings.paths.root / "project" / ".env")
 
@@ -897,6 +929,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = Settings.load(args.workspace)
             return _run_app(args, settings)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "serve":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_serve(args, settings)
+        except (OSError, RuntimeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
     if args.command == "worker":

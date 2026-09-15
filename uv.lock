@@ -3286,6 +3286,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+api = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 docling = [
     { name = "docling" },
     { name = "easyocr" },
@@ -3329,6 +3333,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'eval'", specifier = ">=4,<6" },
     { name = "docling", marker = "extra == 'docling'" },
     { name = "easyocr", marker = "extra == 'docling'" },
+    { name = "fastapi", marker = "extra == 'api'" },
     { name = "fastapi", marker = "extra == 'worker'" },
     { name = "jieba" },
     { name = "langchain-community", marker = "extra == 'eval'", specifier = ">=0.4.1,<0.4.2" },
@@ -3345,9 +3350,10 @@ requires-dist = [
     { name = "streamlit", marker = "extra == 'ui'" },
     { name = "torch", marker = "extra == 'local-models'" },
     { name = "tqdm" },
+    { name = "uvicorn", marker = "extra == 'api'" },
     { name = "uvicorn", marker = "extra == 'worker'" },
 ]
-provides-extras = ["local-models", "ui", "eval", "docling", "mineru", "worker"]
+provides-extras = ["local-models", "ui", "eval", "docling", "mineru", "worker", "api"]
 
 [package.metadata.requires-dev]
 dev = [
