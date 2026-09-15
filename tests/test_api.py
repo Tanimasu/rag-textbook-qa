@@ -183,6 +183,8 @@ class ApiAppTests(unittest.TestCase):
         self.assertNotIn("全部教材", page.text)
         self.assertIn("正在检索教材", page.text)
         self.assertIn("正在组织答案", page.text)
+        self.assertIn("trackScrollIntent", page.text)
+        self.assertIn("window.setTimeout(paint, 125)", page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)

@@ -327,13 +327,32 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     addUser(query);
     const card = addAnswer();
     const body = card.querySelector(".body");
-    let text = "", frame = 0, settled = false;
+    let text = "", paintTimer = 0, settled = false, autoFollow = true;
+    let lastScrollY = window.scrollY;
+    const nearBottom = () => (
+      window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120
+    );
+    const trackScrollIntent = () => {
+      const nextScrollY = window.scrollY;
+      if (nextScrollY < lastScrollY) autoFollow = false;
+      else if (nearBottom()) autoFollow = true;
+      lastScrollY = nextScrollY;
+    };
+    window.addEventListener("scroll", trackScrollIntent, { passive: true });
     const paint = () => {
-      frame = 0;
-      const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+      paintTimer = 0;
       body.classList.remove("progress");
       body.innerHTML = renderMarkdown(text);
-      if (nearBottom) card.scrollIntoView({ block: "end" });
+      if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
+    };
+    const schedulePaint = () => {
+      // Rebuilding the whole Markdown DOM for every token makes scrolling fight
+      // repeated layout changes. Eight updates per second still feels live.
+      if (!paintTimer) paintTimer = window.setTimeout(paint, 125);
+    };
+    const cancelPaint = () => {
+      if (paintTimer) window.clearTimeout(paintTimer);
+      paintTimer = 0;
     };
     try {
       const response = await fetch("/v1/ask/stream", {
@@ -361,14 +380,15 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
           if (!event) continue;
           if (event.name === "chunk") {
             text += event.data.text;
-            if (!frame) frame = requestAnimationFrame(paint);
+            schedulePaint();
           } else if (event.name === "result") {
             settled = true;
-            if (frame) cancelAnimationFrame(frame);
+            cancelPaint();
             finish(card, event.data);
+            if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
             settled = true;
-            if (frame) cancelAnimationFrame(frame);
+            cancelPaint();
             body.classList.remove("cursor", "progress");
             body.innerHTML = text ? renderMarkdown(text) : "";
             addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
@@ -376,13 +396,18 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         }
       }
       if (!settled) {
+        cancelPaint();
         body.classList.remove("cursor", "progress");
+        body.innerHTML = text ? renderMarkdown(text) : "";
         addNotice(card, "连接中断了，回答没有完整返回。", "error");
       }
     } catch {
+      cancelPaint();
       body.classList.remove("cursor", "progress");
+      body.innerHTML = text ? renderMarkdown(text) : "";
       addNotice(card, "网络异常，请稍后重试。", "error");
     } finally {
+      window.removeEventListener("scroll", trackScrollIntent);
       busy = false;
       send.disabled = false;
       input.focus();
