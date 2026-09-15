@@ -15,9 +15,14 @@ import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from rag_textbook_qa import __version__
+from rag_textbook_qa.api.feedback import (
+    AnswerRecordExpiredError,
+    AnswerRegistry,
+    FeedbackStore,
+)
 from rag_textbook_qa.api.guard import (
     AccessDenied,
     AccessGuard,
@@ -60,6 +65,20 @@ class AskRequest(BaseModel):
         description="教材标识，取值见 /v1/books；省略则检索全部教材",
     )
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K, description="检索片段数")
+
+
+class FeedbackRequest(BaseModel):
+    answer_id: str = Field(min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
+    rating: Literal["helpful", "needs_improvement"]
+    reason: Literal[
+        "not_answered",
+        "irrelevant_sources",
+        "unsupported_answer",
+        "incomplete",
+        "too_slow",
+        "other",
+    ] | None = None
+    comment: str = Field(default="", max_length=500)
 
 
 def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> dict[str, Any]:
@@ -156,11 +175,14 @@ def create_api_app(
     engine: Any,
     guard: AccessGuard,
     books: Sequence[Mapping[str, Any]],
+    *,
+    feedback_store: FeedbackStore,
 ) -> FastAPI:
     """Build the public app around one shared engine and one guard."""
 
     book_list = [dict(book) for book in books]
     known_books = {book["book_id"] for book in book_list}
+    answers = AnswerRegistry()
     page = (
         resources.files("rag_textbook_qa.api")
         .joinpath("static/index.html")
@@ -176,7 +198,7 @@ def create_api_app(
         ),
     )
 
-    def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
+    def authorize(request: Request) -> None:
         client = _client_address(request, trust_proxy=guard.settings.trust_proxy)
         try:
             # Rate first, so guessing the access code is throttled like any other call.
@@ -190,6 +212,9 @@ def create_api_app(
             ) from exc
         except AccessDenied as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
+        authorize(request)
         query = payload.query.strip()
         if not query:
             raise HTTPException(status_code=422, detail="问题不能为空")
@@ -222,7 +247,13 @@ def create_api_app(
         if retrieval_only is None and not result.get("context_sources"):
             # Nothing was packed, so the engine never called the model.
             guard.refund_generation()
-        return public_result(result, retrieval_only=retrieval_only)
+        response = public_result(result, retrieval_only=retrieval_only)
+        response["answer_id"] = answers.remember(
+            query=query,
+            book_id=book_id,
+            result=response,
+        )
+        return response
 
     # HEAD as well as GET: uptime probes and some proxies check the root without a body.
     @app.api_route(
@@ -268,6 +299,34 @@ def create_api_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.post("/v1/feedback", summary="提交对某次回答的反馈")
+    def submit_feedback(payload: FeedbackRequest, request: Request) -> dict[str, str]:
+        authorize(request)
+        comment = payload.comment.strip()
+        if payload.rating == "helpful" and payload.reason is not None:
+            raise HTTPException(status_code=422, detail="正向反馈不需要问题分类")
+        if payload.rating == "needs_improvement" and payload.reason is None:
+            raise HTTPException(status_code=422, detail="请选择需要改进的原因")
+        if payload.reason == "other" and not comment:
+            raise HTTPException(status_code=422, detail="选择其他时请填写补充说明")
+        try:
+            snapshot = answers.resolve(payload.answer_id)
+            feedback_store.save(
+                snapshot,
+                rating=payload.rating,
+                reason=payload.reason,
+                comment=comment,
+            )
+        except AnswerRecordExpiredError:
+            raise HTTPException(
+                status_code=404,
+                detail="回答记录已过期，请重新提问后再反馈",
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - public responses never carry storage detail
+            _log_failure(exc)
+            raise HTTPException(status_code=500, detail="反馈暂时无法保存，请稍后再试") from None
+        return {"status": "saved"}
+
     return app
 
 
@@ -300,12 +359,24 @@ def run_api_server(
         }
         for book in list_indexed_books(db_path)
     ]
+    feedback_store = FeedbackStore(
+        Path(db_path).expanduser().resolve().parent / "product" / "feedback.sqlite3"
+    )
     engine = RAGEngine(db_path=db_path, verbose=False, enable_hyde=False)
     try:
         if warmup and books:
             # Load both retrieval models now rather than inside the first visitor's request.
             print("正在预热检索模型...", flush=True)
             engine.search_single_book(books[0]["book_id"], "模型预热", 1, use_hyde=False)
-        uvicorn.run(create_api_app(engine, AccessGuard(settings), books), host=host, port=port)
+        uvicorn.run(
+            create_api_app(
+                engine,
+                AccessGuard(settings),
+                books,
+                feedback_store=feedback_store,
+            ),
+            host=host,
+            port=port,
+        )
     finally:
         engine.close()

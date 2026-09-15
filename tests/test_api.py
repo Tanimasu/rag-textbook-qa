@@ -14,6 +14,7 @@ warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testcli
 from fastapi.testclient import TestClient
 
 from rag_textbook_qa.api.app import PUBLIC_FAILURE, create_api_app, public_result, run_api_server
+from rag_textbook_qa.api.feedback import FeedbackStore
 from rag_textbook_qa.api.guard import (
     AccessDenied,
     AccessGuard,
@@ -169,7 +170,17 @@ class ApiAppTests(unittest.TestCase):
     def client(self, engine=None, **settings):
         self.engine = engine or FakeEngine()
         self.guard = AccessGuard(GuardSettings(**settings))
-        return TestClient(create_api_app(self.engine, self.guard, BOOKS))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.feedback_store = FeedbackStore(Path(temporary.name) / "feedback.sqlite3")
+        return TestClient(
+            create_api_app(
+                self.engine,
+                self.guard,
+                BOOKS,
+                feedback_store=self.feedback_store,
+            )
+        )
 
     def test_page_books_docs_and_health_expose_no_secrets(self):
         client = self.client(access_code="demo-2026")
@@ -185,6 +196,9 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("正在组织答案", page.text)
         self.assertIn("trackScrollIntent", page.text)
         self.assertIn("window.setTimeout(paint, 125)", page.text)
+        self.assertIn("👍 有帮助", page.text)
+        self.assertIn("👎 需要改进", page.text)
+        self.assertIn("/v1/feedback", page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)
@@ -204,6 +218,83 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(allowed.status_code, 200)
         self.assertEqual(allowed.json()["status"], "answered")
+        self.assertRegex(allowed.json()["answer_id"], r"^[0-9a-f]{32}$")
+
+    def test_feedback_is_saved_only_after_an_explicit_valid_submission(self):
+        client = self.client()
+        answer = client.post(
+            "/v1/ask",
+            json={"query": "什么是进程？", "book_id": "os"},
+        ).json()
+
+        self.assertEqual(self.feedback_store.records(), [])
+        saved = client.post(
+            "/v1/feedback",
+            json={"answer_id": answer["answer_id"], "rating": "helpful"},
+        )
+        records = self.feedback_store.records()
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json(), {"status": "saved"})
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["query"], "什么是进程？")
+        self.assertEqual(records[0]["book_id"], "os")
+        self.assertEqual(records[0]["rating"], "helpful")
+        self.assertIsNone(records[0]["reason"])
+        self.assertNotIn("client", records[0])
+        persisted = json.dumps(records[0], ensure_ascii=False)
+        self.assertNotIn("SYSTEM PROMPT", persisted)
+        self.assertNotIn("candidate", persisted)
+
+    def test_negative_feedback_requires_a_reason_and_known_recent_answer(self):
+        client = self.client()
+        answer_id = client.post("/v1/ask", json={"query": "问题", "book_id": "os"}).json()[
+            "answer_id"
+        ]
+
+        missing_reason = client.post(
+            "/v1/feedback",
+            json={"answer_id": answer_id, "rating": "needs_improvement"},
+        )
+        missing_other_note = client.post(
+            "/v1/feedback",
+            json={
+                "answer_id": answer_id,
+                "rating": "needs_improvement",
+                "reason": "other",
+            },
+        )
+        unknown = client.post(
+            "/v1/feedback",
+            json={"answer_id": "0" * 32, "rating": "helpful"},
+        )
+
+        self.assertEqual(missing_reason.status_code, 422)
+        self.assertEqual(missing_other_note.status_code, 422)
+        self.assertEqual(unknown.status_code, 404)
+        self.assertEqual(self.feedback_store.records(), [])
+
+    def test_feedback_uses_the_same_access_code_as_questions(self):
+        client = self.client(access_code="demo-2026")
+        answer_id = client.post(
+            "/v1/ask",
+            headers={"X-Access-Code": "demo-2026"},
+            json={"query": "问题", "book_id": "os"},
+        ).json()["answer_id"]
+
+        denied = client.post(
+            "/v1/feedback",
+            json={"answer_id": answer_id, "rating": "helpful"},
+        )
+        saved = client.post(
+            "/v1/feedback",
+            headers={"X-Access-Code": "demo-2026"},
+            json={"answer_id": answer_id, "rating": "helpful"},
+        )
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(len(self.feedback_store.records()), 1)
 
     def test_public_calls_keep_unaccepted_paths_off(self):
         client = self.client()
@@ -273,6 +364,7 @@ class ApiAppTests(unittest.TestCase):
             "进程是程序的执行【参考资料 1】",
         )
         self.assertEqual(events[-1][1]["status"], "answered")
+        self.assertRegex(events[-1][1]["answer_id"], r"^[0-9a-f]{32}$")
 
     def test_engine_failures_return_generic_errors_on_both_routes(self):
         client = self.client(engine=FakeEngine(raises=RuntimeError(SECRET)))
@@ -301,19 +393,25 @@ class ServerTests(unittest.TestCase):
 
     def test_serving_builds_one_engine_warms_it_and_always_closes_it(self):
         fake_uvicorn = SimpleNamespace(run=MagicMock())
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
-            patch(
-                "rag_textbook_qa.indexing.list_indexed_books",
-                return_value=[{"book_name": "os", "count": 12}],
-            ),
-            patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
-        ):
-            run_api_server(host="0.0.0.0", port=7860, db_path="db", public=True)
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "artifacts" / "vector_db"
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch(
+                    "rag_textbook_qa.indexing.list_indexed_books",
+                    return_value=[{"book_name": "os", "count": 12}],
+                ),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
+            ):
+                run_api_server(host="0.0.0.0", port=7860, db_path=db_path, public=True)
+
+            self.assertTrue(
+                (Path(directory) / "artifacts" / "product" / "feedback.sqlite3").is_file()
+            )
 
         engine = engine_class.return_value
-        engine_class.assert_called_once_with(db_path="db", verbose=False, enable_hyde=False)
+        engine_class.assert_called_once_with(db_path=db_path, verbose=False, enable_hyde=False)
         engine.search_single_book.assert_called_once()
         fake_uvicorn.run.assert_called_once()
         engine.close.assert_called_once_with()

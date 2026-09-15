@@ -330,9 +330,24 @@ uv sync --inexact --extra api --extra local-models
 rag-qa serve                     # http://127.0.0.1:8000
 ```
 
-一个进程同时提供聊天页（`/`）、REST API（`/v1/ask`、`/v1/ask/stream`、`/v1/books`）和自动生成的
+一个进程同时提供聊天页（`/`）、REST API（`/v1/ask`、`/v1/ask/stream`、`/v1/books`、`/v1/feedback`）和自动生成的
 接口文档（`/docs`）。公开接口只开放 `query`、`book_id`、`top_k`：查询分解、引用核对和 HyDE 一律关闭，
 因为它们未通过验收且会额外调用模型；上游错误文本不会出现在任何响应里。
+
+每次回答会得到一个随机、短期有效的 `answer_id`。页面提供复制、赞和踩；用户主动提交反馈后，
+服务才会把这次问题、公开答案、公开引用、冲突提示、耗时和反馈持久保存到
+`artifacts/product/feedback.sqlite3`。未提交的回答只在当前进程的有界内存中短暂保留；反馈数据不记录
+IP、访问口令、API Key、Worker token 或模型内部提示词。该目录默认被 Git 忽略。
+
+需要检查或分析反馈时，可导出为 JSONL；默认不会覆盖已有文件：
+
+```bash
+rag-qa feedback export --output artifacts/product/feedback-export.jsonl
+# 明确需要覆盖同名文件时
+rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
+```
+
+反馈用于后续人工归类和离线评测，不会在在线回答中自动运行 RAGAS，也不会自动改变检索参数。
 
 对外开放前要配好费用控制，全部通过环境变量：
 

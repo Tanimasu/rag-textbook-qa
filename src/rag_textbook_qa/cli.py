@@ -219,6 +219,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_api.add_argument("--no-warmup", action="store_true", help="跳过启动时的模型预热")
 
+    feedback = commands.add_parser("feedback", help="管理用户主动提交的问答反馈")
+    feedback_commands = feedback.add_subparsers(dest="feedback_command", required=True)
+    feedback_export = feedback_commands.add_parser("export", help="将本地反馈导出为 JSONL")
+    feedback_export.add_argument(
+        "--database",
+        type=Path,
+        help="覆盖 artifacts/product/feedback.sqlite3",
+    )
+    feedback_export.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="导出 JSONL 路径（建议放在已忽略的 artifacts/product/）",
+    )
+    feedback_export.add_argument("--force", action="store_true", help="允许覆盖已有导出文件")
+
     worker = commands.add_parser("worker", help="运行远程 embedding/reranker Worker")
     worker_commands = worker.add_subparsers(dest="worker_command", required=True)
     serve = worker_commands.add_parser("serve", help="启动模型 Worker HTTP 服务")
@@ -826,6 +842,19 @@ def _run_serve(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _run_feedback(args: argparse.Namespace, settings: Settings) -> int:
+    if args.feedback_command != "export":
+        raise ValueError(f"未知 feedback 命令: {args.feedback_command}")
+    from rag_textbook_qa.api.feedback import FeedbackStore
+
+    database = args.database or settings.paths.artifacts / "product" / "feedback.sqlite3"
+    if not database.is_file():
+        raise FileNotFoundError(f"还没有反馈数据库: {database}")
+    count = FeedbackStore(database).export_jsonl(args.output, overwrite=args.force)
+    print(f"已导出 {count} 条反馈: {args.output.expanduser().resolve()}")
+    return 0
+
+
 def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
     _load_project_environment(settings.paths.root / "project" / ".env")
 
@@ -936,6 +965,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = Settings.load(args.workspace)
             return _run_serve(args, settings)
         except (OSError, RuntimeError, ValueError) as exc:
+            parser.exit(1, f"错误: {exc}\n")
+
+    if args.command == "feedback":
+        try:
+            settings = Settings.load(args.workspace)
+            return _run_feedback(args, settings)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             parser.exit(1, f"错误: {exc}\n")
 
     if args.command == "worker":

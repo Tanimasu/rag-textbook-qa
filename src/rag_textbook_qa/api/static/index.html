@@ -77,6 +77,25 @@ main { flex: 1; padding: 16px 0; }
 .notice.error { background: var(--err-bg); color: var(--err-text); }
 .meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.actions { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.action {
+  font: inherit; font-size: 13px; color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; cursor: pointer;
+}
+.action:hover { color: var(--accent); border-color: var(--accent); }
+.action:disabled { opacity: .55; cursor: default; }
+.feedback-status { color: var(--muted); font-size: 13px; }
+.feedback-panel {
+  margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); display: grid; gap: 8px;
+}
+.feedback-panel[hidden] { display: none; }
+.feedback-panel textarea {
+  width: 100%; resize: vertical; min-height: 64px; max-height: 150px; padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text);
+  font: inherit; font-size: 13px;
+}
+.feedback-panel .submit-row { display: flex; justify-content: flex-end; }
 details.sources { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .source { margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); transition: box-shadow .2s, border-color .2s; }
@@ -136,7 +155,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       <button id="send" type="submit">发送</button>
     </form>
   </div>
-  <footer>回答由大模型依据检索到的教材片段生成，可能出错，请以原文为准。查询分解、引用核对等尚未通过验收的实验功能在公开版中关闭。</footer>
+  <footer>回答由大模型依据检索到的教材片段生成，可能出错，请以原文为准。回答会短暂保留在进程内存中；只有主动提交反馈时，本次问题、回答、引用和耗时才会持久保存，反馈数据不包含 IP 或凭据。未通过验收的实验功能在公开版中关闭。</footer>
 </div>
 <script>
 (() => {
@@ -251,6 +270,126 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     return details;
   }
 
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const area = element("textarea");
+    area.value = text;
+    area.readOnly = true;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    if (!copied) throw new Error("copy failed");
+  }
+
+  async function saveFeedback(card, result, rating, reason, comment, buttons) {
+    for (const button of buttons) button.disabled = true;
+    try {
+      const response = await fetch("/v1/feedback", {
+        method: "POST",
+        headers: requestHeaders(),
+        body: JSON.stringify({ answer_id: result.answer_id, rating, reason, comment }),
+      });
+      if (!response.ok) {
+        for (const button of buttons) button.disabled = false;
+        await explainRefusal(card, response);
+        return;
+      }
+      card.querySelector(".feedback-panel")?.remove();
+      const actions = card.querySelector(".actions");
+      for (const button of actions.querySelectorAll("[data-feedback]")) button.remove();
+      actions.append(element("span", "feedback-status", "感谢反馈，已经记录。"));
+    } catch {
+      for (const button of buttons) button.disabled = false;
+      addNotice(card, "反馈暂时没有保存成功，请稍后再试。", "error");
+    }
+  }
+
+  function renderActions(card, result) {
+    const actions = element("div", "actions");
+    if (result.answer) {
+      const copy = element("button", "action", "复制答案");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        try {
+          await copyText(result.answer);
+          copy.textContent = "已复制";
+          window.setTimeout(() => { copy.textContent = "复制答案"; }, 1500);
+        } catch {
+          copy.textContent = "复制失败";
+        }
+      });
+      actions.append(copy);
+    }
+    if (!result.answer_id) {
+      if (actions.children.length) card.append(actions);
+      return;
+    }
+
+    const helpful = element("button", "action", "👍 有帮助");
+    const improve = element("button", "action", "👎 需要改进");
+    for (const button of [helpful, improve]) {
+      button.type = "button";
+      button.dataset.feedback = "true";
+    }
+    actions.append(helpful, improve);
+    card.append(actions);
+
+    const panel = element("div", "feedback-panel");
+    panel.hidden = true;
+    const reason = element("select");
+    reason.required = true;
+    for (const [value, label] of [
+      ["", "请选择需要改进的原因"],
+      ["not_answered", "没有回答问题"],
+      ["irrelevant_sources", "检索资料不相关"],
+      ["unsupported_answer", "答案与教材不一致"],
+      ["incomplete", "回答不完整"],
+      ["too_slow", "速度太慢"],
+      ["other", "其他"],
+    ]) {
+      const option = element("option", "", label);
+      option.value = value;
+      if (!value) { option.disabled = true; option.selected = true; }
+      reason.append(option);
+    }
+    const comment = element("textarea");
+    comment.maxLength = 500;
+    comment.placeholder = "可以补充说明（选择“其他”时必填，最多 500 字）";
+    const submitRow = element("div", "submit-row");
+    const submit = element("button", "action", "提交反馈");
+    submit.type = "button";
+    submitRow.append(submit);
+    panel.append(reason, comment, submitRow);
+    card.append(panel);
+
+    const buttons = [helpful, improve, submit];
+    helpful.addEventListener("click", () => {
+      saveFeedback(card, result, "helpful", null, "", buttons);
+    });
+    improve.addEventListener("click", () => {
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) reason.focus();
+    });
+    submit.addEventListener("click", () => {
+      if (!reason.value) { reason.reportValidity(); return; }
+      const note = comment.value.trim();
+      if (reason.value === "other" && !note) {
+        comment.setCustomValidity("选择其他时请填写补充说明");
+        comment.reportValidity();
+        return;
+      }
+      comment.setCustomValidity("");
+      saveFeedback(card, result, "needs_improvement", reason.value, note, buttons);
+    });
+    comment.addEventListener("input", () => comment.setCustomValidity(""));
+  }
+
   function finish(card, result) {
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
@@ -272,6 +411,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     if (result.sources && result.sources.length) {
       card.append(renderSources(result.sources, result.status !== "answered"));
     }
+    renderActions(card, result);
   }
 
   function parseEvent(frame) {
