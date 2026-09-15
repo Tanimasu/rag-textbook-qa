@@ -58,6 +58,7 @@ main { flex: 1; padding: 16px 0; }
 .msg.user .bubble { background: var(--user); color: var(--user-text); border-bottom-right-radius: 4px; }
 .answer { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
 .answer .body { word-break: break-word; }
+.answer .body.progress { color: var(--muted); }
 .answer .body h2, .answer .body h3 { font-size: 16px; margin: 14px 0 6px; }
 .answer .body > :first-child { margin-top: 0; }
 .answer .body p { margin: 6px 0; }
@@ -112,7 +113,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   </header>
 
   <div class="toolbar">
-    <label>教材 <select id="book"><option value="">全部教材</option></select></label>
+    <label>教材 <select id="book" required><option value="" selected disabled>请选择教材</option></select></label>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
     <span class="quota" id="quota"></span>
   </div>
@@ -226,7 +227,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   function addAnswer() {
     const row = element("div", "msg");
     const card = element("div", "answer");
-    card.append(element("div", "body cursor"));
+    card.append(element("div", "body cursor progress", "正在检索教材…"));
     row.append(card);
     thread.append(row);
     row.scrollIntoView({ block: "end" });
@@ -252,7 +253,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   function finish(card, result) {
     const body = card.querySelector(".body");
-    body.classList.remove("cursor");
+    body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
     if (result.message) addNotice(card, result.message, result.status === "failed" ? "error" : "warn");
     if (result.conflicts && result.conflicts.length) {
@@ -311,6 +312,14 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   async function ask() {
     const query = input.value.trim();
     if (!query || busy) return;
+    const bookId = bookSelect.value;
+    if (!bookId) {
+      bookSelect.setCustomValidity("请先选择一本教材");
+      bookSelect.reportValidity();
+      bookSelect.focus();
+      return;
+    }
+    bookSelect.setCustomValidity("");
     busy = true;
     send.disabled = true;
     input.value = "";
@@ -322,6 +331,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     const paint = () => {
       frame = 0;
       const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+      body.classList.remove("progress");
       body.innerHTML = renderMarkdown(text);
       if (nearBottom) card.scrollIntoView({ block: "end" });
     };
@@ -329,13 +339,14 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       const response = await fetch("/v1/ask/stream", {
         method: "POST",
         headers: requestHeaders(),
-        body: JSON.stringify({ query, book_id: bookSelect.value || null }),
+        body: JSON.stringify({ query, book_id: bookId }),
       });
       if (!response.ok) {
-        body.classList.remove("cursor");
+        body.classList.remove("cursor", "progress");
         await explainRefusal(card, response);
         return;
       }
+      body.textContent = "正在组织答案…";
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -358,18 +369,18 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
           } else if (event.name === "error") {
             settled = true;
             if (frame) cancelAnimationFrame(frame);
-            body.classList.remove("cursor");
+            body.classList.remove("cursor", "progress");
             body.innerHTML = text ? renderMarkdown(text) : "";
             addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
           }
         }
       }
       if (!settled) {
-        body.classList.remove("cursor");
+        body.classList.remove("cursor", "progress");
         addNotice(card, "连接中断了，回答没有完整返回。", "error");
       }
     } catch {
-      body.classList.remove("cursor");
+      body.classList.remove("cursor", "progress");
       addNotice(card, "网络异常，请稍后重试。", "error");
     } finally {
       busy = false;
@@ -395,12 +406,14 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   async function loadBooks() {
     try {
-      for (const book of await (await fetch("/v1/books")).json()) {
+      const books = await (await fetch("/v1/books")).json();
+      if (!books.length) bookSelect.options[0].textContent = "暂无可用教材";
+      for (const book of books) {
         const option = element("option", "", book.label);
         option.value = book.book_id;
         bookSelect.append(option);
       }
-    } catch { /* the page still works across all books */ }
+    } catch { bookSelect.options[0].textContent = "教材加载失败"; }
   }
 
   function autosize() {
@@ -422,6 +435,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
   input.addEventListener("input", autosize);
+  bookSelect.addEventListener("change", () => bookSelect.setCustomValidity(""));
   input.addEventListener("keydown", (event) => {
     // isComposing: Enter that confirms a Chinese IME candidate must not send.
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); }

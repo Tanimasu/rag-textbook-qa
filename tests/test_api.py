@@ -179,6 +179,10 @@ class ApiAppTests(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("计算机教材问答", page.text)
+        self.assertIn("请选择教材", page.text)
+        self.assertNotIn("全部教材", page.text)
+        self.assertIn("正在检索教材", page.text)
+        self.assertIn("正在组织答案", page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)

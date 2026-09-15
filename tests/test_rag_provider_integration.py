@@ -3,11 +3,13 @@ import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.llm import LLMGenerationIncompleteError
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
@@ -136,6 +138,31 @@ def chunks():
 
 
 class RagProviderIntegrationTests(unittest.TestCase):
+    def test_engine_does_not_report_a_truncated_stream_as_success(self):
+        class TruncatedLLM:
+            default_model = "fake-llm"
+
+            def stream_answer(self, prompt, **kwargs):
+                yield "未完成的回答"
+                raise LLMGenerationIncompleteError("模型输出达到长度上限，回答不完整")
+
+        engine = object.__new__(RAGEngine)
+        engine.llm = TruncatedLLM()
+        chunks = []
+
+        result, _ = engine._generate(
+            "提示词",
+            temperature=0.7,
+            max_tokens=20,
+            on_answer_chunk=chunks.append,
+            started=time.monotonic(),
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["answer"])
+        self.assertEqual(chunks, ["未完成的回答"])
+        self.assertIn("长度上限", result["error"])
+
     def test_engine_accepts_injected_providers_without_model_runtime(self):
         before = {"sentence_transformers", "torch"}.intersection(sys.modules)
         with (

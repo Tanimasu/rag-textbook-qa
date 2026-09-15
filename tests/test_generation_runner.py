@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, GenerationCase
 from rag_textbook_qa.evaluation.generation_runner import (
+    JsonlLog,
     generation_request,
     openai_generator,
     run_generation_experiment,
@@ -140,12 +141,32 @@ class ExperimentTests(unittest.TestCase):
             again = run(output, arms, generator=generator)
             with self.assertRaises(ValueError):
                 run(output, arms, generator=generator, samples=3)
+            with self.assertRaises(ValueError):
+                run(
+                    output,
+                    arms,
+                    generator=generator,
+                    prompt_builder=lambda question, context: "已修改：" + question + context,
+                )
 
         self.assertEqual((report["planned"], report["generated"], report["judged"]), (4, 4, 4))
         self.assertAlmostEqual(report["arms"]["hot"]["problem_rate"], 0.5)
         self.assertAlmostEqual(report["arms"]["hot"]["problem_claims"], 1.0)
         self.assertEqual(sorted(calls), [0.2, 0.2, 0.7, 0.7])
         self.assertEqual(again["judged"], 4)
+
+    def test_jsonl_resume_separates_a_new_record_from_a_partial_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generations.jsonl"
+            path.write_text('{"case_id":', encoding="utf-8")
+            record = {"case_id": "01", "arm": "hot", "index": 0, "answer": "回答"}
+
+            log = JsonlLog(path)
+            log.append(record)
+            reloaded = JsonlLog(path)
+
+        self.assertEqual(log.records[("01", "hot", 0)], record)
+        self.assertEqual(reloaded.records[("01", "hot", 0)], record)
 
     def test_failed_samples_are_logged_without_messages_and_redone(self):
         calls = []

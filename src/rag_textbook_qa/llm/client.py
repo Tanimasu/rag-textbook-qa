@@ -19,6 +19,18 @@ class LLMConfigurationError(RuntimeError):
     """The LLM client cannot be created from the supplied configuration."""
 
 
+class LLMGenerationIncompleteError(RuntimeError):
+    """The provider ended a completion before producing a complete answer."""
+
+
+def _incomplete_generation_message(finish_reason: Any) -> str:
+    if finish_reason == "length":
+        return "模型输出达到长度上限，回答不完整"
+    if finish_reason:
+        return f"模型响应未正常结束（finish_reason={finish_reason}）"
+    return "模型响应缺少正常结束标记，回答可能不完整"
+
+
 def _validated_base_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     parsed = urlsplit(normalized)
@@ -166,6 +178,17 @@ class LLMClient:
                 choice = response.choices[0]
                 answer = choice.message.content or ""
                 usage = self._usage(response)
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason != "stop":
+                    return {
+                        "success": False,
+                        "error": _incomplete_generation_message(finish_reason),
+                        "answer": answer,
+                        "model": selected_model,
+                        "tokens": usage,
+                        "time": elapsed,
+                        "finish_reason": finish_reason,
+                    }
                 if self.verbose:
                     print(f"成功（{elapsed} 秒，{usage['total']} tokens）")
                 return {
@@ -174,7 +197,7 @@ class LLMClient:
                     "model": selected_model,
                     "tokens": usage,
                     "time": elapsed,
-                    "finish_reason": choice.finish_reason,
+                    "finish_reason": finish_reason,
                 }
             except Exception as exc:  # noqa: BLE001 - normalize third-party SDK errors
                 last_error = exc
@@ -204,13 +227,23 @@ class LLMClient:
                 max_tokens=max_tokens,
                 stream=True,
             )
+            finish_reason = None
             for chunk in stream:
                 choices = getattr(chunk, "choices", None)
                 if not choices:
                     continue
-                content = getattr(choices[0].delta, "content", None)
+                choice = choices[0]
+                chunk_finish_reason = getattr(choice, "finish_reason", None)
+                if chunk_finish_reason is not None:
+                    finish_reason = chunk_finish_reason
+                delta = getattr(choice, "delta", None)
+                content = getattr(delta, "content", None)
                 if content:
                     yield content
+            if finish_reason != "stop":
+                raise LLMGenerationIncompleteError(
+                    _incomplete_generation_message(finish_reason)
+                )
         except Exception as exc:
             if raise_on_error:
                 raise

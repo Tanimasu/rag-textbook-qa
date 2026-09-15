@@ -179,8 +179,11 @@ class JsonlLog:
         self.path = path
         self.lines: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._needs_separator = False
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            raw = path.read_text(encoding="utf-8")
+            self._needs_separator = bool(raw and not raw.endswith("\n"))
+            for line in raw.splitlines():
                 try:
                     self.lines.append(json.loads(line))
                 except json.JSONDecodeError:
@@ -189,6 +192,11 @@ class JsonlLog:
 
     def append(self, record: dict[str, Any]) -> None:
         with self._lock, self.path.open("a", encoding="utf-8") as handle:
+            if self._needs_separator:
+                # Preserve a crash-truncated tail as its own invalid line instead of
+                # gluing the next paid result to it and losing both on the next resume.
+                handle.write("\n")
+                self._needs_separator = False
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self.lines.append(record)
             self.records[_key(record)] = record
@@ -368,6 +376,22 @@ def run_generation_experiment(
 
         prompt_builder = build_prompt
     keys = sample_keys(cases, arms, samples, seed)
+    generated_variants = sorted({arm.variant for arm in arms if arm.temperature is not None})
+    rendered_prompts: dict[tuple[str, str], str] = {}
+    prompt_manifest = []
+    for case in cases:
+        for variant_name in generated_variants:
+            prompt = prompt_builder(case.question, case.variants[variant_name].context)
+            rendered_prompts[(case.case_id, variant_name)] = prompt
+            prompt_manifest.append(
+                {"case_id": case.case_id, "variant": variant_name, "prompt": prompt}
+            )
+    prompt_bytes = json.dumps(
+        prompt_manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     output_dir.mkdir(parents=True, exist_ok=True)
     judge_prompts = (EXTRACTION_PROMPT + VERIFICATION_PROMPT).encode("utf-8")
     settings = {
@@ -375,6 +399,7 @@ def run_generation_experiment(
         "arms": [asdict(arm) for arm in arms],
         "samples": samples,
         "seed": seed,
+        "generation_prompts_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
         "judge_prompts_sha256": hashlib.sha256(judge_prompts).hexdigest(),
         "judge_version": JUDGE_VERSION,
     }
@@ -392,7 +417,7 @@ def run_generation_experiment(
         if arm.temperature is None:
             record.update(answer=variant.answers[key[2]], finish_reason="stored")
         else:
-            prompt = prompt_builder(case.question, variant.context)
+            prompt = rendered_prompts[(case.case_id, arm.variant)]
             record.update(generator(prompt, arm.temperature))
         generations.append(record)
 

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from rag_textbook_qa.llm import (
     LLMClient,
     LLMConfigurationError,
+    LLMGenerationIncompleteError,
     LLMSettings,
     create_llm_client,
 )
@@ -124,6 +125,9 @@ class LLMClientTests(unittest.TestCase):
             SimpleNamespace(
                 choices=[SimpleNamespace(delta=SimpleNamespace(content="B"))]
             ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")]
+            ),
         ]
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -137,6 +141,42 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(result, ["A", "B"])
         self.assertNotIn("key", output.getvalue())
+
+    def test_generate_answer_marks_a_length_limited_answer_as_incomplete(self):
+        sdk = FakeSDKClient([completion_response("未完成")])
+        sdk.completions.outcomes[0].choices[0].finish_reason = "length"
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=sdk,
+            verbose=False,
+        )
+
+        result = client.generate_answer("问题", retry=0)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["finish_reason"], "length")
+        self.assertEqual(result["answer"], "未完成")
+        self.assertIn("长度上限", result["error"])
+
+    def test_stream_rejects_a_length_limited_terminal_chunk(self):
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="未完成"))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="length")]
+            ),
+        ]
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=FakeSDKClient([chunks]),
+            verbose=False,
+        )
+
+        with self.assertRaisesRegex(LLMGenerationIncompleteError, "长度上限"):
+            list(client.stream_answer("问题", raise_on_error=True))
 
     def test_stream_can_raise_errors_for_engine_handling(self):
         client = LLMClient(
