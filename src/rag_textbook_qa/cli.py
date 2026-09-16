@@ -228,6 +228,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="覆盖 artifacts/product/feedback.sqlite3",
     )
     feedback_summary.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    feedback_candidates = feedback_commands.add_parser(
+        "candidates",
+        help="把负面反馈整理成人工审核候选，不修改正式评测集",
+    )
+    feedback_candidates.add_argument(
+        "--database",
+        type=Path,
+        help="覆盖 artifacts/product/feedback.sqlite3",
+    )
+    feedback_candidates.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="候选 JSON 路径（建议放在已忽略的 artifacts/product/）",
+    )
+    feedback_candidates.add_argument("--force", action="store_true", help="允许覆盖已有候选文件")
     feedback_export = feedback_commands.add_parser("export", help="将本地反馈导出为 JSONL")
     feedback_export.add_argument(
         "--database",
@@ -862,6 +878,10 @@ def _run_feedback(args: argparse.Namespace, settings: Settings) -> int:
             print(json.dumps(summary, ensure_ascii=False, indent=2))
         else:
             _print_feedback_summary(summary)
+        return 0
+    if args.feedback_command == "candidates":
+        count = store.export_candidates(args.output, overwrite=args.force)
+        print(f"已生成 {count} 条待人工审核候选: {args.output.expanduser().resolve()}")
         return 0
     if args.feedback_command == "export":
         count = store.export_jsonl(args.output, overwrite=args.force)

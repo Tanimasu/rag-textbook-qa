@@ -7,6 +7,7 @@ from rag_textbook_qa.api.feedback import (
     AnswerRecordExpiredError,
     AnswerRegistry,
     FeedbackStore,
+    build_feedback_candidates,
     summarize_feedback,
 )
 
@@ -107,6 +108,84 @@ class FeedbackStoreTests(unittest.TestCase):
         )
         rendered = json.dumps(summary, ensure_ascii=False)
         self.assertNotIn("不应出现在摘要", rendered)
+
+    def test_negative_feedback_becomes_unlabelled_review_candidates(self):
+        records = [
+            {
+                "answer_id": "a" * 32,
+                "query": " 为什么会发生死锁？ ",
+                "book_id": "os",
+                "rating": "needs_improvement",
+                "reason": "irrelevant_sources",
+                "answer": "不应进入候选文件的回答",
+                "comment": "不应进入候选文件的评论",
+            },
+            {
+                "answer_id": "b" * 32,
+                "query": "为什么会发生死锁？",
+                "book_id": "os",
+                "rating": "needs_improvement",
+                "reason": "unsupported_answer",
+            },
+            {
+                "answer_id": "c" * 32,
+                "query": "什么是进程？",
+                "book_id": "os",
+                "rating": "helpful",
+                "reason": None,
+            },
+            {
+                "answer_id": "d" * 32,
+                "query": "比较两本教材",
+                "book_id": None,
+                "rating": "needs_improvement",
+                "reason": "other",
+            },
+        ]
+
+        candidates = build_feedback_candidates(records)
+
+        self.assertEqual(len(candidates), 2)
+        candidate = next(item for item in candidates if item["book_name"] == "os")
+        self.assertRegex(candidate["candidate_id"], r"^feedback-[0-9a-f]{12}$")
+        self.assertEqual(candidate["question"], "为什么会发生死锁？")
+        self.assertEqual(candidate["occurrences"], 2)
+        self.assertEqual(
+            candidate["feedback_reasons"],
+            {"irrelevant_sources": 1, "unsupported_answer": 1},
+        )
+        self.assertEqual(candidate["suggested_checks"], ["grounding", "retrieval"])
+        self.assertEqual(candidate["relevant_sections"], [])
+        self.assertEqual(candidate["ground_truth"], "")
+        rendered = json.dumps(candidate, ensure_ascii=False)
+        self.assertNotIn("不应进入候选文件", rendered)
+        all_books = next(item for item in candidates if item["book_name"] == "all_books")
+        self.assertEqual(all_books["suggested_checks"], ["manual_review"])
+
+    def test_candidate_export_refuses_to_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = FeedbackStore(root / "feedback.sqlite3")
+            registry = AnswerRegistry()
+            answer_id = registry.remember(
+                query="为什么会发生死锁？",
+                book_id="os",
+                result=result(),
+            )
+            store.save(
+                registry.resolve(answer_id),
+                rating="needs_improvement",
+                reason="not_answered",
+                comment="",
+            )
+            output = root / "candidates.json"
+
+            self.assertEqual(store.export_candidates(output), 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertEqual(payload["candidates"][0]["review_status"], "pending")
+            with self.assertRaises(FileExistsError):
+                store.export_candidates(output)
 
 
 if __name__ == "__main__":

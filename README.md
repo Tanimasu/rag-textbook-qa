@@ -345,6 +345,9 @@ IP、访问口令、API Key、Worker token 或模型内部提示词。该目录�
 # 先看不包含问题和答案正文的聚合摘要
 rag-qa feedback summary
 
+# 把负面反馈整理为待人工标注的候选，不会修改正式评测集
+rag-qa feedback candidates --output artifacts/product/feedback-candidates.json
+
 # 需要逐条分析时再导出明细
 rag-qa feedback export --output artifacts/product/feedback-export.jsonl
 # 明确需要覆盖同名文件时
@@ -352,6 +355,9 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 ```
 
 反馈用于后续人工归类和离线评测，不会在在线回答中自动运行 RAGAS，也不会自动改变检索参数。
+候选文件中的 `relevant_sections`、`ground_truth` 和审核备注默认留空；只有人工对照教材完成标注后，
+才应另行迁移到正式评测集，避免随手差评污染实验数据。“速度太慢”会标记为性能检查候选，
+不应当迁移成回答质量题。
 
 对外开放前要配好费用控制，全部通过环境变量：
 

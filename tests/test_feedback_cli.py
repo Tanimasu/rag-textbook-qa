@@ -116,6 +116,51 @@ class FeedbackCliTests(unittest.TestCase):
             self.assertIn("好评率: 100.0%", human.getvalue())
             self.assertIn("总耗时: 平均 2.000 秒", human.getvalue())
 
+    def test_candidates_command_only_exports_negative_feedback_for_review(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(root)
+            store = FeedbackStore(root / "artifacts" / "product" / "feedback.sqlite3")
+            registry = AnswerRegistry()
+            answer_id = registry.remember(
+                query="为什么会发生死锁？",
+                book_id="os",
+                result={
+                    "status": "answered",
+                    "answer": "教材回答",
+                    "sources": [],
+                    "conflicts": [],
+                    "timing": {"total_seconds": 2.0},
+                },
+            )
+            store.save(
+                registry.resolve(answer_id),
+                rating="needs_improvement",
+                reason="not_answered",
+                comment="请重新解释",
+            )
+            output = root / "artifacts" / "product" / "candidates.json"
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        str(root),
+                        "feedback",
+                        "candidates",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertEqual(payload["candidates"][0]["question"], "为什么会发生死锁？")
+            self.assertEqual(payload["candidates"][0]["ground_truth"], "")
+            self.assertIn("待人工审核候选", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

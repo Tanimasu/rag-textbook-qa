@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
+import re
 import secrets
 import sqlite3
 import threading
@@ -26,6 +28,14 @@ FEEDBACK_REASON_ORDER = (
     "other",
 )
 FEEDBACK_REASONS = frozenset(FEEDBACK_REASON_ORDER)
+_REASON_CHECKS = {
+    "not_answered": "generation",
+    "irrelevant_sources": "retrieval",
+    "unsupported_answer": "grounding",
+    "incomplete": "generation",
+    "too_slow": "performance",
+    "other": "manual_review",
+}
 
 
 class AnswerRecordExpiredError(LookupError):
@@ -217,6 +227,24 @@ class FeedbackStore:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return len(records)
 
+    def export_candidates(self, output: str | Path, *, overwrite: bool = False) -> int:
+        destination = Path(output).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        mode = "w" if overwrite else "x"
+        candidates = build_feedback_candidates(self.records())
+        payload = {
+            "schema_version": 1,
+            "notice": (
+                "候选项不是正式评测数据；必须人工复核后，才能进入检索/生成评测或性能待办。"
+            ),
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        }
+        with destination.open(mode, encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        return len(candidates)
+
 
 def summarize_feedback(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Build aggregate product signals without exposing question or answer text."""
@@ -266,6 +294,60 @@ def summarize_feedback(records: list[Mapping[str, Any]]) -> dict[str, Any]:
             "p95": _rounded(_percentile(durations, 0.95)) if durations else None,
         },
     }
+
+
+def build_feedback_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Group negative feedback into human-review candidates, never formal eval cases."""
+
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        if record.get("rating") != "needs_improvement":
+            continue
+        question = str(record.get("query") or "").strip()
+        book_name = str(record.get("book_id") or "all_books").strip()
+        if not question:
+            continue
+        normalized_question = re.sub(r"\s+", " ", question).casefold()
+        key = (book_name, normalized_question)
+        candidate = grouped.get(key)
+        if candidate is None:
+            digest = hashlib.sha256(f"{book_name}\0{normalized_question}".encode()).hexdigest()
+            candidate = {
+                "candidate_id": f"feedback-{digest[:12]}",
+                "question": question,
+                "book_name": book_name,
+                "occurrences": 0,
+                "feedback_reasons": {},
+                "suggested_checks": [],
+                "answer_ids": [],
+                "review_status": "pending",
+                "relevant_sections": [],
+                "ground_truth": "",
+                "review_notes": "",
+            }
+            grouped[key] = candidate
+        candidate["occurrences"] += 1
+        reason = record.get("reason")
+        if isinstance(reason, str) and reason in FEEDBACK_REASONS:
+            reasons = candidate["feedback_reasons"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+            check = _REASON_CHECKS[reason]
+            if check not in candidate["suggested_checks"]:
+                candidate["suggested_checks"].append(check)
+        answer_id = str(record.get("answer_id") or "").strip()
+        if answer_id and answer_id not in candidate["answer_ids"]:
+            candidate["answer_ids"].append(answer_id)
+
+    candidates = list(grouped.values())
+    for candidate in candidates:
+        candidate["feedback_reasons"] = {
+            reason: candidate["feedback_reasons"][reason]
+            for reason in FEEDBACK_REASON_ORDER
+            if reason in candidate["feedback_reasons"]
+        }
+        candidate["suggested_checks"].sort()
+    candidates.sort(key=lambda item: (-item["occurrences"], item["book_name"], item["question"]))
+    return candidates
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
