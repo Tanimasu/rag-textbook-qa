@@ -249,6 +249,9 @@ rag-qa evaluate                                      # RAGAS 验收，一轮一�
 rag-qa evaluate-retrieval --split holdout            # 仅在确认最终结论时使用
 ```
 
+面向产品回归的 15 题冻结子集和分阶段验收步骤见
+[产品验收基线](docs/product-acceptance.md)。它先跑零费用检索检查，再在明确确认 API 成本后运行回答质量评估。
+
 **检索层**读取 `data/evaluation/retrieval_questions.json`（65 题，dev 35 / holdout 30），
 比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR、nDCG@K、
 证据保留率与检索耗时。`--split` 默认 dev，调参过程读不到留出集。评测关闭 HyDE、不调用 LLM；
@@ -415,6 +418,7 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 |------|------|------|
 | `data/evaluation/test_questions.json` | 50 条 | RAGAS 使用，覆盖五本教材 |
 | `data/evaluation/retrieval_questions.json` | 65 条 | 检索评测使用，dev 35 / holdout 30 |
+| `data/evaluation/product_acceptance_v1.json` | 15 条 | 产品回归使用，每本教材 3 条，同时支持检索与回答验收 |
 | `retrieval_holdout_candidates_v{1..4}.json` | 15 条 | 已并入主集的新增 holdout 题，保留审计记录 |
 
 题集来源、holdout 中 15 题的调参污染范围、以及 2026-09-14 那次标注修正（属于标注修正，

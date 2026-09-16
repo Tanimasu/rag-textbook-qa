@@ -18,6 +18,7 @@ artifacts/chunks/
 artifacts/vector_db/
 artifacts/evaluations/retrieval/
 artifacts/evaluations/ragas/
+artifacts/evaluations/product-acceptance-*/
 artifacts/product/
 # 按轮次命名的 RAGAS 运行产物；结论记入 README，原始数据不入库
 artifacts/evaluations/ragas-*/
