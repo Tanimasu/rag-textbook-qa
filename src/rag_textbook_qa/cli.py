@@ -221,6 +221,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     feedback = commands.add_parser("feedback", help="管理用户主动提交的问答反馈")
     feedback_commands = feedback.add_subparsers(dest="feedback_command", required=True)
+    feedback_summary = feedback_commands.add_parser("summary", help="汇总反馈和响应耗时")
+    feedback_summary.add_argument(
+        "--database",
+        type=Path,
+        help="覆盖 artifacts/product/feedback.sqlite3",
+    )
+    feedback_summary.add_argument("--json", action="store_true", help="输出结构化 JSON")
     feedback_export = feedback_commands.add_parser("export", help="将本地反馈导出为 JSONL")
     feedback_export.add_argument(
         "--database",
@@ -843,16 +850,70 @@ def _run_serve(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def _run_feedback(args: argparse.Namespace, settings: Settings) -> int:
-    if args.feedback_command != "export":
-        raise ValueError(f"未知 feedback 命令: {args.feedback_command}")
-    from rag_textbook_qa.api.feedback import FeedbackStore
+    from rag_textbook_qa.api.feedback import FeedbackStore, summarize_feedback
 
     database = args.database or settings.paths.artifacts / "product" / "feedback.sqlite3"
     if not database.is_file():
         raise FileNotFoundError(f"还没有反馈数据库: {database}")
-    count = FeedbackStore(database).export_jsonl(args.output, overwrite=args.force)
-    print(f"已导出 {count} 条反馈: {args.output.expanduser().resolve()}")
-    return 0
+    store = FeedbackStore(database)
+    if args.feedback_command == "summary":
+        summary = summarize_feedback(store.records())
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            _print_feedback_summary(summary)
+        return 0
+    if args.feedback_command == "export":
+        count = store.export_jsonl(args.output, overwrite=args.force)
+        print(f"已导出 {count} 条反馈: {args.output.expanduser().resolve()}")
+        return 0
+    raise ValueError(f"未知 feedback 命令: {args.feedback_command}")
+
+
+def _print_feedback_summary(summary: dict[str, Any]) -> None:
+    from rag_textbook_qa.catalog import BOOK_LABELS
+
+    total = summary["total"]
+    ratings = summary["ratings"]
+    rate = summary["helpful_rate"]
+    print(f"反馈总数: {total}")
+    print(f"有帮助: {ratings['helpful']}")
+    print(f"需要改进: {ratings['needs_improvement']}")
+    print(f"好评率: {rate * 100:.1f}%" if rate is not None else "好评率: 暂无数据")
+
+    reason_labels = {
+        "not_answered": "没有回答问题",
+        "irrelevant_sources": "检索资料不相关",
+        "unsupported_answer": "答案与教材不一致",
+        "incomplete": "回答不完整",
+        "too_slow": "速度太慢",
+        "other": "其他",
+    }
+    print("问题原因:")
+    if summary["reasons"]:
+        for reason, count in summary["reasons"].items():
+            print(f"  {reason_labels[reason]}: {count}")
+    else:
+        print("  暂无负面反馈")
+
+    print("需要改进的教材:")
+    if summary["negative_by_book"]:
+        for book_id, count in summary["negative_by_book"].items():
+            label = "全部教材" if book_id == "all_books" else BOOK_LABELS.get(book_id, book_id)
+            print(f"  {label}: {count}")
+    else:
+        print("  暂无负面反馈")
+
+    latency = summary["latency_seconds"]
+    if latency["samples"]:
+        print(
+            "总耗时: "
+            f"平均 {latency['average']:.3f} 秒 · "
+            f"P50 {latency['p50']:.3f} 秒 · "
+            f"P95 {latency['p95']:.3f} 秒"
+        )
+    else:
+        print("总耗时: 暂无数据")
 
 
 def _run_worker(args: argparse.Namespace, settings: Settings) -> int:

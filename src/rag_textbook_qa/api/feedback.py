@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import secrets
 import sqlite3
 import threading
@@ -16,16 +17,15 @@ from pathlib import Path
 from typing import Any
 
 FEEDBACK_RATINGS = frozenset({"helpful", "needs_improvement"})
-FEEDBACK_REASONS = frozenset(
-    {
-        "not_answered",
-        "irrelevant_sources",
-        "unsupported_answer",
-        "incomplete",
-        "too_slow",
-        "other",
-    }
+FEEDBACK_REASON_ORDER = (
+    "not_answered",
+    "irrelevant_sources",
+    "unsupported_answer",
+    "incomplete",
+    "too_slow",
+    "other",
 )
+FEEDBACK_REASONS = frozenset(FEEDBACK_REASON_ORDER)
 
 
 class AnswerRecordExpiredError(LookupError):
@@ -216,3 +216,67 @@ class FeedbackStore:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return len(records)
+
+
+def summarize_feedback(records: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Build aggregate product signals without exposing question or answer text."""
+
+    total = len(records)
+    helpful = sum(record.get("rating") == "helpful" for record in records)
+    needs_improvement = sum(
+        record.get("rating") == "needs_improvement" for record in records
+    )
+    reasons = {
+        reason: sum(
+            record.get("rating") == "needs_improvement" and record.get("reason") == reason
+            for record in records
+        )
+        for reason in FEEDBACK_REASON_ORDER
+    }
+    negative_by_book: dict[str, int] = {}
+    for record in records:
+        if record.get("rating") != "needs_improvement":
+            continue
+        book_id = str(record.get("book_id") or "all_books")
+        negative_by_book[book_id] = negative_by_book.get(book_id, 0) + 1
+
+    durations = []
+    for record in records:
+        timing = record.get("timing")
+        value = timing.get("total_seconds") if isinstance(timing, Mapping) else None
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            duration = float(value)
+            if math.isfinite(duration) and duration >= 0:
+                durations.append(duration)
+    durations.sort()
+
+    return {
+        "total": total,
+        "ratings": {
+            "helpful": helpful,
+            "needs_improvement": needs_improvement,
+        },
+        "helpful_rate": round(helpful / total, 4) if total else None,
+        "reasons": {reason: count for reason, count in reasons.items() if count},
+        "negative_by_book": dict(sorted(negative_by_book.items())),
+        "latency_seconds": {
+            "samples": len(durations),
+            "average": _rounded(sum(durations) / len(durations)) if durations else None,
+            "p50": _rounded(_percentile(durations, 0.50)) if durations else None,
+            "p95": _rounded(_percentile(durations, 0.95)) if durations else None,
+        },
+    }
+
+
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    position = (len(sorted_values) - 1) * fraction
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return sorted_values[lower]
+    weight = position - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+
+
+def _rounded(value: float) -> float:
+    return round(value, 3)

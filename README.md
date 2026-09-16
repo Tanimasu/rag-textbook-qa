@@ -342,6 +342,10 @@ IP、访问口令、API Key、Worker token 或模型内部提示词。该目录�
 需要检查或分析反馈时，可导出为 JSONL；默认不会覆盖已有文件：
 
 ```bash
+# 先看不包含问题和答案正文的聚合摘要
+rag-qa feedback summary
+
+# 需要逐条分析时再导出明细
 rag-qa feedback export --output artifacts/product/feedback-export.jsonl
 # 明确需要覆盖同名文件时
 rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force

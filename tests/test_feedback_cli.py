@@ -75,6 +75,47 @@ class FeedbackCliTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 1)
             self.assertIn("还没有反馈数据库", stderr.getvalue())
 
+    def test_summary_prints_aggregate_json_without_question_text(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(root)
+            store = FeedbackStore(root / "artifacts" / "product" / "feedback.sqlite3")
+            registry = AnswerRegistry()
+            answer_id = registry.remember(
+                query="不会出现在摘要中的问题",
+                book_id="os",
+                result={
+                    "status": "answered",
+                    "answer": "教材回答",
+                    "sources": [],
+                    "conflicts": [],
+                    "timing": {"total_seconds": 2.0},
+                },
+            )
+            store.save(registry.resolve(answer_id), rating="helpful", reason=None, comment="")
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main(
+                    ["--workspace", str(root), "feedback", "summary", "--json"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["total"], 1)
+            self.assertEqual(summary["helpful_rate"], 1.0)
+            self.assertNotIn("不会出现在摘要", stdout.getvalue())
+
+            human = io.StringIO()
+            with contextlib.redirect_stdout(human):
+                self.assertEqual(
+                    main(["--workspace", str(root), "feedback", "summary"]),
+                    0,
+                )
+            self.assertIn("反馈总数: 1", human.getvalue())
+            self.assertIn("好评率: 100.0%", human.getvalue())
+            self.assertIn("总耗时: 平均 2.000 秒", human.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

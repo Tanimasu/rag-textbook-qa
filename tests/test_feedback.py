@@ -7,6 +7,7 @@ from rag_textbook_qa.api.feedback import (
     AnswerRecordExpiredError,
     AnswerRegistry,
     FeedbackStore,
+    summarize_feedback,
 )
 
 
@@ -66,6 +67,46 @@ class FeedbackStoreTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 store.export_jsonl(output)
             self.assertEqual(store.export_jsonl(output, overwrite=True), 1)
+
+    def test_summary_aggregates_feedback_without_exposing_text(self):
+        records = [
+            {
+                "query": "不应出现在摘要中的问题",
+                "answer": "不应出现在摘要中的答案",
+                "book_id": "os",
+                "rating": "helpful",
+                "reason": None,
+                "timing": {"total_seconds": 1.0},
+            },
+            {
+                "query": "另一个问题",
+                "answer": "另一个答案",
+                "book_id": "os",
+                "rating": "needs_improvement",
+                "reason": "irrelevant_sources",
+                "timing": {"total_seconds": 3.0},
+            },
+            {
+                "book_id": "database",
+                "rating": "needs_improvement",
+                "reason": "too_slow",
+                "timing": {"total_seconds": float("nan")},
+            },
+        ]
+
+        summary = summarize_feedback(records)
+
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["ratings"], {"helpful": 1, "needs_improvement": 2})
+        self.assertEqual(summary["helpful_rate"], 0.3333)
+        self.assertEqual(summary["reasons"], {"irrelevant_sources": 1, "too_slow": 1})
+        self.assertEqual(summary["negative_by_book"], {"database": 1, "os": 1})
+        self.assertEqual(
+            summary["latency_seconds"],
+            {"samples": 2, "average": 2.0, "p50": 2.0, "p95": 2.9},
+        )
+        rendered = json.dumps(summary, ensure_ascii=False)
+        self.assertNotIn("不应出现在摘要", rendered)
 
 
 if __name__ == "__main__":
