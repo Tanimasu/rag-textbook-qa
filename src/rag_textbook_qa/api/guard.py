@@ -17,8 +17,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-# Bounds memory when many distinct addresses pass through once each.
-_MAX_TRACKED_CLIENTS = 10_000
+# Bounds memory when many distinct addresses and request scopes pass through once each.
+_MAX_RATE_BUCKETS = 10_000
 
 
 class GuardError(Exception):
@@ -56,6 +56,7 @@ def _positive_number(environ: Mapping[str, str], name: str, default: int) -> int
 class GuardSettings:
     access_code: str | None = None
     requests_per_window: int = 10
+    feedback_requests_per_window: int = 30
     window_seconds: float = 600
     daily_generations: int = 200
     queue_timeout_seconds: float = 90
@@ -77,6 +78,11 @@ class GuardSettings:
         return cls(
             access_code=code,
             requests_per_window=_positive_number(environ, "RAG_QA_RATE_LIMIT", 10),
+            feedback_requests_per_window=_positive_number(
+                environ,
+                "RAG_QA_FEEDBACK_RATE_LIMIT",
+                30,
+            ),
             window_seconds=_positive_number(environ, "RAG_QA_RATE_WINDOW_SECONDS", 600),
             daily_generations=_positive_number(environ, "RAG_QA_DAILY_GENERATIONS", 200),
             queue_timeout_seconds=_positive_number(environ, "RAG_QA_QUEUE_TIMEOUT", 90),
@@ -101,7 +107,7 @@ class AccessGuard:
         self._clock = clock
         self._today = today
         self._lock = threading.Lock()
-        self._hits: dict[str, deque[float]] = {}
+        self._hits: dict[tuple[str, str], deque[float]] = {}
         self._day = today()
         self._generations = 0
         # One answer at a time: on a two-core CPU host, concurrent reranking only
@@ -121,21 +127,29 @@ class AccessGuard:
         ):
             raise AccessDenied("访问口令不正确")
 
-    def check_rate(self, client: str) -> None:
+    def check_rate(self, client: str, *, scope: str = "question") -> None:
+        limits = {
+            "question": self.settings.requests_per_window,
+            "feedback": self.settings.feedback_requests_per_window,
+        }
+        if scope not in limits:
+            raise ValueError(f"未知限流范围: {scope}")
         now = self._clock()
         horizon = now - self.settings.window_seconds
         with self._lock:
-            hits = self._hits.setdefault(client, deque())
+            hits = self._hits.setdefault((scope, client), deque())
             while hits and hits[0] <= horizon:
                 hits.popleft()
-            if len(hits) >= self.settings.requests_per_window:
+            if len(hits) >= limits[scope]:
                 wait = hits[0] + self.settings.window_seconds - now
                 raise RateLimited(max(1, int(wait) + 1))
             hits.append(now)
-            if len(self._hits) > _MAX_TRACKED_CLIENTS:
+            if len(self._hits) > _MAX_RATE_BUCKETS:
                 idle = [key for key, times in self._hits.items() if times[-1] <= horizon]
                 for key in idle:
                     del self._hits[key]
+                while len(self._hits) > _MAX_RATE_BUCKETS:
+                    del self._hits[next(iter(self._hits))]
 
     def reserve_generation(self) -> bool:
         """Claim one generation from today's budget; False means answer from retrieval."""

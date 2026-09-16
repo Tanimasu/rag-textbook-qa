@@ -297,7 +297,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       });
       if (!response.ok) {
         for (const button of buttons) button.disabled = false;
-        await explainRefusal(card, response);
+        await explainRefusal(card, response, "反馈提交");
         return;
       }
       card.querySelector(".feedback-panel")?.remove();
@@ -432,16 +432,16 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     return headers;
   }
 
-  async function explainRefusal(card, response) {
+  async function explainRefusal(card, response, activity = "提问") {
     let detail = "";
     try { detail = (await response.json()).detail; } catch { /* body was not JSON */ }
     if (response.status === 401) {
       codeField.hidden = false;
       codeInput.focus();
-      addNotice(card, "需要正确的访问口令，请在上方填写后重新提问。", "error");
+      addNotice(card, "需要正确的访问口令，请在上方填写后重试。", "error");
     } else if (response.status === 429) {
       const wait = response.headers.get("Retry-After");
-      addNotice(card, wait ? `提问太频繁了，请 ${wait} 秒后再试。` : "提问太频繁了，请稍后再试。", "warn");
+      addNotice(card, wait ? `${activity}太频繁了，请 ${wait} 秒后再试。` : `${activity}太频繁了，请稍后再试。`, "warn");
     } else if (typeof detail === "string" && detail) {
       addNotice(card, detail, "error");
     } else {

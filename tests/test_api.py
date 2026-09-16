@@ -101,6 +101,35 @@ class GuardTests(unittest.TestCase):
         now[0] += 61
         guard.check_rate("a")
 
+    def test_feedback_has_an_independent_rate_limit(self):
+        guard = AccessGuard(
+            GuardSettings(
+                requests_per_window=1,
+                feedback_requests_per_window=2,
+                window_seconds=60,
+            )
+        )
+        guard.check_rate("a")
+        guard.check_rate("a", scope="feedback")
+        guard.check_rate("a", scope="feedback")
+        with self.assertRaises(RateLimited):
+            guard.check_rate("a")
+        with self.assertRaises(RateLimited):
+            guard.check_rate("a", scope="feedback")
+        with self.assertRaises(ValueError):
+            guard.check_rate("a", scope="unknown")
+
+    def test_rate_limit_state_stays_bounded_for_many_clients(self):
+        guard = AccessGuard(GuardSettings(requests_per_window=2, window_seconds=60))
+
+        with patch("rag_textbook_qa.api.guard._MAX_RATE_BUCKETS", 2):
+            guard.check_rate("first")
+            guard.check_rate("second")
+            guard.check_rate("third")
+
+        self.assertEqual(len(guard._hits), 2)
+        self.assertNotIn(("question", "first"), guard._hits)
+
     def test_daily_budget_degrades_then_resets_on_a_new_day(self):
         day = [date(2026, 9, 15)]
         guard = AccessGuard(GuardSettings(daily_generations=2), today=lambda: day[0])
@@ -138,10 +167,19 @@ class GuardTests(unittest.TestCase):
             self.assertNotIn(code.strip(), str(raised.exception))
         with self.assertRaises(ValueError):
             GuardSettings.from_env({"RAG_QA_DAILY_GENERATIONS": "0"})
+        with self.assertRaises(ValueError):
+            GuardSettings.from_env({"RAG_QA_FEEDBACK_RATE_LIMIT": "0"})
 
-        settings = GuardSettings.from_env({"RAG_QA_ACCESS_CODE": "", "RAG_QA_TRUST_PROXY": "true"})
+        settings = GuardSettings.from_env(
+            {
+                "RAG_QA_ACCESS_CODE": "",
+                "RAG_QA_TRUST_PROXY": "true",
+                "RAG_QA_FEEDBACK_RATE_LIMIT": "7",
+            }
+        )
         self.assertIsNone(settings.access_code)
         self.assertTrue(settings.trust_proxy)
+        self.assertEqual(settings.feedback_requests_per_window, 7)
 
 
 class PublicResultTests(unittest.TestCase):
@@ -199,6 +237,7 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("👍 有帮助", page.text)
         self.assertIn("👎 需要改进", page.text)
         self.assertIn("/v1/feedback", page.text)
+        self.assertIn('explainRefusal(card, response, "反馈提交")', page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)
@@ -327,6 +366,30 @@ class ApiAppTests(unittest.TestCase):
 
         self.assertEqual(limited.status_code, 429)
         self.assertGreaterEqual(int(limited.headers["Retry-After"]), 1)
+
+    def test_feedback_does_not_consume_the_question_rate_limit(self):
+        client = self.client(requests_per_window=2, feedback_requests_per_window=1)
+        answer_id = client.post(
+            "/v1/ask",
+            json={"query": "问题1", "book_id": "os"},
+        ).json()["answer_id"]
+
+        first_feedback = client.post(
+            "/v1/feedback",
+            json={"answer_id": answer_id, "rating": "helpful"},
+        )
+        limited_feedback = client.post(
+            "/v1/feedback",
+            json={"answer_id": answer_id, "rating": "helpful"},
+        )
+        second_question = client.post(
+            "/v1/ask",
+            json={"query": "问题2", "book_id": "os"},
+        )
+
+        self.assertEqual(first_feedback.status_code, 200)
+        self.assertEqual(limited_feedback.status_code, 429)
+        self.assertEqual(second_question.status_code, 200)
 
     def test_exhausted_budget_answers_from_retrieval_alone(self):
         client = self.client(daily_generations=1)

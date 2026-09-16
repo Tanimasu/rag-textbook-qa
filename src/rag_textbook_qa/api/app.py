@@ -198,11 +198,11 @@ def create_api_app(
         ),
     )
 
-    def authorize(request: Request) -> None:
+    def authorize(request: Request, *, rate_scope: str = "question") -> None:
         client = _client_address(request, trust_proxy=guard.settings.trust_proxy)
         try:
             # Rate first, so guessing the access code is throttled like any other call.
-            guard.check_rate(client)
+            guard.check_rate(client, scope=rate_scope)
             guard.check_access(request.headers.get("X-Access-Code"))
         except RateLimited as exc:
             raise HTTPException(
@@ -301,7 +301,7 @@ def create_api_app(
 
     @app.post("/v1/feedback", summary="提交对某次回答的反馈")
     def submit_feedback(payload: FeedbackRequest, request: Request) -> dict[str, str]:
-        authorize(request)
+        authorize(request, rate_scope="feedback")
         comment = payload.comment.strip()
         if payload.rating == "helpful" and payload.reason is not None:
             raise HTTPException(status_code=422, detail="正向反馈不需要问题分类")

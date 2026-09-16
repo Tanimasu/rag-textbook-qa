@@ -364,7 +364,8 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `RAG_QA_ACCESS_CODE` | 不设 | 访问口令（仅 ASCII），放在请求头 `X-Access-Code` |
-| `RAG_QA_RATE_LIMIT` / `RAG_QA_RATE_WINDOW_SECONDS` | 10 / 600 | 每个 IP 的滑动窗口限流 |
+| `RAG_QA_RATE_LIMIT` / `RAG_QA_RATE_WINDOW_SECONDS` | 10 / 600 | 每个 IP 的提问滑动窗口限流 |
+| `RAG_QA_FEEDBACK_RATE_LIMIT` | 30 | 同一窗口内单独计算的反馈提交限流，不占用提问次数 |
 | `RAG_QA_DAILY_GENERATIONS` | 200 | 每日生成上限，用完后只返回检索到的原文、不调用大模型 |
 | `RAG_QA_TRUST_PROXY` | false | 前面恰有一层可信代理时才开启 |
 
