@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.api.feedback import (
     AnswerRecordExpiredError,
@@ -40,6 +41,17 @@ class AnswerRegistryTests(unittest.TestCase):
 
 
 class FeedbackStoreTests(unittest.TestCase):
+    def test_every_short_lived_database_connection_is_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = FeedbackStore(Path(directory) / "feedback.sqlite3")
+            connection = MagicMock()
+            connection.execute.return_value.fetchall.return_value = []
+
+            with patch.object(store, "_connect", return_value=connection):
+                self.assertEqual(store.records(), [])
+
+            connection.close.assert_called_once_with()
+
     def test_feedback_is_upserted_and_exported_as_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

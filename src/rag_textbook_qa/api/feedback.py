@@ -13,6 +13,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,7 +136,7 @@ class FeedbackStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 """
@@ -185,7 +186,7 @@ class FeedbackStore:
             reason,
             comment,
         )
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO answer_feedback (
@@ -205,7 +206,7 @@ class FeedbackStore:
     def records(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM answer_feedback ORDER BY answered_at_utc, answer_id"
             ).fetchall()
