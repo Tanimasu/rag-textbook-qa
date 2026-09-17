@@ -236,6 +236,25 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     card.append(element("div", "notice " + kind, message));
   }
 
+  function addRetry(card, query, bookId) {
+    if (card.querySelector("[data-retry]")) return;
+    let actions = card.querySelector(".actions");
+    if (!actions) {
+      actions = element("div", "actions");
+      card.append(actions);
+    }
+    const retry = element("button", "action", "重试本题");
+    retry.type = "button";
+    retry.dataset.retry = "true";
+    retry.addEventListener("click", () => {
+      input.value = query;
+      bookSelect.value = bookId;
+      autosize();
+      ask();
+    });
+    actions.append(retry);
+  }
+
   function addUser(text) {
     empty.hidden = true;
     const row = element("div", "msg user");
@@ -503,6 +522,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       if (!response.ok) {
         body.classList.remove("cursor", "progress");
         await explainRefusal(card, response);
+        addRetry(card, query, bookId);
         return;
       }
       body.textContent = "正在组织答案…";
@@ -525,6 +545,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
             settled = true;
             cancelPaint();
             finish(card, event.data);
+            if (event.data.status === "failed") addRetry(card, query, bookId);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
             settled = true;
@@ -532,6 +553,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
             body.classList.remove("cursor", "progress");
             body.innerHTML = text ? renderMarkdown(text) : "";
             addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
+            addRetry(card, query, bookId);
           }
         }
       }
@@ -540,12 +562,14 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         body.classList.remove("cursor", "progress");
         body.innerHTML = text ? renderMarkdown(text) : "";
         addNotice(card, "连接中断了，回答没有完整返回。", "error");
+        addRetry(card, query, bookId);
       }
     } catch {
       cancelPaint();
       body.classList.remove("cursor", "progress");
       body.innerHTML = text ? renderMarkdown(text) : "";
       addNotice(card, "网络异常，请稍后重试。", "error");
+      addRetry(card, query, bookId);
     } finally {
       window.removeEventListener("scroll", trackScrollIntent);
       busy = false;
