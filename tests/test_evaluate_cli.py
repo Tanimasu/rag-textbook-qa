@@ -61,15 +61,91 @@ class EvaluateCliTests(unittest.TestCase):
                 db_path=database_path,
                 enable_llm=True,
                 verbose=False,
-                enable_hyde=True,
+                enable_hyde=False,
             )
             run_evaluation.assert_called_once_with(
                 engine,
                 questions,
                 output_path,
                 include_baseline=True,
+                top_k=5,
             )
             engine.__exit__.assert_called_once()
+
+    def test_evaluate_hyde_and_top_k_are_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "src" / "rag_textbook_qa").mkdir(parents=True)
+            (root / "project").mkdir()
+            (root / "data" / "evaluation").mkdir(parents=True)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='test'\n",
+                encoding="utf-8",
+            )
+            (root / "project" / ".env").write_text("", encoding="utf-8")
+            questions_path = root / "questions.json"
+            questions_path.write_text("[]", encoding="utf-8")
+            engine = MagicMock()
+            engine.__enter__.return_value = engine
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "rag_textbook_qa.evaluation.load_test_questions",
+                    return_value=[{"question": "什么是进程？"}],
+                ),
+                patch("rag_textbook_qa.evaluation.run_evaluation") as run_evaluation,
+                patch("rag_textbook_qa.rag.RAGEngine", return_value=engine) as engine_type,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        str(root),
+                        "evaluate",
+                        "--questions",
+                        str(questions_path),
+                        "--hyde",
+                        "--top-k",
+                        "7",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(engine_type.call_args.kwargs["enable_hyde"])
+            self.assertEqual(run_evaluation.call_args.kwargs["top_k"], 7)
+
+    def test_evaluate_rejects_non_positive_top_k_before_loading_models(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "src" / "rag_textbook_qa").mkdir(parents=True)
+            (root / "project").mkdir()
+            (root / "data" / "evaluation").mkdir(parents=True)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='test'\n",
+                encoding="utf-8",
+            )
+            (root / "project" / ".env").write_text("", encoding="utf-8")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_type,
+                contextlib.redirect_stderr(io.StringIO()) as error_output,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(
+                    [
+                        "--workspace",
+                        str(root),
+                        "evaluate",
+                        "--top-k",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("--top-k 必须大于 0", error_output.getvalue())
+            engine_type.assert_not_called()
 
     def test_retrieval_evaluate_compares_real_strategies_without_llm_or_fallback(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

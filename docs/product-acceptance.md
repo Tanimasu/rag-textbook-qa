@@ -57,6 +57,10 @@ rag-qa evaluate \
   --output-dir artifacts/evaluations/product-acceptance-v1/ragas
 ```
 
+该命令默认复现公开产品路径：Top 5、HyDE 关闭、查询分解关闭、引用核对关闭。运行后必须检查
+`ragas_run_summary.json` 的 `product_path` 与上述配置一致；需要试验 HyDE 或其他 Top K 时，使用
+`--hyde` / `--top-k` 并写入另一输出目录，不得覆盖产品验收结果。
+
 同时在产品页面逐题抽查以下项目：
 
 1. 回答完整结束，没有把截断文本显示成成功；

@@ -199,8 +199,14 @@ class RAGASEvaluator:
         self,
         rag_engine: Any,
         test_questions: list[dict[str, Any]],
+        *,
+        top_k: int = 5,
     ) -> Any:
         """Run the RAG engine over questions and return a RAGAS dataset."""
+
+        if top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        use_hyde = getattr(rag_engine, "enable_hyde", False) is True
 
         print("=" * 60)
         print("准备评估数据")
@@ -220,8 +226,11 @@ class RAGASEvaluator:
                 result = rag_engine.ask(
                     query=question,
                     book_name=item.get("book_name"),
-                    top_k=8,
+                    top_k=top_k,
                     use_llm=True,
+                    use_hyde=use_hyde,
+                    use_decomposition=False,
+                    verify_citations=False,
                 )
                 if not result["success"]:
                     failures.append(
@@ -287,6 +296,12 @@ class RAGASEvaluator:
             "success_rate": len(questions) / len(test_questions) if test_questions else 0.0,
             "quality_metrics_scope": "successful_questions_only",
             "context_policy": "exact_generation_context",
+            "product_path": {
+                "top_k": top_k,
+                "hyde": use_hyde,
+                "query_decomposition": False,
+                "citation_verification": False,
+            },
             "failures": failures,
         }
         (output_dir / "ragas_run_summary.json").write_text(
@@ -536,12 +551,17 @@ def run_evaluation(
     output_dir: str | Path,
     *,
     include_baseline: bool = False,
+    top_k: int = 5,
 ) -> Any | None:
     """Run the existing RAGAS workflow and persist its result CSV files."""
 
     destination = Path(output_dir)
     evaluator = RAGASEvaluator(output_dir=destination)
-    rag_dataset = evaluator.prepare_evaluation_data(rag_engine, test_questions)
+    rag_dataset = evaluator.prepare_evaluation_data(
+        rag_engine,
+        test_questions,
+        top_k=top_k,
+    )
     rag_result = evaluator.evaluate(rag_dataset)
     print("\n【RAG 系统评估结果】")
     rag_dataframe = evaluator.print_results(rag_result)

@@ -116,6 +116,7 @@ class EvaluationTests(unittest.TestCase):
             evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
             evaluator.output_dir = output_dir
             engine = MagicMock()
+            engine.enable_hyde = False
             engine.ask.return_value = {
                 "success": True,
                 "answer": "进程是程序的一次执行过程。",
@@ -150,6 +151,7 @@ class EvaluationTests(unittest.TestCase):
             comparison = json.loads(
                 (output_dir / "ragas_qa_comparison.json").read_text(encoding="utf-8")
             )
+            summary = json.loads((output_dir / "ragas_run_summary.json").read_text())
 
         self.assertEqual(
             set(dataset),
@@ -162,8 +164,21 @@ class EvaluationTests(unittest.TestCase):
         engine.ask.assert_called_once_with(
             query="什么是进程？",
             book_name="os",
-            top_k=8,
+            top_k=5,
             use_llm=True,
+            use_hyde=False,
+            use_decomposition=False,
+            verify_citations=False,
+        )
+
+        self.assertEqual(
+            summary["product_path"],
+            {
+                "top_k": 5,
+                "hyde": False,
+                "query_decomposition": False,
+                "citation_verification": False,
+            },
         )
 
     def test_failure_summary_includes_failed_and_exception_cases(self):

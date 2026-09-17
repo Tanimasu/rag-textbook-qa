@@ -125,6 +125,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="同时运行无 RAG baseline（会增加 API 调用）",
     )
+    evaluate.add_argument(
+        "--hyde",
+        action="store_true",
+        help="显式启用实验性 HyDE（额外调用 LLM；默认关闭以匹配公开产品）",
+    )
+    evaluate.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="送入上下文选择的检索条数；默认 5，与公开产品一致",
+    )
 
     retrieval_evaluate = commands.add_parser(
         "evaluate-retrieval",
@@ -513,6 +524,9 @@ def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
+    if args.top_k <= 0:
+        raise ValueError("--top-k 必须大于 0")
+
     _load_project_environment(settings.paths.root / "project" / ".env")
     from rag_textbook_qa.evaluation import (
         create_test_dataset,
@@ -533,13 +547,14 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         db_path=args.db_path or settings.paths.vector_db,
         enable_llm=True,
         verbose=False,
-        enable_hyde=True,
+        enable_hyde=args.hyde,
     ) as engine:
         run_evaluation(
             engine,
             questions,
             args.output_dir or settings.paths.evaluations,
             include_baseline=args.baseline,
+            top_k=args.top_k,
         )
     return 0
 

@@ -263,6 +263,9 @@ rag-qa evaluate-retrieval --split holdout            # 仅在确认最终结论�
 
 **RAGAS 层**读取 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。
 测试时务必用 `--output-dir` 重定向，避免覆盖正式结果；依赖按需安装 `uv sync --inexact --extra eval`。
+默认按公开产品路径运行：Top 5、HyDE 关闭、查询分解关闭、引用核对关闭，并把这四项写入
+`ragas_run_summary.json`。只在单独的实验目录中显式使用 `--hyde` 或 `--top-k`，避免把实验结果误写成
+默认产品验收。
 两个容易踩的配置：
 
 - 评判模型用 `RAGAS_MODEL` 单独指定，应与生成模型分属不同厂商以规避自我偏好偏差。若它默认开启
