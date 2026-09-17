@@ -13,7 +13,14 @@ from unittest.mock import MagicMock, patch
 warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient`.*")
 from fastapi.testclient import TestClient
 
-from rag_textbook_qa.api.app import PUBLIC_FAILURE, create_api_app, public_result, run_api_server
+from rag_textbook_qa.api.app import (
+    PUBLIC_FAILURE,
+    _stream,
+    _StreamCancelled,
+    create_api_app,
+    public_result,
+    run_api_server,
+)
 from rag_textbook_qa.api.feedback import FeedbackStore
 from rag_textbook_qa.api.guard import (
     AccessDenied,
@@ -235,6 +242,10 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("重试本题", page.text)
         self.assertIn("addRetry(card, query, bookId)", page.text)
         self.assertIn("bookSelect.value = bookId", page.text)
+        self.assertIn("停止生成", page.text)
+        self.assertIn("清空对话", page.text)
+        self.assertIn("new AbortController()", page.text)
+        self.assertIn('thread.setAttribute("aria-busy", "true")', page.text)
         self.assertIn("trackScrollIntent", page.text)
         self.assertIn("window.setTimeout(paint, 125)", page.text)
         self.assertIn("👍 有帮助", page.text)
@@ -445,6 +456,33 @@ class ApiAppTests(unittest.TestCase):
             [("error", {"status": "failed", "message": PUBLIC_FAILURE})],
         )
         self.assertNotIn(SECRET, streamed.text)
+
+    def test_closing_a_stream_stops_its_producer_and_releases_the_slot(self):
+        guard = AccessGuard(GuardSettings(queue_timeout_seconds=1))
+        first_chunk_sent = threading.Event()
+        continue_producing = threading.Event()
+        producer_stopped = threading.Event()
+
+        def produce(sink):
+            sink("第一段")
+            first_chunk_sent.set()
+            continue_producing.wait(2)
+            try:
+                sink("不应继续传送")
+            except _StreamCancelled:
+                producer_stopped.set()
+                raise
+            return {"status": "answered"}
+
+        stream = _stream(produce, guard)
+        self.assertIn("第一段", next(stream))
+        self.assertTrue(first_chunk_sent.wait(1))
+        stream.close()
+        continue_producing.set()
+        self.assertTrue(producer_stopped.wait(1))
+
+        with guard.generation_slot():
+            pass
 
 
 class ServerTests(unittest.TestCase):

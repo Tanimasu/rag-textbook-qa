@@ -54,6 +54,10 @@ _HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 _TIMING_FIELDS = ("retrieval_seconds", "generation_seconds", "first_token_seconds", "total_seconds")
 
 
+class _StreamCancelled(Exception):
+    """Stop the producer after its client closes the streaming response."""
+
+
 class AskRequest(BaseModel):
     query: str = Field(
         min_length=1,
@@ -151,12 +155,21 @@ def _stream(
     """
 
     events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+    cancelled = threading.Event()
+
+    def emit(chunk: str) -> None:
+        if cancelled.is_set():
+            raise _StreamCancelled
+        events.put(("chunk", {"text": chunk}))
 
     def work() -> None:
         try:
             with guard.generation_slot():
-                result = produce(lambda chunk: events.put(("chunk", {"text": chunk})))
+                result = produce(emit)
             events.put(("result", result))
+        except _StreamCancelled:
+            # The browser intentionally stopped or left. This is not a server error.
+            pass
         except Busy as exc:
             events.put(("error", {"status": "busy", "message": str(exc)}))
         except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
@@ -166,9 +179,12 @@ def _stream(
             events.put(None)
 
     threading.Thread(target=work, name="rag-qa-answer", daemon=True).start()
-    while (item := events.get()) is not None:
-        name, data = item
-        yield f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    try:
+        while (item := events.get()) is not None:
+            name, data = item
+            yield f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    finally:
+        cancelled.set()
 
 
 def create_api_app(

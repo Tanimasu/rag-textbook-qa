@@ -39,6 +39,12 @@ header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: cent
 .header-links a:hover { color: var(--accent); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .toolbar label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.toolbar-button {
+  font: inherit; font-size: 13px; color: var(--muted); background: transparent;
+  border: 0; padding: 4px 0; cursor: pointer;
+}
+.toolbar-button:hover { color: var(--accent); }
+.toolbar-button:disabled { opacity: .5; cursor: default; }
 select, input[type=password] {
   font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel); color: var(--text); max-width: 100%;
@@ -114,6 +120,7 @@ details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted);
 }
 .composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
+.composer .cancel { background: transparent; color: var(--err-text); border: 1px solid var(--line); }
 footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
 @media (max-width: 520px) { .bubble { max-width: 92%; } .quota { margin-left: 0; width: 100%; } }
 </style>
@@ -134,6 +141,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   <div class="toolbar">
     <label>教材 <select id="book" required><option value="" selected disabled>请选择教材</option></select></label>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
+    <button class="toolbar-button" id="clear" type="button" hidden>清空对话</button>
     <span class="quota" id="quota"></span>
   </div>
 
@@ -152,6 +160,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   <div class="composer">
     <form id="form">
       <textarea id="input" rows="1" maxlength="500" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+      <button class="cancel" id="cancel" type="button" hidden>停止生成</button>
       <button id="send" type="submit">发送</button>
     </form>
   </div>
@@ -163,9 +172,9 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   const $ = (id) => document.getElementById(id);
   const thread = $("thread"), empty = $("empty"), form = $("form"), input = $("input");
   const send = $("send"), bookSelect = $("book"), codeField = $("code-field");
-  const codeInput = $("code"), quota = $("quota");
+  const codeInput = $("code"), quota = $("quota"), cancel = $("cancel"), clear = $("clear");
   const CODE_KEY = "rag-qa-access-code";
-  let busy = false;
+  let busy = false, activeController = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -257,6 +266,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   function addUser(text) {
     empty.hidden = true;
+    clear.hidden = false;
     const row = element("div", "msg user");
     row.append(element("div", "bubble", text));
     thread.append(row);
@@ -265,7 +275,10 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   function addAnswer() {
     const row = element("div", "msg");
     const card = element("div", "answer");
-    card.append(element("div", "body cursor progress", "正在检索教材…"));
+    const body = element("div", "body cursor progress", "正在检索教材…");
+    body.setAttribute("role", "status");
+    body.setAttribute("aria-live", "polite");
+    card.append(body);
     row.append(card);
     thread.append(row);
     row.scrollIntoView({ block: "end" });
@@ -481,6 +494,10 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     bookSelect.setCustomValidity("");
     busy = true;
     send.disabled = true;
+    clear.disabled = true;
+    cancel.hidden = false;
+    activeController = new AbortController();
+    thread.setAttribute("aria-busy", "true");
     input.value = "";
     autosize();
     addUser(query);
@@ -518,6 +535,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         method: "POST",
         headers: requestHeaders(),
         body: JSON.stringify({ query, book_id: bookId }),
+        signal: activeController.signal,
       });
       if (!response.ok) {
         body.classList.remove("cursor", "progress");
@@ -564,16 +582,20 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         addNotice(card, "连接中断了，回答没有完整返回。", "error");
         addRetry(card, query, bookId);
       }
-    } catch {
+    } catch (error) {
       cancelPaint();
       body.classList.remove("cursor", "progress");
       body.innerHTML = text ? renderMarkdown(text) : "";
-      addNotice(card, "网络异常，请稍后重试。", "error");
+      addNotice(card, error.name === "AbortError" ? "已停止生成。" : "网络异常，请稍后重试。", error.name === "AbortError" ? "warn" : "error");
       addRetry(card, query, bookId);
     } finally {
       window.removeEventListener("scroll", trackScrollIntent);
       busy = false;
+      activeController = null;
       send.disabled = false;
+      clear.disabled = false;
+      cancel.hidden = true;
+      thread.removeAttribute("aria-busy");
       input.focus();
       refreshStatus();
     }
@@ -630,6 +652,14 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); }
   });
   form.addEventListener("submit", (event) => { event.preventDefault(); ask(); });
+  cancel.addEventListener("click", () => activeController?.abort());
+  clear.addEventListener("click", () => {
+    if (busy) return;
+    for (const message of thread.querySelectorAll(".msg")) message.remove();
+    empty.hidden = false;
+    clear.hidden = true;
+    input.focus();
+  });
   loadBooks();
   refreshStatus();
 })();
