@@ -27,15 +27,15 @@
     ],
     "split": "holdout",
     "annotation_status": "human_reviewed_glance",
-    "revision": 3,
-    "answer_key": "现代磁盘已采用环带技术，外层磁道扇区更多，但向OS隐藏物理细节，提供固定大小的虚拟扇区以简化驱动和文件系统管理。",
+    "revision": 4,
+    "answer_key": "现代磁盘通过环带让外层磁道包含更多固定大小的扇区，同时向OS隐藏实际物理几何，只提供虚拟几何，从而减少物理布局变化对驱动程序的影响。",
     "evidence": {
       "path": "data/cleaned/操作系统_mineru_cleaned.md",
       "start_line": 6524,
       "end_line": 6588,
       "sha256": "95e47bcd0165718a38815675d39e46e940fe5bdf587de9e3d9bf0f7bea154ad4"
     },
-    "review_note": "替换标注：原标签是正文列表项而非规范小节，改为编号小节。"
+    "review_note": "证据复核：去掉原文未明确支持的文件系统推断，保留环带、固定大小扇区和隐藏物理几何。"
   },
   {
     "id": "candidate-v1-03",
@@ -122,15 +122,15 @@
     ],
     "split": "holdout",
     "annotation_status": "human_reviewed_glance",
-    "revision": 4,
-    "answer_key": "子网掩码用于从IP地址中提取网络地址，划分子网后IP变三级结构，不同掩码会得出不同网络地址。",
+    "revision": 5,
+    "answer_key": "子网掩码通过与IP地址逐位相与来提取网络地址，并规定哪些位属于网络/子网、哪些位属于主机。同一IP使用不同掩码不一定得到不同网络地址，但即使结果相同，子网位数、主机位数以及可划分的子网数和每个子网的最大主机数仍可能不同。",
     "evidence": {
       "path": "data/cleaned/计算机网络_mineru_cleaned.md",
       "start_line": 3320,
       "end_line": 3393,
       "sha256": "6061a96bbf15966b92bc1e655e8cb960634857b3bd4ba4d09931f7a39e8e1b64"
     },
-    "review_note": "改写措辞：降低与原文的字面重合，保持可由同一小节回答。"
+    "review_note": "证据纠错：教材例4-2和例4-3明确说明不同掩码可能得到相同网络地址。"
   },
   {
     "id": "candidate-v1-08",
@@ -274,14 +274,14 @@
     ],
     "split": "holdout",
     "annotation_status": "human_reviewed_glance",
-    "revision": 3,
-    "answer_key": "只要属性子集X能唯一决定Y，函数依赖X→Y就成立，不要求X必须是候选键。",
+    "revision": 4,
+    "answer_key": "X不必是候选键；只要在业务语义规定的所有合法关系中，每个X值都唯一对应一个Y值，函数依赖X→Y就成立。不能仅凭当前某个关系实例中数据恰好唯一来判定。",
     "evidence": {
       "path": "data/cleaned/数据库原理及应用教程_mineru_cleaned.md",
       "start_line": 7433,
-      "end_line": 7452,
+      "end_line": 7466,
       "sha256": "fdb1cb7f52c0f60cbf8ee291a218d6307f4d5c3186fa460b3fdb2546b8f8ed3c"
     },
-    "review_note": "替换标注：原标签是正文列表项而非规范小节，改为编号小节。"
+    "review_note": "证据复核：补充业务语义和所有合法关系的限定，避免用当前数据偶然唯一来判断。"
   }
 ]

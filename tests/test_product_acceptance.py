@@ -65,6 +65,35 @@ class ProductAcceptanceDatasetTests(unittest.TestCase):
                 self.assertGreaterEqual(evidence["end_line"], evidence["start_line"])
                 self.assertLessEqual(evidence["end_line"], line_counts[evidence_path])
 
+    def test_evidence_corrections_are_preserved(self):
+        acceptance = {
+            item["id"]: item
+            for item in json.loads(ACCEPTANCE_PATH.read_text(encoding="utf-8"))
+        }
+
+        disk = acceptance["candidate-v1-02"]["ground_truth"]
+        self.assertIn("固定大小的扇区", disk)
+        self.assertIn("隐藏实际物理几何", disk)
+        self.assertNotIn("文件系统", disk)
+
+        subnet = acceptance["candidate-v1-07"]["ground_truth"]
+        self.assertIn("不一定得到不同网络地址", subnet)
+        self.assertIn("子网位数", subnet)
+        self.assertIn("主机位数", subnet)
+
+        dependency = acceptance["candidate-v1-15"]["ground_truth"]
+        self.assertIn("所有合法关系", dependency)
+        self.assertIn("不能仅凭当前", dependency)
+
+        evidence = acceptance["candidate-v1-15"]["evidence"]
+        evidence_path = REPOSITORY_ROOT / evidence["path"]
+        evidence_lines = evidence_path.read_text(encoding="utf-8").splitlines()
+        excerpt = "\n".join(
+            evidence_lines[evidence["start_line"] - 1 : evidence["end_line"]]
+        )
+        self.assertIn("所有元组应该满足的约束条件", excerpt)
+        self.assertIn("不能单凭某一时刻关系中的实际数据值", excerpt)
+
 
 if __name__ == "__main__":
     unittest.main()
