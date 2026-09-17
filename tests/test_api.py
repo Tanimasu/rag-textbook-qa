@@ -201,6 +201,27 @@ class PublicResultTests(unittest.TestCase):
             self.assertNotIn(leaked, rendered)
         self.assertEqual(payload["sources"][0]["book"], "操作系统")
         self.assertEqual(payload["sources"][0]["section"], "第二章 > 2.1 进程")
+        self.assertIsNone(payload["citation_integrity"])
+
+    def test_citation_integrity_reports_missing_and_unknown_links(self):
+        linked = FakeEngine().ask(query="q", use_llm=True)
+        missing = FakeEngine().ask(query="q", use_llm=True)
+        missing["answer"] = "回答没有引用编号。"
+        invalid = FakeEngine().ask(query="q", use_llm=True)
+        invalid["answer"] = "一条有效引用【参考资料 1】，一条无效引用【参考资料 9】。"
+
+        self.assertEqual(
+            public_result(linked, retrieval_only=None)["citation_integrity"],
+            {"status": "linked", "cited": [1], "unknown": []},
+        )
+        self.assertEqual(
+            public_result(missing, retrieval_only=None)["citation_integrity"],
+            {"status": "missing", "cited": [], "unknown": []},
+        )
+        self.assertEqual(
+            public_result(invalid, retrieval_only=None)["citation_integrity"],
+            {"status": "invalid", "cited": [1, 9], "unknown": [9]},
+        )
 
     def test_retrieval_only_and_missing_evidence_are_not_failures(self):
         budget = public_result(FakeEngine().ask(query="q", use_llm=False), retrieval_only="budget")
@@ -246,6 +267,8 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("清空对话", page.text)
         self.assertIn("new AbortController()", page.text)
         self.assertIn('thread.setAttribute("aria-busy", "true")', page.text)
+        self.assertIn("这份回答没有标出对应的资料编号", page.text)
+        self.assertIn("回答引用了下方不存在的资料编号", page.text)
         self.assertIn("trackScrollIntent", page.text)
         self.assertIn("window.setTimeout(paint, 125)", page.text)
         self.assertIn("👍 有帮助", page.text)

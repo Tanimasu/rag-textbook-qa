@@ -427,6 +427,12 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
     if (result.message) addNotice(card, result.message, result.status === "failed" ? "error" : "warn");
+    const citation = result.citation_integrity || {};
+    if (citation.status === "missing") {
+      addNotice(card, "这份回答没有标出对应的资料编号，请结合下方教材原文核对。", "warn");
+    } else if (citation.status === "invalid") {
+      addNotice(card, `回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn");
+    }
     if (result.conflicts && result.conflicts.length) {
       addNotice(card, `检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn");
     }

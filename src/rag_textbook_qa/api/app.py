@@ -10,6 +10,7 @@ returned, because it can carry upstream detail.
 
 import json
 import queue
+import re
 import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -52,6 +53,7 @@ RETRIEVAL_ONLY_NOTICES = {
 }
 _HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 _TIMING_FIELDS = ("retrieval_seconds", "generation_seconds", "first_token_seconds", "total_seconds")
+_CITATION_REFERENCE = re.compile(r"【参考资料\s*(\d+)】")
 
 
 class _StreamCancelled(Exception):
@@ -101,15 +103,38 @@ def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> d
         status, message = "answered", None
     else:
         status, message = "failed", PUBLIC_FAILURE
+    answer = result.get("answer") if status == "answered" else None
     execution = result.get("execution") or {}
     return {
         "status": status,
-        "answer": result.get("answer") if status == "answered" else None,
+        "answer": answer,
         "message": message,
         "sources": sources,
         "conflicts": [conflict.get("topic") for conflict in result.get("source_conflicts") or []],
         "timing": {field: execution[field] for field in _TIMING_FIELDS if field in execution},
+        "citation_integrity": _citation_integrity(str(answer or ""), sources)
+        if status == "answered"
+        else None,
     }
+
+
+def _citation_integrity(answer: str, sources: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Check citation links only; this deliberately makes no grounding claim."""
+
+    cited = sorted({int(match) for match in _CITATION_REFERENCE.findall(answer)})
+    available = {
+        source["citation_id"]
+        for source in sources
+        if type(source.get("citation_id")) is int
+    }
+    unknown = [identifier for identifier in cited if identifier not in available]
+    if not cited:
+        status = "missing"
+    elif unknown:
+        status = "invalid"
+    else:
+        status = "linked"
+    return {"status": status, "cited": cited, "unknown": unknown}
 
 
 def _public_source(source: Mapping[str, Any]) -> dict[str, Any]:
