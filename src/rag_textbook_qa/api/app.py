@@ -9,6 +9,7 @@ returned, because it can carry upstream detail.
 """
 
 import json
+import math
 import queue
 import re
 import sys
@@ -105,6 +106,11 @@ def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> d
         status, message = "failed", PUBLIC_FAILURE
     answer = result.get("answer") if status == "answered" else None
     execution = result.get("execution") or {}
+    compute = {
+        name: stage
+        for name in ("embedding", "reranker")
+        if (stage := _public_compute_stage(execution.get(name))) is not None
+    }
     return {
         "status": status,
         "answer": answer,
@@ -112,9 +118,39 @@ def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> d
         "sources": sources,
         "conflicts": [conflict.get("topic") for conflict in result.get("source_conflicts") or []],
         "timing": {field: execution[field] for field in _TIMING_FIELDS if field in execution},
+        "compute": compute,
         "citation_integrity": _citation_integrity(str(answer or ""), sources)
         if status == "answered"
         else None,
+    }
+
+
+def _public_compute_stage(stage: Any) -> dict[str, Any] | None:
+    """Keep only bounded, display-safe provider telemetry at the public boundary."""
+
+    if not isinstance(stage, Mapping):
+        return None
+    backend = str(stage.get("backend") or "unknown").lower()
+    if backend not in {"local", "remote", "mixed"}:
+        backend = "unknown"
+    device = str(stage.get("device") or "unknown").lower()
+    if device not in {"cpu", "cuda", "mps", "mixed"}:
+        device = "unknown"
+    platform = str(stage.get("platform") or "unknown")
+    if platform not in {"Windows", "Darwin", "Linux", "mixed"}:
+        platform = "unknown"
+    try:
+        elapsed = float(stage.get("elapsed_seconds", 0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    if not math.isfinite(elapsed) or elapsed < 0:
+        elapsed = 0.0
+    return {
+        "backend": backend,
+        "device": device,
+        "platform": platform,
+        "elapsed_seconds": round(elapsed, 3),
+        "fallback_used": bool(stage.get("fallback_used")),
     }
 
 

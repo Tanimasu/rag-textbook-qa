@@ -58,6 +58,7 @@ main { flex: 1; padding: 16px 0; }
   color: var(--text); padding: 6px 12px; border-radius: 999px; cursor: pointer;
 }
 .examples button:hover { border-color: var(--accent); color: var(--accent); }
+.examples button:disabled { opacity: .5; cursor: not-allowed; }
 .msg { margin: 14px 0; display: flex; }
 .msg.user { justify-content: flex-end; }
 .bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
@@ -149,10 +150,11 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     <div class="empty" id="empty">
       <div>可以问概念、比较或原理类的问题，回答会标注它依据的教材片段。</div>
       <div class="examples">
-        <button type="button">什么是进程？它和程序有什么区别？</button>
-        <button type="button">主键和唯一索引有什么区别？</button>
-        <button type="button">散列表是怎样解决冲突的？</button>
-        <button type="button">Cache 在存储层次中起什么作用？</button>
+        <button type="button" data-book="os" disabled>什么是进程？它和程序有什么区别？</button>
+        <button type="button" data-book="database" disabled>主键和唯一索引有什么区别？</button>
+        <button type="button" data-book="data_structure" disabled>散列表是怎样解决冲突的？</button>
+        <button type="button" data-book="computer_organization" disabled>Cache 在存储层次中起什么作用？</button>
+        <button type="button" data-book="computer_network" disabled>TCP 为什么需要三次握手？</button>
       </div>
     </div>
   </main>
@@ -174,6 +176,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   const send = $("send"), bookSelect = $("book"), codeField = $("code-field");
   const codeInput = $("code"), quota = $("quota"), cancel = $("cancel"), clear = $("clear");
   const CODE_KEY = "rag-qa-access-code";
+  const BOOK_KEY = "rag-qa-selected-book";
   let busy = false, activeController = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
@@ -422,6 +425,15 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     comment.addEventListener("input", () => comment.setCustomValidity(""));
   }
 
+  function computeChip(label, stage) {
+    const platform = { Windows: "Windows", Darwin: "macOS", Linux: "Linux", mixed: "多平台" }[stage.platform] || "";
+    let location = stage.backend === "remote" ? "远程 Worker" : stage.backend === "local" ? "本地" : "执行位置未知";
+    if (platform) location += `（${platform}）`;
+    if (stage.fallback_used) location = "已回退到" + location;
+    const device = stage.device === "unknown" ? "未知设备" : stage.device.toUpperCase();
+    return `${label} · ${location} · ${device} · ${stage.elapsed_seconds.toFixed(3)} 秒`;
+  }
+
   function finish(card, result) {
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
@@ -437,10 +449,15 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       addNotice(card, `检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn");
     }
     const timing = result.timing || {};
+    const compute = result.compute || {};
     const chips = [
+      ...(compute.embedding ? [["embedding", "Embedding"]] : []),
+      ...(compute.reranker ? [["reranker", "Reranker"]] : []),
       ["retrieval_seconds", "检索"], ["first_token_seconds", "首字"], ["total_seconds", "总计"],
-    ].filter(([key]) => typeof timing[key] === "number")
-      .map(([key, label]) => `${label} ${timing[key].toFixed(2)} 秒`);
+    ].map(([key, label]) => compute[key]
+      ? computeChip(label, compute[key])
+      : (typeof timing[key] === "number" ? `${label} ${timing[key].toFixed(2)} 秒` : null))
+      .filter(Boolean);
     if (chips.length) {
       const meta = element("div", "meta");
       for (const chip of chips) meta.append(element("span", "chip", chip));
@@ -630,6 +647,13 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         option.value = book.book_id;
         bookSelect.append(option);
       }
+      const available = new Set(books.map((book) => book.book_id));
+      const selected = sessionGet(BOOK_KEY);
+      if (available.has(selected)) bookSelect.value = selected;
+      for (const example of document.querySelectorAll(".examples button")) {
+        example.disabled = !available.has(example.dataset.book);
+        if (example.disabled) example.title = "这本教材当前没有可用索引";
+      }
     } catch { bookSelect.options[0].textContent = "教材加载失败"; }
   }
 
@@ -640,7 +664,13 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   thread.addEventListener("click", (event) => {
     const example = event.target.closest(".examples button");
-    if (example) { input.value = example.textContent; ask(); return; }
+    if (example) {
+      bookSelect.value = example.dataset.book;
+      sessionSet(BOOK_KEY, bookSelect.value);
+      input.value = example.textContent;
+      ask();
+      return;
+    }
     const cite = event.target.closest(".cite");
     if (!cite) return;
     const details = cite.closest(".answer")?.querySelector("details.sources");
@@ -652,7 +682,10 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
   input.addEventListener("input", autosize);
-  bookSelect.addEventListener("change", () => bookSelect.setCustomValidity(""));
+  bookSelect.addEventListener("change", () => {
+    bookSelect.setCustomValidity("");
+    sessionSet(BOOK_KEY, bookSelect.value);
+  });
   input.addEventListener("keydown", (event) => {
     // isComposing: Enter that confirms a Chinese IME candidate must not send.
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); ask(); }

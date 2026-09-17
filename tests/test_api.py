@@ -70,7 +70,26 @@ class FakeEngine:
             "results": [{"internal": "candidate"}],
             "prompt": "SYSTEM PROMPT WITH FULL CONTEXT",
             "source_conflicts": [],
-            "execution": {"retrieval_seconds": 0.1, "total_seconds": 0.4},
+            "execution": {
+                "embedding": {
+                    "backend": "remote",
+                    "device": "cuda",
+                    "platform": "Windows",
+                    "model": "private-model-name",
+                    "remote_url": "http://private-worker",
+                    "elapsed_seconds": 0.1234,
+                    "fallback_used": False,
+                },
+                "reranker": {
+                    "backend": "local",
+                    "device": "mps",
+                    "platform": "Darwin",
+                    "elapsed_seconds": 0.5,
+                    "fallback_used": True,
+                },
+                "retrieval_seconds": 0.1,
+                "total_seconds": 0.4,
+            },
         }
 
 
@@ -201,6 +220,18 @@ class PublicResultTests(unittest.TestCase):
             self.assertNotIn(leaked, rendered)
         self.assertEqual(payload["sources"][0]["book"], "操作系统")
         self.assertEqual(payload["sources"][0]["section"], "第二章 > 2.1 进程")
+        self.assertEqual(
+            payload["compute"]["embedding"],
+            {
+                "backend": "remote",
+                "device": "cuda",
+                "platform": "Windows",
+                "elapsed_seconds": 0.123,
+                "fallback_used": False,
+            },
+        )
+        self.assertNotIn("private-model-name", json.dumps(payload))
+        self.assertNotIn("private-worker", json.dumps(payload))
         self.assertIsNone(payload["citation_integrity"])
 
     def test_citation_integrity_reports_missing_and_unknown_links(self):
@@ -258,6 +289,15 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("计算机教材问答", page.text)
         self.assertIn("请选择教材", page.text)
         self.assertNotIn("全部教材", page.text)
+        self.assertIn('data-book="os" disabled', page.text)
+        self.assertIn('data-book="database" disabled', page.text)
+        self.assertIn('data-book="computer_network" disabled', page.text)
+        self.assertIn("example.dataset.book", page.text)
+        self.assertIn("sessionSet(BOOK_KEY, bookSelect.value)", page.text)
+        self.assertIn("这本教材当前没有可用索引", page.text)
+        self.assertIn("远程 Worker", page.text)
+        self.assertIn("已回退到", page.text)
+        self.assertIn("computeChip", page.text)
         self.assertIn("正在检索教材", page.text)
         self.assertIn("正在组织答案", page.text)
         self.assertIn("重试本题", page.text)
