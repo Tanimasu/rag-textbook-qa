@@ -147,6 +147,50 @@ class EvaluateCliTests(unittest.TestCase):
             self.assertIn("--top-k 必须大于 0", error_output.getvalue())
             engine_type.assert_not_called()
 
+    def test_evaluate_dry_run_does_not_load_models_or_call_evaluation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "src" / "rag_textbook_qa").mkdir(parents=True)
+            (root / "project").mkdir()
+            (root / "data" / "evaluation").mkdir(parents=True)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='test'\n",
+                encoding="utf-8",
+            )
+            (root / "project" / ".env").write_text(
+                "LLM_API_KEY=test-secret\n",
+                encoding="utf-8",
+            )
+            questions_path = root / "questions.json"
+            questions_path.write_text(
+                '[{"question":"什么是进程？"}]',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_type,
+                patch("rag_textbook_qa.evaluation.run_evaluation") as run_evaluation,
+                contextlib.redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "--workspace",
+                        str(root),
+                        "evaluate",
+                        "--questions",
+                        str(questions_path),
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            engine_type.assert_not_called()
+            run_evaluation.assert_not_called()
+            self.assertIn("未加载模型、未调用 API", output.getvalue())
+            self.assertNotIn("test-secret", output.getvalue())
+
     def test_retrieval_evaluate_compares_real_strategies_without_llm_or_fallback(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

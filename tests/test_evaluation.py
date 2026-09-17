@@ -7,11 +7,79 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from rag_textbook_qa.evaluation import RAGASEvaluator, load_test_questions
+from rag_textbook_qa.evaluation import (
+    RAGASEvaluator,
+    build_evaluation_plan,
+    load_test_questions,
+    render_evaluation_plan,
+)
 from rag_textbook_qa.evaluation.ragas import _ragas_embedding_model
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_evaluation_plan_is_secret_free_and_exposes_cost_factors(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = build_evaluation_plan(
+                [{"question": "问题一"}, {"question": "问题二"}],
+                output_dir=Path(temporary_directory) / "fresh-output",
+                top_k=7,
+                enable_hyde=True,
+                include_baseline=True,
+                environ={
+                    "LLM_API_KEY": "shared-secret",
+                    "RAG_API_BASE": "https://generator.example/v1",
+                    "RAG_MODEL": "generator-model",
+                    "RAGAS_API_KEY": "judge-secret",
+                    "RAGAS_API_BASE": "https://judge.example/v1",
+                    "RAGAS_MODEL": "judge-model",
+                    "RAGAS_EMBEDDING_MODEL": "judge-embedding",
+                    "RAGAS_RELEVANCY_SAMPLES": "3",
+                    "RAG_QA_COMPUTE_BACKEND": "local",
+                    "RAG_QA_DEVICE": "mps",
+                },
+            )
+
+        serialized = json.dumps(plan)
+        self.assertNotIn("shared-secret", serialized)
+        self.assertNotIn("judge-secret", serialized)
+        self.assertEqual(plan["question_count"], 2)
+        self.assertEqual(plan["minimum_generation_calls"], 6)
+        self.assertEqual(plan["ragas_scoring_passes"], 6)
+        self.assertEqual(plan["product_path"]["top_k"], 7)
+        self.assertTrue(plan["product_path"]["hyde"])
+        self.assertEqual(plan["compute"]["device"], "mps")
+        self.assertEqual(plan["warnings"], [])
+        rendered = render_evaluation_plan(plan)
+        self.assertIn("未调用 API", rendered)
+        self.assertIn("至少 6 次回答生成", rendered)
+        self.assertIn("计算后端: local / 设备 mps", rendered)
+
+    def test_evaluation_plan_warns_before_mixing_results_or_backends(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            (output_dir / "old.csv").write_text("old", encoding="utf-8")
+            plan = build_evaluation_plan(
+                [{"question": "问题"}],
+                output_dir=output_dir,
+                environ={
+                    "LLM_API_KEY": "secret",
+                    "LLM_API_BASE": "https://same.example/v1",
+                    "LLM_MODEL": "same-model",
+                    "RAG_QA_COMPUTE_BACKEND": "remote",
+                    "RAG_QA_REMOTE_URL": "http://100.64.0.1:8765",
+                    "RAG_QA_WORKER_TOKEN": "worker-secret",
+                    "RAG_QA_QUERY_FALLBACK_TO_LOCAL": "true",
+                },
+            )
+
+        warnings = "\n".join(plan["warnings"])
+        self.assertIn("同一 API 服务", warnings)
+        self.assertIn("同一模型", warnings)
+        self.assertIn("已有 1 项内容", warnings)
+        self.assertIn("回退本地", warnings)
+        self.assertNotIn("worker-secret", json.dumps(plan))
+        self.assertIn("本地回退 开（auto）", render_evaluation_plan(plan))
+
     def test_ragas_embedding_defaults_to_the_retrieval_model(self):
         with patch.dict(
             os.environ,

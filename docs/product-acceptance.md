@@ -54,6 +54,12 @@ rag-qa evaluate-retrieval \
 ```bash
 rag-qa evaluate \
   --questions data/evaluation/product_acceptance_v1.json \
+  --output-dir artifacts/evaluations/product-acceptance-v1/ragas \
+  --dry-run
+
+# 确认预检中的模型、后端、题数、费用影响和空输出目录后，再去掉 --dry-run 正式运行
+rag-qa evaluate \
+  --questions data/evaluation/product_acceptance_v1.json \
   --output-dir artifacts/evaluations/product-acceptance-v1/ragas
 ```
 

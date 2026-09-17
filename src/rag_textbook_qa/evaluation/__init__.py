@@ -2,8 +2,10 @@
 
 from rag_textbook_qa.evaluation.ragas import (
     RAGASEvaluator,
+    build_evaluation_plan,
     create_test_dataset,
     load_test_questions,
+    render_evaluation_plan,
     run_evaluation,
 )
 from rag_textbook_qa.evaluation.retrieval import (
@@ -23,10 +25,12 @@ __all__ = [
     "RETRIEVAL_STRATEGIES",
     "RAGASEvaluator",
     "RetrievalQuestion",
+    "build_evaluation_plan",
     "create_test_dataset",
     "evaluate_retrieval",
     "load_retrieval_questions",
     "load_test_questions",
+    "render_evaluation_plan",
     "run_evaluation",
     "run_retrieval_strategies",
     "save_retrieval_report",

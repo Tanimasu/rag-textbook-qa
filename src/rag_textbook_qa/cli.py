@@ -136,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="送入上下文选择的检索条数；默认 5，与公开产品一致",
     )
+    evaluate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只检查题集、模型、计算后端和费用影响，不加载模型或调用 API",
+    )
 
     retrieval_evaluate = commands.add_parser(
         "evaluate-retrieval",
@@ -529,11 +534,12 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
 
     _load_project_environment(settings.paths.root / "project" / ".env")
     from rag_textbook_qa.evaluation import (
+        build_evaluation_plan,
         create_test_dataset,
         load_test_questions,
+        render_evaluation_plan,
         run_evaluation,
     )
-    from rag_textbook_qa.rag import RAGEngine
 
     questions_path = args.questions or (
         settings.paths.evaluation_data / "test_questions.json"
@@ -543,6 +549,18 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         questions = create_test_dataset()
     else:
         questions = load_test_questions(questions_path)
+    if args.dry_run:
+        plan = build_evaluation_plan(
+            questions,
+            output_dir=args.output_dir or settings.paths.evaluations,
+            top_k=args.top_k,
+            enable_hyde=args.hyde,
+            include_baseline=args.baseline,
+        )
+        print(render_evaluation_plan(plan))
+        return 0
+    from rag_textbook_qa.rag import RAGEngine
+
     with RAGEngine(
         db_path=args.db_path or settings.paths.vector_db,
         enable_llm=True,

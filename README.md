@@ -263,6 +263,8 @@ rag-qa evaluate-retrieval --split holdout            # 仅在确认最终结论�
 
 **RAGAS 层**读取 `data/evaluation/test_questions.json`，结果写入 `artifacts/evaluations/`。
 测试时务必用 `--output-dir` 重定向，避免覆盖正式结果；依赖按需安装 `uv sync --inexact --extra eval`。
+正式运行前可在同一条命令末尾加 `--dry-run`：它只显示题数、产品路径、计算后端、生成/评判模型、
+最低生成调用次数和输出目录警告，不加载模型、不连接 Worker、不调用 API，也不会显示密钥。
 默认按公开产品路径运行：Top 5、HyDE 关闭、查询分解关闭、引用核对关闭，并把这四项写入
 `ragas_run_summary.json`。只在单独的实验目录中显式使用 `--hyde` 或 `--top-k`，避免把实验结果误写成
 默认产品验收。

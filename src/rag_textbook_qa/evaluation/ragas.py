@@ -10,6 +10,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.llm import create_llm_client
+from rag_textbook_qa.providers import ComputeSettings
+
 
 def judge_model_kwargs(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Vendor extras for the judge model, opt-in because endpoints differ.
@@ -111,6 +114,136 @@ def _ragas_embedding_model() -> str:
         or os.getenv("RAG_QA_EMBEDDING_MODEL")
         or "BAAI/bge-large-zh-v1.5"
     )
+
+
+def build_evaluation_plan(
+    test_questions: Sequence[Mapping[str, Any]],
+    *,
+    output_dir: str | Path,
+    top_k: int = 5,
+    enable_hyde: bool = False,
+    include_baseline: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve a secret-free evaluation plan without loading models or using the network."""
+
+    if not test_questions:
+        raise ValueError("评估问题不能为空")
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+
+    values = os.environ if environ is None else environ
+    generator = create_llm_client(
+        api_key=values.get("RAG_API_KEY") or None,
+        base_url=values.get("RAG_API_BASE") or None,
+        model=values.get("RAG_MODEL") or None,
+        verbose=False,
+        environ=values,
+        sdk_client=object(),
+    )
+    judge = create_llm_client(
+        api_key=values.get("RAGAS_API_KEY") or None,
+        base_url=values.get("RAGAS_API_BASE") or None,
+        model=values.get("RAGAS_MODEL") or None,
+        verbose=False,
+        environ=values,
+        sdk_client=object(),
+    )
+    compute = ComputeSettings.from_env(values)
+    destination = Path(output_dir)
+    existing_entries = len(list(destination.iterdir())) if destination.is_dir() else 0
+    samples = relevancy_samples(values)
+    question_count = len(test_questions)
+    answer_calls = question_count * (1 + int(enable_hyde) + int(include_baseline))
+    warnings: list[str] = []
+    if generator.base_url == judge.base_url:
+        warnings.append("生成与评判使用同一 API 服务；正式验收建议使用不同厂商")
+    if generator.default_model == judge.default_model:
+        warnings.append("生成与评判使用同一模型；结果可能存在自我偏好")
+    if existing_entries:
+        warnings.append(f"输出目录已有 {existing_entries} 项内容；请改用新的实验目录")
+    if compute.backend == "remote" and compute.query_fallback_to_local:
+        warnings.append("远程失败时允许回退本地；正式基线可能混入不同计算后端")
+
+    return {
+        "question_count": question_count,
+        "output_dir": str(destination),
+        "output_existing_entries": existing_entries,
+        "product_path": {
+            "top_k": top_k,
+            "hyde": enable_hyde,
+            "query_decomposition": False,
+            "citation_verification": False,
+        },
+        "baseline": include_baseline,
+        "minimum_generation_calls": answer_calls,
+        "ragas_scoring_passes": samples * (2 if include_baseline else 1),
+        "generator": {
+            "api_base": generator.base_url,
+            "model": generator.default_model,
+            "api_key_configured": True,
+        },
+        "judge": {
+            "api_base": judge.base_url,
+            "model": judge.default_model,
+            "api_key_configured": True,
+            "answer_relevancy_samples": samples,
+            "embedding_model": _ragas_embedding_model_from(values),
+        },
+        "compute": compute.safe_summary(),
+        "warnings": warnings,
+    }
+
+
+def _ragas_embedding_model_from(values: Mapping[str, str]) -> str:
+    return (
+        values.get("RAGAS_EMBEDDING_MODEL")
+        or values.get("RAG_QA_EMBEDDING_MODEL")
+        or "BAAI/bge-large-zh-v1.5"
+    )
+
+
+def render_evaluation_plan(plan: Mapping[str, Any]) -> str:
+    """Render a compact, secret-free plan for confirmation before paid evaluation."""
+
+    path = plan["product_path"]
+    compute = plan["compute"]
+    generator = plan["generator"]
+    judge = plan["judge"]
+    if compute["backend"] == "remote":
+        compute_line = (
+            f"计算后端: remote ({compute['remote_url']})；"
+            f"本地回退 {'开' if compute['query_fallback_to_local'] else '关'}"
+        )
+        if compute["query_fallback_to_local"]:
+            compute_line += f"（{compute['device']}）"
+    else:
+        compute_line = f"计算后端: local / 设备 {compute['device']}"
+    lines = [
+        "RAGAS 评测预检（未加载模型、未调用 API）",
+        f"题目: {plan['question_count']} 题",
+        f"输出目录: {plan['output_dir']}",
+        (
+            f"产品路径: Top {path['top_k']} / HyDE {'开' if path['hyde'] else '关'} / "
+            "查询分解 关 / 引用核对 关"
+        ),
+        compute_line,
+        f"生成模型: {generator['model']} ({generator['api_base']})",
+        f"评判模型: {judge['model']} ({judge['api_base']})",
+        f"RAGAS 向量模型: {judge['embedding_model']}",
+        (
+            f"费用影响: 至少 {plan['minimum_generation_calls']} 次回答生成；"
+            f"RAGAS {plan['ragas_scoring_passes']} 轮评分（实际请求数由指标决定）"
+        ),
+        f"无 RAG baseline: {'开' if plan['baseline'] else '关'}",
+    ]
+    warnings = plan.get("warnings", [])
+    if warnings:
+        lines.append("警告:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("预检未发现配置警告。")
+    return "\n".join(lines)
 
 
 class RAGASEvaluator:
