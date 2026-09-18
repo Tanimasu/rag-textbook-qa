@@ -1,8 +1,10 @@
+import asyncio
 import json
 import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import warnings
 from datetime import date
@@ -11,12 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient`.*")
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from rag_textbook_qa.api.app import (
     PUBLIC_FAILURE,
     _stream,
-    _StreamCancelled,
     create_api_app,
     public_result,
     run_api_server,
@@ -30,6 +32,7 @@ from rag_textbook_qa.api.guard import (
     RateLimited,
 )
 from rag_textbook_qa.cli import main
+from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError
 
 SOURCE = {
@@ -520,32 +523,108 @@ class ApiAppTests(unittest.TestCase):
         )
         self.assertNotIn(SECRET, streamed.text)
 
-    def test_closing_a_stream_stops_its_producer_and_releases_the_slot(self):
+    def test_stopping_before_the_model_is_called_refunds_the_budget(self):
+        for request_sent, remaining in ((False, 5), (True, 4)):
+            with self.subTest(request_sent=request_sent):
+                engine = FakeEngine(raises=GenerationCancelled(request_sent=request_sent))
+                client = self.client(engine=engine, daily_generations=5)
+
+                response = client.post("/v1/ask/stream", json={"query": "问题"})
+
+                # A stop is the reader's choice: no result, and no error either.
+                self.assertEqual(response.text, "")
+                self.assertIsNotNone(engine.calls[0]["should_stop"])
+                health = client.get("/health").json()
+                self.assertEqual(health["generations_remaining_today"], remaining)
+
+
+def answer_threads_finish():
+    for thread in threading.enumerate():
+        if thread.name == "rag-qa-answer":
+            thread.join(2)
+
+
+def disconnect_after_first_body(stream):
+    """Drive a streaming response the way uvicorn does, then hang up."""
+
+    async def scenario():
+        first_body = asyncio.Event()
+
+        async def send(message):
+            if message["type"] == "http.response.body" and message.get("body"):
+                first_body.set()
+
+        async def receive():
+            await first_body.wait()
+            return {"type": "http.disconnect"}
+
+        response = StreamingResponse(stream, media_type="text/event-stream")
+        # uvicorn advertises ASGI 2.3, where Starlette cancels the response task on
+        # disconnect instead of waiting for a write to fail.
+        scope = {"type": "http", "asgi": {"spec_version": "2.3"}}
+        await asyncio.wait_for(response(scope, receive, send), 2)
+
+    asyncio.run(scenario())
+
+
+class StreamStopTests(unittest.TestCase):
+    def test_a_disconnect_during_silent_reasoning_stops_the_producer(self):
         guard = AccessGuard(GuardSettings(queue_timeout_seconds=1))
-        first_chunk_sent = threading.Event()
-        continue_producing = threading.Event()
         producer_stopped = threading.Event()
 
-        def produce(sink):
+        def produce(sink, should_stop):
             sink("第一段")
-            first_chunk_sent.set()
-            continue_producing.wait(2)
-            try:
-                sink("不应继续传送")
-            except _StreamCancelled:
-                producer_stopped.set()
-                raise
-            return {"status": "answered"}
+            # Hidden reasoning: nothing reaches the relay, so only the stop flag,
+            # not a failed write, can end this.
+            deadline = time.monotonic() + 2
+            while not should_stop():
+                if time.monotonic() > deadline:
+                    return {"status": "answered"}
+                time.sleep(0.01)
+            producer_stopped.set()
+            raise GenerationCancelled(request_sent=True)
 
-        stream = _stream(produce, guard)
-        self.assertIn("第一段", next(stream))
-        self.assertTrue(first_chunk_sent.wait(1))
-        stream.close()
-        continue_producing.set()
+        disconnect_after_first_body(_stream(produce, guard, keepalive_seconds=60))
+
         self.assertTrue(producer_stopped.wait(1))
-
+        answer_threads_finish()
         with guard.generation_slot():
             pass
+
+    def test_a_reader_who_leaves_while_queued_never_starts_an_answer(self):
+        guard = AccessGuard(GuardSettings(queue_timeout_seconds=2))
+        produced = threading.Event()
+        bodies = []
+
+        def produce(sink, should_stop):
+            produced.set()
+            return {"status": "answered"}
+
+        async def scenario():
+            async def send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    bodies.append(message["body"])
+
+            async def receive():
+                await asyncio.sleep(0.1)
+                return {"type": "http.disconnect"}
+
+            response = StreamingResponse(
+                _stream(produce, guard, keepalive_seconds=0.02),
+                media_type="text/event-stream",
+            )
+            scope = {"type": "http", "asgi": {"spec_version": "2.3"}}
+            await asyncio.wait_for(response(scope, receive, send), 2)
+
+        # Someone else is answering, so this request waits for the slot.
+        with guard.generation_slot():
+            asyncio.run(scenario())
+        answer_threads_finish()
+
+        self.assertFalse(produced.is_set())
+        # While it waited, the relay kept the connection warm with SSE comments only.
+        self.assertTrue(bodies)
+        self.assertEqual(set(bodies), {b": keepalive\n\n"})
 
 
 class ServerTests(unittest.TestCase):

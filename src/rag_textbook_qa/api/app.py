@@ -8,13 +8,14 @@ passed acceptance and each one adds model calls, and no provider error text is e
 returned, because it can carry upstream detail.
 """
 
+import asyncio
+import contextlib
 import json
 import math
-import queue
 import re
 import sys
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +34,7 @@ from rag_textbook_qa.api.guard import (
     RateLimited,
 )
 from rag_textbook_qa.catalog import BOOK_LABELS
+from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError, MissingOptionalDependencyError
 from rag_textbook_qa.providers.config import is_loopback_host
 
@@ -55,10 +57,9 @@ RETRIEVAL_ONLY_NOTICES = {
 _HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 _TIMING_FIELDS = ("retrieval_seconds", "generation_seconds", "first_token_seconds", "total_seconds")
 _CITATION_REFERENCE = re.compile(r"【参考资料\s*(\d+)】")
-
-
-class _StreamCancelled(Exception):
-    """Stop the producer after its client closes the streaming response."""
+# Long enough to cost nothing, short enough that no proxy idles out the connection
+# while a reasoning model has produced no visible text yet.
+_KEEPALIVE_SECONDS = 10.0
 
 
 class AskRequest(BaseModel):
@@ -204,44 +205,62 @@ def _client_address(request: Request, *, trust_proxy: bool) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _stream(
-    produce: Callable[[Callable[[str], None]], dict[str, Any]],
+async def _stream(
+    produce: Callable[[Callable[[str], None], Callable[[], bool]], dict[str, Any]],
     guard: AccessGuard,
-) -> Iterator[str]:
+    *,
+    keepalive_seconds: float = _KEEPALIVE_SECONDS,
+) -> AsyncIterator[str]:
     """Relay one answer as server-sent events.
 
     The answer runs on its own thread, and only that thread holds the generation
-    slot. A client that disconnects mid-answer therefore cannot strand the slot and
-    wedge every later request: the thread finishes and releases it either way.
+    slot, so a client that disconnects mid-answer cannot strand the slot and wedge
+    every later request.
+
+    The relay itself is a coroutine so that a disconnect reaches the producer at
+    once. Starlette cancels the response task when the client leaves; a relay that
+    blocked in the threadpool would only see that at its next event, and during a
+    reasoning model's silent first seconds there is none. Cancelling this coroutine
+    runs its ``finally``, and the producer checks that flag on every model chunk.
     """
 
-    events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
     cancelled = threading.Event()
 
-    def emit(chunk: str) -> None:
-        if cancelled.is_set():
-            raise _StreamCancelled
-        events.put(("chunk", {"text": chunk}))
+    def put(item: tuple[str, dict[str, Any]] | None) -> None:
+        # The loop is gone if the server shut down while this answer was running.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(events.put_nowait, item)
 
     def work() -> None:
         try:
             with guard.generation_slot():
-                result = produce(emit)
-            events.put(("result", result))
-        except _StreamCancelled:
-            # The browser intentionally stopped or left. This is not a server error.
-            pass
+                if cancelled.is_set():
+                    return  # The reader left while this request waited in the queue.
+                result = produce(lambda chunk: put(("chunk", {"text": chunk})), cancelled.is_set)
+            put(("result", result))
+        except GenerationCancelled:
+            pass  # The reader stopped the answer. This is not a server error.
         except Busy as exc:
-            events.put(("error", {"status": "busy", "message": str(exc)}))
+            put(("error", {"status": "busy", "message": str(exc)}))
         except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
             _log_failure(exc)
-            events.put(("error", {"status": "failed", "message": PUBLIC_FAILURE}))
+            put(("error", {"status": "failed", "message": PUBLIC_FAILURE}))
         finally:
-            events.put(None)
+            put(None)
 
     threading.Thread(target=work, name="rag-qa-answer", daemon=True).start()
     try:
-        while (item := events.get()) is not None:
+        while True:
+            try:
+                item = await asyncio.wait_for(events.get(), keepalive_seconds)
+            except TimeoutError:
+                # An SSE comment: the page ignores it, but the connection stays warm.
+                yield ": keepalive\n\n"
+                continue
+            if item is None:
+                return
             name, data = item
             yield f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
     finally:
@@ -304,6 +323,7 @@ def create_api_app(
         book_id: str | None,
         top_k: int,
         sink: Callable[[str], None] | None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if not getattr(engine, "enable_llm", False):
             retrieval_only = "llm_unavailable"
@@ -311,16 +331,23 @@ def create_api_app(
             retrieval_only = None
         else:
             retrieval_only = "budget"
-        result = engine.ask(
-            query=query,
-            book_name=book_id,
-            top_k=top_k,
-            use_llm=retrieval_only is None,
-            use_hyde=False,
-            use_decomposition=False,
-            verify_citations=False,
-            on_answer_chunk=sink if retrieval_only is None else None,
-        )
+        try:
+            result = engine.ask(
+                query=query,
+                book_name=book_id,
+                top_k=top_k,
+                use_llm=retrieval_only is None,
+                use_hyde=False,
+                use_decomposition=False,
+                verify_citations=False,
+                on_answer_chunk=sink if retrieval_only is None else None,
+                should_stop=should_stop,
+            )
+        except GenerationCancelled as exc:
+            if retrieval_only is None and not exc.request_sent:
+                # Stopped before the model was called, so nothing was spent.
+                guard.refund_generation()
+            raise
         if retrieval_only is None and not result.get("context_sources"):
             # Nothing was packed, so the engine never called the model.
             guard.refund_generation()
@@ -371,7 +398,10 @@ def create_api_app(
     def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
         query, book_id, top_k = admit(payload, request)
         return StreamingResponse(
-            _stream(lambda sink: answer(query, book_id, top_k, sink), guard),
+            _stream(
+                lambda sink, should_stop: answer(query, book_id, top_k, sink, should_stop),
+                guard,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

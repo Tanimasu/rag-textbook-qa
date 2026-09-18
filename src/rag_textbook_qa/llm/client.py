@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -21,6 +22,18 @@ class LLMConfigurationError(RuntimeError):
 
 class LLMGenerationIncompleteError(RuntimeError):
     """The provider ended a completion before producing a complete answer."""
+
+
+class GenerationCancelled(Exception):
+    """The reader stopped a streamed answer. This is not a provider failure.
+
+    ``request_sent`` says whether the paid completion request had already gone out,
+    so a caller can tell a stop that cost nothing from one that did.
+    """
+
+    def __init__(self, *, request_sent: bool) -> None:
+        super().__init__("回答已停止生成")
+        self.request_sent = request_sent
 
 
 def _incomplete_generation_message(finish_reason: Any) -> str:
@@ -217,9 +230,13 @@ class LLMClient:
         max_tokens: int = 2000,
         *,
         raise_on_error: bool = False,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Iterator[str]:
         selected_model = model or self.default_model
+        stream = None
         try:
+            if should_stop is not None and should_stop():
+                raise GenerationCancelled(request_sent=False)
             stream = self.client.chat.completions.create(
                 model=selected_model,
                 messages=[{"role": "user", "content": prompt}],
@@ -229,6 +246,11 @@ class LLMClient:
             )
             finish_reason = None
             for chunk in stream:
+                # Checked on every chunk, not only on answer text: a reasoning model
+                # streams hidden-reasoning chunks for many seconds before its first
+                # visible token, and that is exactly when a reader gives up waiting.
+                if should_stop is not None and should_stop():
+                    raise GenerationCancelled(request_sent=True)
                 choices = getattr(chunk, "choices", None)
                 if not choices:
                     continue
@@ -244,6 +266,8 @@ class LLMClient:
                 raise LLMGenerationIncompleteError(
                     _incomplete_generation_message(finish_reason)
                 )
+        except GenerationCancelled:
+            raise
         except Exception as exc:
             if raise_on_error:
                 raise
@@ -251,6 +275,13 @@ class LLMClient:
             if self.verbose:
                 print(message)
             yield message
+        finally:
+            # Closing the HTTP stream is what tells the provider to stop generating,
+            # whether the loop finished, was stopped, or its consumer walked away.
+            close = getattr(stream, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
     def chat(
         self,

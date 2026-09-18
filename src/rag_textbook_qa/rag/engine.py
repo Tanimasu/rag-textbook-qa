@@ -19,6 +19,7 @@ from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.llm import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    GenerationCancelled,
     create_llm_client,
 )
 from rag_textbook_qa.providers import (
@@ -68,6 +69,7 @@ class AnswerGenerator(Protocol):
         max_tokens: int = 2000,
         *,
         raise_on_error: bool = False,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Iterator[str]: ...
 
 
@@ -720,9 +722,17 @@ class RAGEngine:
         max_tokens: int,
         on_answer_chunk: Callable[[str], None] | None,
         started: float,
+        should_stop: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], float | None]:
-        """Generate one answer, streamed when a sink is given, normalising SDK errors."""
+        """Generate one answer, streamed when a sink is given, normalising SDK errors.
 
+        A stop requested through ``should_stop`` is the one exception that escapes:
+        it is the reader's decision, not a provider failure, so it must not come
+        back looking like a failed answer.
+        """
+
+        if should_stop is not None and should_stop():
+            raise GenerationCancelled(request_sent=False)
         if on_answer_chunk is None:
             response = self.llm.generate_answer(
                 prompt, temperature=temperature, max_tokens=max_tokens
@@ -738,6 +748,7 @@ class RAGEngine:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 raise_on_error=True,
+                should_stop=should_stop,
             ):
                 if first_token_seconds is None:
                     first_token_seconds = time.monotonic() - started
@@ -758,6 +769,8 @@ class RAGEngine:
                 },
                 first_token_seconds,
             )
+        except GenerationCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - normalize SDK stream errors
             return (
                 {
@@ -824,6 +837,7 @@ class RAGEngine:
         verify_citations: bool = False,
         context_budget: int | None = None,
         use_adjacent_context: bool | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -907,6 +921,7 @@ class RAGEngine:
                 # Citation checking rewrites the answer, so it cannot be streamed live.
                 on_answer_chunk=None if verify_citations else on_answer_chunk,
                 started=generation_started,
+                should_stop=should_stop,
             )
             answer = llm_response["answer"]
             if verify_citations and llm_response["success"]:

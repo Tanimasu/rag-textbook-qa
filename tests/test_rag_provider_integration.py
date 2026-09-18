@@ -6,10 +6,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
-from rag_textbook_qa.llm import LLMGenerationIncompleteError
+from rag_textbook_qa.llm import GenerationCancelled, LLMClient, LLMGenerationIncompleteError
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
@@ -162,6 +163,47 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertIsNone(result["answer"])
         self.assertEqual(chunks, ["未完成的回答"])
         self.assertIn("长度上限", result["error"])
+
+    def test_a_reader_stop_escapes_generate_instead_of_posing_as_a_failure(self):
+        # Hidden-reasoning chunks carry no answer text; the stop must still land.
+        silent = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=None, reasoning_content="思考"),
+                    finish_reason=None,
+                )
+            ]
+        )
+        stream = [silent] * 5
+        sdk = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: iter(stream)))
+        )
+        engine = object.__new__(RAGEngine)
+        engine.llm = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=sdk,
+            verbose=False,
+        )
+        checks = []
+        chunks = []
+
+        def should_stop():
+            # Pass the pre-request checks and the first chunk, then stop mid-reasoning.
+            checks.append(None)
+            return len(checks) > 3
+
+        with self.assertRaises(GenerationCancelled) as caught:
+            engine._generate(
+                "提示词",
+                temperature=0.7,
+                max_tokens=20,
+                on_answer_chunk=chunks.append,
+                started=time.monotonic(),
+                should_stop=should_stop,
+            )
+        self.assertTrue(caught.exception.request_sent)
+        self.assertEqual(chunks, [])
 
     def test_engine_accepts_injected_providers_without_model_runtime(self):
         before = {"sentence_transformers", "torch"}.intersection(sys.modules)

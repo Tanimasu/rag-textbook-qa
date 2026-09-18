@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from rag_textbook_qa.llm import (
+    GenerationCancelled,
     LLMClient,
     LLMConfigurationError,
     LLMGenerationIncompleteError,
@@ -46,6 +47,33 @@ class FakeSDKClient:
     def __init__(self, outcomes):
         self.completions = FakeCompletions(outcomes)
         self.chat = SimpleNamespace(completions=self.completions)
+
+
+class FakeStream:
+    """An SDK stream that records how far it was read and whether it was closed."""
+
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.pulled = 0
+        self.closed = False
+
+    def __iter__(self):
+        for chunk in self.chunks:
+            self.pulled += 1
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
+def reasoning_chunk():
+    delta = SimpleNamespace(content=None, reasoning_content="思考")
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)])
+
+
+def answer_chunk(text, finish_reason=None):
+    delta = SimpleNamespace(content=text)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
 
 
 class LLMClientTests(unittest.TestCase):
@@ -177,6 +205,54 @@ class LLMClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LLMGenerationIncompleteError, "长度上限"):
             list(client.stream_answer("问题", raise_on_error=True))
+
+    def test_a_stop_during_hidden_reasoning_ends_and_closes_the_request(self):
+        stream = FakeStream(
+            [reasoning_chunk() for _ in range(20)] + [answer_chunk("答案", "stop")]
+        )
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=FakeSDKClient([stream]),
+            verbose=False,
+        )
+
+        yielded = []
+        # raise_on_error stays False: a stop must not come back as an error message.
+        with self.assertRaises(GenerationCancelled) as caught:
+            yielded.extend(client.stream_answer("问题", should_stop=lambda: stream.pulled >= 3))
+
+        self.assertTrue(caught.exception.request_sent)
+        self.assertEqual(yielded, [])
+        self.assertEqual(stream.pulled, 3)
+        self.assertTrue(stream.closed)
+
+    def test_a_stop_before_the_request_sends_nothing(self):
+        sdk = FakeSDKClient([])
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=sdk,
+            verbose=False,
+        )
+
+        with self.assertRaises(GenerationCancelled) as caught:
+            list(client.stream_answer("问题", should_stop=lambda: True))
+
+        self.assertFalse(caught.exception.request_sent)
+        self.assertEqual(sdk.completions.calls, [])
+
+    def test_a_finished_stream_is_closed(self):
+        stream = FakeStream([answer_chunk("A"), answer_chunk("B", "stop")])
+        client = LLMClient(
+            api_key="key",
+            base_url="https://llm.example/v1",
+            sdk_client=FakeSDKClient([stream]),
+            verbose=False,
+        )
+
+        self.assertEqual(list(client.stream_answer("问题", should_stop=lambda: False)), ["A", "B"])
+        self.assertTrue(stream.closed)
 
     def test_stream_can_raise_errors_for_engine_handling(self):
         client = LLMClient(

@@ -3,6 +3,7 @@
 from rag_textbook_qa.llm.client import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    GenerationCancelled,
     LLMClient,
     LLMConfigurationError,
     LLMGenerationIncompleteError,
@@ -13,6 +14,7 @@ from rag_textbook_qa.llm.client import (
 __all__ = [
     "DEFAULT_LLM_BASE_URL",
     "DEFAULT_LLM_MODEL",
+    "GenerationCancelled",
     "LLMClient",
     "LLMConfigurationError",
     "LLMGenerationIncompleteError",
