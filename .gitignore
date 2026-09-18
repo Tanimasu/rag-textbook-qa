@@ -23,6 +23,8 @@ artifacts/evaluations/retrieval/
 artifacts/evaluations/ragas/
 artifacts/evaluations/product-acceptance-*/
 artifacts/product/
+# scripts/prepare_hf_space.py 生成的待上传 Space 目录（含索引副本）
+artifacts/hf-space/
 # 按轮次命名的 RAGAS 运行产物；结论记入 README，原始数据不入库
 artifacts/evaluations/ragas-*/
 artifacts/evaluations/adjacent-context-*/

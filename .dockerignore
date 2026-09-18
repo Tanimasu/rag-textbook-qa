@@ -1,0 +1,12 @@
+# Allow-list: the build context holds only what the Dockerfile copies. Anything
+# else — project/.env with its API keys, raw PDFs, evaluation outputs, feedback —
+# never reaches the builder, even by accident.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!scripts/fetch_models.py
+!artifacts/vector_db/
+**/__pycache__
+**/*.py[co]

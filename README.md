@@ -396,6 +396,28 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 监听非本机地址时，必须设置 `RAG_QA_ACCESS_CODE`，或显式加 `--public` 确认无口令开放。
 计数器存在进程内存里，重启即清零，只适合单进程演示。
 
+### Docker 与 Hugging Face Spaces
+
+镜像内置 CPU 版 PyTorch、固定版本的两个检索模型和当前索引，运行时不访问模型仓库，构建时会离线
+加载一次模型，缺文件直接构建失败。大模型通过环境变量接入，不配置也能以“只检索”模式运行。
+构建上下文是白名单，`project/.env` 不会进入镜像。
+
+```bash
+docker build -t rag-textbook-qa .
+docker run -p 7860:7860 -e LLM_API_KEY -e LLM_API_BASE -e LLM_MODEL rag-textbook-qa
+```
+
+部署到 Hugging Face Spaces（免费 CPU 规格即可）时，先生成 Space 目录：
+
+```bash
+python scripts/prepare_hf_space.py      # 检查索引后生成 artifacts/hf-space/
+```
+
+脚本会拒绝空集合、嵌入模型不一致或冲突锚点失效的索引，本身不上传任何内容；末尾打印的 `hf`
+命令要用你自己的账号执行，之后在 Space 设置里配置 `LLM_API_KEY`（Secret）、`LLM_API_BASE`、
+`LLM_MODEL`。镜像以 `--public` 无口令开放，费用靠限流和每日额度控制；设置 `RAG_QA_ACCESS_CODE`
+即可改为口令访问。Space 的磁盘不持久，重启后反馈库会清空。
+
 ---
 
 ## 持续集成
