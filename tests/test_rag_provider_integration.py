@@ -519,6 +519,45 @@ class ContentsListingTests(unittest.TestCase):
             )
         )
 
+    def test_exercise_blocks_under_a_chapter_summary_are_noise(self):
+        # Headings as they appear in the live index, where they slipped past 习题/思考题.
+        for heading in (
+            "三、综合应用题",
+            "二、计算题",
+            "、 选择题",
+            "填空题",
+            "三、设计题",
+            "1.选择题",
+            "3.算法设计题",
+            "（2）简答题",
+        ):
+            with self.subTest(heading=heading):
+                self.assertTrue(
+                    _is_candidate_noise(
+                        {
+                            "chapter": "第6章",
+                            "section_h2": "6.7 本章小结",
+                            "section_h3": heading,
+                            "content": self.PROSE,
+                        }
+                    )
+                )
+
+    def test_subjects_that_share_words_with_exercise_types_survive(self):
+        for heading in (
+            "3.1.2 作业和作业调度",
+            "3.2.2 短作业优先调度算法",
+            "8.4.1 简单选择排序",
+            "算法8.6　简单选择排序",
+            "选择题的设计原则",
+        ):
+            with self.subTest(heading=heading):
+                self.assertFalse(
+                    _is_candidate_noise(
+                        {"chapter": "第3章", "section_h3": heading, "content": self.PROSE}
+                    )
+                )
+
     def test_real_sections_survive_the_filter(self):
         self.assertFalse(
             _is_candidate_noise(

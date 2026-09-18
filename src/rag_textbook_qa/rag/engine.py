@@ -159,6 +159,15 @@ _TOC_NUMBER_START = re.compile(r"^\s*(?:第\s*\d+\s*章|\d+(?:[.．]\d+)*)")
 _TOC_PAGE_END = re.compile(r"[\s\u2003\u3000.．·…]\d{1,3}\s*$")
 _TOC_MIN_LINES = 3
 _TOC_LINE_RATIO = 0.5
+# End-of-chapter exercise blocks that are not headed 习题 or 思考题: "三、综合应用题",
+# "、 选择题" (OCR lost the numeral), "1.选择题". The whole heading must be the
+# question type, because the same characters are real subjects elsewhere —
+# 作业调度 in the OS book, 简单选择排序 in data structures.
+_EXERCISE_HEADING = re.compile(
+    r"^[\s、]*(?:[一二三四五六七八九十]+[、.．]|\d+[、.．]|[（(]\d+[)）])?\s*"
+    r"(?:单项|多项)?(?:选择|填空|判断|简答|问答|综合应用|综合|应用|计算|算法设计|设计|分析"
+    r"|是非|改错|论述|证明|编程)题$"
+)
 
 
 def _is_contents_listing(content: object) -> bool:
@@ -178,11 +187,13 @@ def _is_contents_listing(content: object) -> bool:
 def _is_candidate_noise(result: dict[str, Any]) -> bool:
     """Exclude exercises and contents pages while keeping imperfect headings."""
 
-    hierarchy = " ".join(
-        str(result.get(field, ""))
+    headings = [
+        str(result.get(field) or "").strip()
         for field in ("chapter", "section_h2", "section_h3", "section_h4")
-    )
-    if any(marker in hierarchy for marker in ("习题", "思考题")):
+    ]
+    if any("习题" in heading or "思考题" in heading for heading in headings):
+        return True
+    if any(_EXERCISE_HEADING.match(heading) for heading in headings):
         return True
     return _is_contents_listing(result.get("content"))
 
