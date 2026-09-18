@@ -113,6 +113,33 @@ class DecompositionTests(unittest.TestCase):
         self.assertEqual(result["decomposition"]["uncovered_query_ids"], [2])
         self.assertIn("须明确说明证据不足", result["prompt"])
 
+    def test_active_decomposition_does_not_mix_in_adjacent_expansion(self):
+        engine = self.engine()
+        engine.search_decomposed = MagicMock(
+            return_value=[
+                {"book_name": "os", "content": "资料", "query_ids": [1, 2]}
+            ]
+        )
+
+        result = engine.ask(
+            "比较进程和线程",
+            book_name="os",
+            use_decomposition=True,
+            use_adjacent_context=True,
+        )
+
+        self.assertEqual(result["decomposition"]["status"], "active")
+        self.assertEqual(
+            result["context_expansion"],
+            {
+                "enabled": True,
+                "applied": False,
+                "reason": "query_decomposition_active",
+                "added_candidates": 0,
+                "added_sources": 0,
+            },
+        )
+
     def test_sdk_planning_has_timeout_and_no_retry(self):
         client = object.__new__(LLMClient)
         client.default_model = "fake"

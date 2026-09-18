@@ -62,6 +62,7 @@ class EvaluateCliTests(unittest.TestCase):
                 enable_llm=True,
                 verbose=False,
                 enable_hyde=False,
+                enable_adjacent_context=False,
             )
             run_evaluation.assert_called_once_with(
                 engine,
@@ -106,6 +107,7 @@ class EvaluateCliTests(unittest.TestCase):
                         "--questions",
                         str(questions_path),
                         "--hyde",
+                        "--adjacent-context",
                         "--top-k",
                         "7",
                     ]
@@ -113,6 +115,7 @@ class EvaluateCliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertTrue(engine_type.call_args.kwargs["enable_hyde"])
+            self.assertTrue(engine_type.call_args.kwargs["enable_adjacent_context"])
             self.assertEqual(run_evaluation.call_args.kwargs["top_k"], 7)
 
     def test_evaluate_rejects_non_positive_top_k_before_loading_models(self):

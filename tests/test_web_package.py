@@ -46,6 +46,7 @@ class WebPackageTests(unittest.TestCase):
         self.assertIn('"启用 HyDE 增强检索"', layout_source)
         self.assertIn("value=False", layout_source)
         self.assertIn('sidebar_state.get("enable_hyde", False)', app_source)
+        self.assertIn('sidebar_state.get("enable_adjacent_context", False)', app_source)
 
     @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
     def test_packaged_and_legacy_entrypoints_render_without_exceptions(self):

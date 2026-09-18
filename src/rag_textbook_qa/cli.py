@@ -107,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--no-reranker", action="store_true", help="禁用重排序")
     chat.add_argument("--no-hyde", action="store_true", help="禁用 HyDE")
     chat.add_argument(
+        "--adjacent-context",
+        action="store_true",
+        help="实验性：用剩余预算补充同小节相邻片段",
+    )
+    chat.add_argument(
         "--context-budget",
         type=int,
         help="送入模型的上下文字符预算；默认 4000",
@@ -129,6 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--hyde",
         action="store_true",
         help="显式启用实验性 HyDE（额外调用 LLM；默认关闭以匹配公开产品）",
+    )
+    evaluate.add_argument(
+        "--adjacent-context",
+        action="store_true",
+        help="实验性：用剩余预算补充同小节相邻片段",
     )
     evaluate.add_argument(
         "--top-k",
@@ -523,6 +533,7 @@ def _run_chat(args: argparse.Namespace, settings: Settings) -> int:
         enable_llm=not args.no_llm,
         enable_reranker=not args.no_reranker,
         enable_hyde=not args.no_hyde,
+        enable_adjacent_context=args.adjacent_context,
         context_budget=args.context_budget or DEFAULT_CONTEXT_BUDGET,
     )
     return 0
@@ -555,6 +566,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
             output_dir=args.output_dir or settings.paths.evaluations,
             top_k=args.top_k,
             enable_hyde=args.hyde,
+            enable_adjacent_context=args.adjacent_context,
             include_baseline=args.baseline,
         )
         print(render_evaluation_plan(plan))
@@ -566,6 +578,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         enable_llm=True,
         verbose=False,
         enable_hyde=args.hyde,
+        enable_adjacent_context=args.adjacent_context,
     ) as engine:
         run_evaluation(
             engine,

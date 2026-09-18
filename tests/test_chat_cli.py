@@ -53,6 +53,7 @@ class ChatCliTests(unittest.TestCase):
                 enable_llm=False,
                 enable_reranker=False,
                 enable_hyde=False,
+                enable_adjacent_context=False,
                 context_budget=DEFAULT_CONTEXT_BUDGET,
             )
 
@@ -68,6 +69,15 @@ class ChatCliTests(unittest.TestCase):
                 interactive.call_args.kwargs["context_budget"],
                 1500,
             )
+
+    def test_adjacent_context_is_explicitly_opt_in(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.make_workspace(root)
+
+            _, interactive = self.run_chat(root, "--adjacent-context")
+
+            self.assertTrue(interactive.call_args.kwargs["enable_adjacent_context"])
 
 
 if __name__ == "__main__":

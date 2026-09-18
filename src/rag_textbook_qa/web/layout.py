@@ -56,10 +56,18 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
 
         with st.expander("实验功能（默认关闭 · 未通过验收）", expanded=False):
             st.warning(
-                "以下两项都**没有通过真实效果验收**：只做过离线流程测试和小样本回归，"
-                "没有证据表明它们会让答案更准。开启后结果可能更差，且都会增加模型调用、"
-                "费用和等待时间。",
+                "以下功能都**没有通过真实回答质量验收**。开启后结果可能更差；"
+                "查询分解和引用核对还会增加模型调用、费用和等待时间。",
                 icon="⚠️",
+            )
+            enable_adjacent_context = st.toggle(
+                "补充同小节相邻片段（实验）",
+                value=False,
+                help=(
+                    "保持 Top 5 顺序不变，只用剩余上下文预算追加同小节的相邻片段。"
+                    "35 题开发集的正文覆盖有所提升，但尚未证明回答质量提高；"
+                    "查询分解实际生效时不会叠加此功能。"
+                ),
             )
             enable_decomposition = st.toggle(
                 "启用查询分解（实验 · 未验收）",
@@ -91,6 +99,7 @@ def render_sidebar(book_options: list[tuple[str, str | None]]) -> dict[str, Any]
         "temperature": temperature,
         "max_tokens": max_tokens,
         "enable_hyde": enable_hyde,
+        "enable_adjacent_context": enable_adjacent_context,
         "enable_decomposition": enable_decomposition,
         "verify_citations": verify_citations,
     }

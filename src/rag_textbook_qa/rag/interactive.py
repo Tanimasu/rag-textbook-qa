@@ -24,6 +24,7 @@ def interactive_main(
     enable_llm: bool = True,
     enable_reranker: bool = True,
     enable_hyde: bool = True,
+    enable_adjacent_context: bool = False,
     context_budget: int = DEFAULT_CONTEXT_BUDGET,
 ) -> None:
     settings = Settings.load(workspace)
@@ -33,6 +34,7 @@ def interactive_main(
         enable_llm=enable_llm,
         enable_reranker=enable_reranker,
         enable_hyde=enable_hyde,
+        enable_adjacent_context=enable_adjacent_context,
         context_budget=context_budget,
         verbose=True,
     )

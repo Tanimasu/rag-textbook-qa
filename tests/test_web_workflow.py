@@ -59,6 +59,7 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         self.assertFalse(kwargs["use_decomposition"])
         self.assertFalse(kwargs["verify_citations"])
         self.assertFalse(kwargs["use_hyde"])
+        self.assertFalse(kwargs["use_adjacent_context"])
         self.assertEqual(kwargs["book_name"], "os")
         self.assertEqual(len(app.session_state["messages"]), 2)
         self.assertEqual(app.session_state["messages"][1]["sources"][0]["content"], "实际输入片段")

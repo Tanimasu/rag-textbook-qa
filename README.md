@@ -460,7 +460,9 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 触发后不拦截回答，而是要求并列给出两种说法。**没有匹配到规则不代表不存在冲突**——这是针对一处已核实
 问题的硬编码保护，不是通用冲突检测。详见 [证据复核](docs/database-evidence-review.md)。
 
-**实验功能（默认关闭，都没通过真实效果验收）**：`use_decomposition=True` 最多拆 3 个子问题并保留
-原问题检索，合并后统一重排（[记录](docs/query-decomposition-plan.md)）；`verify_citations=True`
+**实验功能（默认关闭，都没通过真实效果验收）**：`use_adjacent_context=True` 保持检索排序不变，
+只用剩余预算补充同小节邻块（[开发集实验](docs/evaluation-methodology.md#同小节相邻块补充实验)）；
+`use_decomposition=True` 最多拆 3 个子问题并保留原问题检索，合并后统一重排
+（[记录](docs/query-decomposition-plan.md)）；`verify_citations=True`
 在草稿后追加最多两次模型请求核对引用，核对未完成时不展示草稿。引用编号存在、或模型核对通过，
 都不等于答案里每个细节都有原文支撑。

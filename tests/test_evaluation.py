@@ -24,6 +24,7 @@ class EvaluationTests(unittest.TestCase):
                 output_dir=Path(temporary_directory) / "fresh-output",
                 top_k=7,
                 enable_hyde=True,
+                enable_adjacent_context=True,
                 include_baseline=True,
                 environ={
                     "LLM_API_KEY": "shared-secret",
@@ -47,12 +48,14 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(plan["ragas_scoring_passes"], 6)
         self.assertEqual(plan["product_path"]["top_k"], 7)
         self.assertTrue(plan["product_path"]["hyde"])
+        self.assertTrue(plan["product_path"]["adjacent_context"])
         self.assertEqual(plan["compute"]["device"], "mps")
         self.assertEqual(plan["warnings"], [])
         rendered = render_evaluation_plan(plan)
         self.assertIn("未调用 API", rendered)
         self.assertIn("至少 6 次回答生成", rendered)
         self.assertIn("计算后端: local / 设备 mps", rendered)
+        self.assertIn("相邻片段 开", rendered)
 
     def test_evaluation_plan_warns_before_mixing_results_or_backends(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -185,6 +188,7 @@ class EvaluationTests(unittest.TestCase):
             evaluator.output_dir = output_dir
             engine = MagicMock()
             engine.enable_hyde = False
+            engine.enable_adjacent_context = False
             engine.ask.return_value = {
                 "success": True,
                 "answer": "进程是程序的一次执行过程。",
@@ -235,6 +239,7 @@ class EvaluationTests(unittest.TestCase):
             top_k=5,
             use_llm=True,
             use_hyde=False,
+            use_adjacent_context=False,
             use_decomposition=False,
             verify_citations=False,
         )
@@ -244,6 +249,7 @@ class EvaluationTests(unittest.TestCase):
             {
                 "top_k": 5,
                 "hyde": False,
+                "adjacent_context": False,
                 "query_decomposition": False,
                 "citation_verification": False,
             },

@@ -30,6 +30,10 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.rag.adjacent import (
+    append_same_section_neighbours,
+    load_ordered_chunks,
+)
 from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
 from rag_textbook_qa.rag.context import (
     DEFAULT_CONTEXT_BUDGET,
@@ -261,6 +265,7 @@ class RAGEngine:
         fusion_weights: Mapping[str, float] | None = None,
         bm25_mode: str | None = None,
         context_budget: int = DEFAULT_CONTEXT_BUDGET,
+        enable_adjacent_context: bool = False,
     ) -> None:
         print("初始化 RAG 引擎...")
         self.verbose = verbose
@@ -271,6 +276,8 @@ class RAGEngine:
         if context_budget <= 0:
             raise ValueError("上下文预算必须大于 0")
         self.context_budget = context_budget
+        self.enable_adjacent_context = enable_adjacent_context
+        self._adjacent_corpora: dict[str, list[dict[str, Any]]] = {}
 
         if compute_settings is None:
             providers_fully_injected = embedding_provider is not None and (
@@ -659,6 +666,29 @@ class RAGEngine:
                 results = self._rerank(query, results, top_k)
         return results, trace_id, time.monotonic() - started
 
+    def _context_candidates(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        use_adjacent_context: bool,
+    ) -> list[dict[str, Any]]:
+        """Optionally append source neighbours without changing retrieval results."""
+
+        if not use_adjacent_context:
+            return results
+        corpora = getattr(self, "_adjacent_corpora", None)
+        if corpora is None:
+            corpora = {}
+            self._adjacent_corpora = corpora
+        for book_name in {
+            str(result.get("book_name", "")) for result in results if result.get("book_name")
+        }:
+            if book_name in corpora:
+                continue
+            collection = self.vectorizer.client.get_collection(f"textbook_{book_name}")
+            corpora[book_name] = load_ordered_chunks(collection, book_name)
+        return append_same_section_neighbours(results, corpora)
+
     def _compose_prompt(
         self,
         query: str,
@@ -753,6 +783,7 @@ class RAGEngine:
         trace_id: str,
         retrieval_seconds: float,
         total_started: float,
+        context_expansion: dict[str, Any],
     ) -> dict[str, Any]:
         """Nothing packed: say why, without pretending generation was attempted."""
 
@@ -764,6 +795,7 @@ class RAGEngine:
             "results": results,
             "context_sources": [],
             "context": "",
+            "context_expansion": context_expansion,
             "prompt": "",
             "answer": f"❌ {message}",
             "llm_response": None,
@@ -791,6 +823,7 @@ class RAGEngine:
         use_decomposition: bool = False,
         verify_citations: bool = False,
         context_budget: int | None = None,
+        use_adjacent_context: bool | None = None,
     ) -> dict[str, Any]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -807,10 +840,37 @@ class RAGEngine:
             query, plan, book_name, top_k, use_hyde
         )
 
+        adjacent_enabled = (
+            getattr(self, "enable_adjacent_context", False)
+            if use_adjacent_context is None
+            else use_adjacent_context
+        )
+        adjacent_applied = adjacent_enabled and plan["status"] != "active"
+        context_candidates = self._context_candidates(
+            results,
+            use_adjacent_context=adjacent_applied,
+        )
         budget = self.context_budget if context_budget is None else context_budget
         context, context_sources = select_context(
-            results, budget, fair_share=plan["status"] == "active"
+            context_candidates, budget, fair_share=plan["status"] == "active"
         )
+        context_expansion = {
+            "enabled": adjacent_enabled,
+            "applied": adjacent_applied,
+            "reason": (
+                "query_decomposition_active"
+                if adjacent_enabled and not adjacent_applied
+                else None
+            ),
+            "added_candidates": sum(
+                candidate.get("method") == "same-section-adjacent"
+                for candidate in context_candidates
+            ),
+            "added_sources": sum(
+                source.get("method") == "same-section-adjacent"
+                for source in context_sources
+            ),
+        }
         covered = {i for source in context_sources for i in source.get("query_ids", [])}
         plan["uncovered_query_ids"] = [
             i for i in range(1, len(plan["queries"]) + 1) if i not in covered
@@ -825,6 +885,7 @@ class RAGEngine:
                 trace_id=trace_id,
                 retrieval_seconds=retrieval_seconds,
                 total_started=total_started,
+                context_expansion=context_expansion,
             )
 
         # A reviewed disagreement is disclosed inside the answer rather than replacing
@@ -887,6 +948,7 @@ class RAGEngine:
             "results": results,
             "context": context,
             "context_sources": context_sources,
+            "context_expansion": context_expansion,
             "prompt": prompt,
             "answer": answer,
             "llm_response": llm_response,

@@ -45,6 +45,13 @@ def render_grounding(grounding: dict[str, Any] | None) -> None:
         st.caption("引用核对未通过，未展示原始草稿。")
 
 
+def render_context_expansion(expansion: dict[str, Any] | None) -> None:
+    if expansion and expansion.get("added_sources"):
+        st.caption(
+            f"实验性相邻片段补充：本次上下文增加 {expansion['added_sources']} 条教材片段。"
+        )
+
+
 def render_chat_tab(
     book_id: str | None,
     top_k: int,
@@ -52,6 +59,7 @@ def render_chat_tab(
     max_tokens: int,
     enable_hyde: bool,
     load_engine: Callable[[], Any],
+    enable_adjacent_context: bool = False,
     enable_decomposition: bool = False,
     verify_citations: bool = False,
 ) -> None:
@@ -76,6 +84,7 @@ def render_chat_tab(
                 )
                 render_decomposition(message.get("decomposition"))
                 render_grounding(message.get("grounding"))
+                render_context_expansion(message.get("context_expansion"))
             else:
                 st.markdown(message["content"])
 
@@ -106,6 +115,7 @@ def render_chat_tab(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     use_hyde=enable_hyde,
+                    use_adjacent_context=enable_adjacent_context,
                     use_decomposition=enable_decomposition,
                     verify_citations=verify_citations,
                     on_answer_chunk=render_chunk,
@@ -123,6 +133,7 @@ def render_chat_tab(
         render_answer_details(sources, result.get("execution"))
         render_decomposition(result.get("decomposition"))
         render_grounding(result.get("grounding"))
+        render_context_expansion(result.get("context_expansion"))
 
     st.session_state.messages.append(
         {
@@ -132,5 +143,6 @@ def render_chat_tab(
             "execution": result.get("execution"),
             "decomposition": result.get("decomposition"),
             "grounding": result.get("grounding"),
+            "context_expansion": result.get("context_expansion"),
         }
     )

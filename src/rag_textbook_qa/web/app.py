@@ -45,6 +45,7 @@ def main() -> None:
             temperature=sidebar_state["temperature"],
             max_tokens=sidebar_state["max_tokens"],
             enable_hyde=sidebar_state.get("enable_hyde", False),
+            enable_adjacent_context=sidebar_state.get("enable_adjacent_context", False),
             enable_decomposition=sidebar_state.get("enable_decomposition", False),
             verify_citations=sidebar_state.get("verify_citations", False),
             load_engine=load_engine,

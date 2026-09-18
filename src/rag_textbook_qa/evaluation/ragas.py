@@ -122,6 +122,7 @@ def build_evaluation_plan(
     output_dir: str | Path,
     top_k: int = 5,
     enable_hyde: bool = False,
+    enable_adjacent_context: bool = False,
     include_baseline: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -172,6 +173,7 @@ def build_evaluation_plan(
         "product_path": {
             "top_k": top_k,
             "hyde": enable_hyde,
+            "adjacent_context": enable_adjacent_context,
             "query_decomposition": False,
             "citation_verification": False,
         },
@@ -225,6 +227,7 @@ def render_evaluation_plan(plan: Mapping[str, Any]) -> str:
         f"输出目录: {plan['output_dir']}",
         (
             f"产品路径: Top {path['top_k']} / HyDE {'开' if path['hyde'] else '关'} / "
+            f"相邻片段 {'开' if path['adjacent_context'] else '关'} / "
             "查询分解 关 / 引用核对 关"
         ),
         compute_line,
@@ -340,6 +343,9 @@ class RAGASEvaluator:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
         use_hyde = getattr(rag_engine, "enable_hyde", False) is True
+        use_adjacent_context = (
+            getattr(rag_engine, "enable_adjacent_context", False) is True
+        )
 
         print("=" * 60)
         print("准备评估数据")
@@ -362,6 +368,7 @@ class RAGASEvaluator:
                     top_k=top_k,
                     use_llm=True,
                     use_hyde=use_hyde,
+                    use_adjacent_context=use_adjacent_context,
                     use_decomposition=False,
                     verify_citations=False,
                 )
@@ -432,6 +439,7 @@ class RAGASEvaluator:
             "product_path": {
                 "top_k": top_k,
                 "hyde": use_hyde,
+                "adjacent_context": use_adjacent_context,
                 "query_decomposition": False,
                 "citation_verification": False,
             },
