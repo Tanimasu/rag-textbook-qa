@@ -227,6 +227,8 @@ class EvaluateCliTests(unittest.TestCase):
                         "mean_context_retention": 0.8,
                         "relevant_dropped_total": 3,
                         "relevant_truncated_total": 1,
+                        "mean_source_evidence_coverage_at_k": 0.7,
+                        "mean_source_evidence_context_coverage": 0.6,
                     }
                     for strategy in ("bm25", "embedding", "hybrid", "hybrid-rerank")
                 },
@@ -290,6 +292,7 @@ class EvaluateCliTests(unittest.TestCase):
             save_report.assert_called_once_with(report, output_path)
             self.assertIn("检索评测完成", output.getvalue())
             self.assertIn("证据保留=0.800（丢弃 3 条，截断 1 条）", output.getvalue())
+            self.assertIn("标注正文覆盖=0.700，正文送达=0.600", output.getvalue())
 
 
 if __name__ == "__main__":

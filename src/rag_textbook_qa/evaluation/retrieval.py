@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -25,6 +26,17 @@ RETRIEVAL_STRATEGIES = (
 
 
 @dataclass(frozen=True)
+class SourceEvidence:
+    """A reviewed source span used for deterministic body-text coverage."""
+
+    path: str
+    start_line: int
+    end_line: int
+    sha256: str
+    text: str
+
+
+@dataclass(frozen=True)
 class RetrievalQuestion:
     """One retrieval question with curated relevant section markers."""
 
@@ -34,6 +46,68 @@ class RetrievalQuestion:
     # Tuning runs see "dev" only, so the holdout cannot leak into a choice of
     # parameters. Unlabelled questions count as dev.
     split: str = DEFAULT_SPLIT
+    evidence: SourceEvidence | None = None
+
+
+def _resolve_evidence_path(dataset_path: Path, configured_path: str) -> Path:
+    path = Path(configured_path).expanduser()
+    if path.is_absolute():
+        return path
+    for parent in dataset_path.parents:
+        candidate = parent / path
+        if candidate.is_file():
+            return candidate
+    raise ValueError(f"找不到证据文件: {configured_path}")
+
+
+def _load_source_evidence(
+    item: dict[str, Any],
+    *,
+    index: int,
+    dataset_path: Path,
+    file_cache: dict[Path, tuple[str, list[str]]],
+) -> SourceEvidence | None:
+    raw = item.get("evidence")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"第 {index} 条 evidence 必须是对象")
+
+    configured_path = raw.get("path")
+    start_line = raw.get("start_line")
+    end_line = raw.get("end_line")
+    expected_hash = raw.get("sha256")
+    if not isinstance(configured_path, str) or not configured_path.strip():
+        raise ValueError(f"第 {index} 条 evidence.path 必须是非空字符串")
+    if not isinstance(start_line, int) or isinstance(start_line, bool) or start_line < 1:
+        raise ValueError(f"第 {index} 条 evidence.start_line 必须是正整数")
+    if not isinstance(end_line, int) or isinstance(end_line, bool) or end_line < start_line:
+        raise ValueError(f"第 {index} 条 evidence.end_line 必须不小于 start_line")
+    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+        raise ValueError(f"第 {index} 条 evidence.sha256 必须是 64 位十六进制摘要")
+
+    evidence_path = _resolve_evidence_path(dataset_path, configured_path.strip()).resolve()
+    if evidence_path not in file_cache:
+        content = evidence_path.read_bytes()
+        file_cache[evidence_path] = (
+            hashlib.sha256(content).hexdigest(),
+            content.decode("utf-8").splitlines(),
+        )
+    actual_hash, lines = file_cache[evidence_path]
+    if actual_hash != expected_hash.lower():
+        raise ValueError(f"第 {index} 条证据文件哈希不匹配: {configured_path}")
+    if end_line > len(lines):
+        raise ValueError(f"第 {index} 条 evidence.end_line 超出文件行数")
+    text = "\n".join(lines[start_line - 1 : end_line]).strip()
+    if not text:
+        raise ValueError(f"第 {index} 条 evidence 指向空文本")
+    return SourceEvidence(
+        path=configured_path.strip(),
+        start_line=start_line,
+        end_line=end_line,
+        sha256=expected_hash.lower(),
+        text=text,
+    )
 
 
 def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
@@ -45,6 +119,7 @@ def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
         raise ValueError("检索评估集必须是非空 JSON 数组")
 
     questions: list[RetrievalQuestion] = []
+    evidence_files: dict[Path, tuple[str, list[str]]] = {}
     for index, item in enumerate(payload, 1):
         if not isinstance(item, dict):
             raise TypeError(f"第 {index} 条检索评估数据必须是对象")
@@ -68,6 +143,12 @@ def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
                 book_name=book_name.strip(),
                 relevant_sections=tuple(value.strip() for value in relevant_sections),
                 split=split,
+                evidence=_load_source_evidence(
+                    item,
+                    index=index,
+                    dataset_path=source,
+                    file_cache=evidence_files,
+                ),
             )
         )
     return questions
@@ -91,6 +172,78 @@ def select_split(
 
 def _normalized(value: object) -> str:
     return "".join(str(value or "").lower().split())
+
+
+_EVIDENCE_CHARACTER = re.compile(r"[\w\u3400-\u4dbf\u4e00-\u9fff]", re.UNICODE)
+_EVIDENCE_SHINGLE_SIZE = 16
+
+
+def _evidence_characters(value: object) -> str:
+    """Normalize formatting away while retaining exact source wording."""
+
+    return "".join(_EVIDENCE_CHARACTER.findall(str(value or "").casefold()))
+
+
+def _evidence_shingles(value: object, *, size: int = _EVIDENCE_SHINGLE_SIZE) -> set[str]:
+    normalized = _evidence_characters(value)
+    if not normalized:
+        return set()
+    if len(normalized) <= size:
+        return {normalized}
+    return {normalized[index : index + size] for index in range(len(normalized) - size + 1)}
+
+
+def score_source_evidence_coverage(
+    results: Sequence[dict[str, Any]],
+    evidence: SourceEvidence,
+    *,
+    top_k: int = 5,
+    sources: Sequence[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Measure exact body-text coverage without copying source text into reports.
+
+    Heading relevance can declare the right section a hit even when the returned
+    chunk contains a different paragraph. Character shingles expose that gap while
+    tolerating Markdown whitespace and punctuation changes. This measures coverage
+    of the reviewed source span, not whether the answer is fully supported.
+    """
+
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+    expected = _evidence_shingles(evidence.text)
+    if not expected:
+        raise ValueError("证据正文规范化后为空")
+
+    def coverage(rows: Sequence[dict[str, Any]]) -> tuple[float, int]:
+        seen: set[str] = set()
+        for row in rows:
+            seen.update(_evidence_shingles(row.get("content", "")))
+        matched = len(expected & seen)
+        return matched / len(expected), matched
+
+    retrieved_coverage, retrieved_matches = coverage(list(results)[:top_k])
+    score: dict[str, Any] = {
+        "source_evidence": {
+            "path": evidence.path,
+            "start_line": evidence.start_line,
+            "end_line": evidence.end_line,
+            "sha256": evidence.sha256,
+        },
+        "source_evidence_shingles": len(expected),
+        "source_evidence_retrieved_shingles": retrieved_matches,
+        "source_evidence_coverage_at_k": retrieved_coverage,
+        "source_evidence_fully_retrieved": retrieved_matches == len(expected),
+    }
+    if sources is not None:
+        context_coverage, context_matches = coverage(sources)
+        score.update(
+            {
+                "source_evidence_context_shingles": context_matches,
+                "source_evidence_context_coverage": context_coverage,
+                "source_evidence_fully_retained": context_matches == len(expected),
+            }
+        )
+    return score
 
 
 # Relevance is not binary here. Failure analysis showed the retriever landing on
@@ -284,6 +437,7 @@ def evaluate_retrieval(
         started = time.monotonic()
         results = list(search(question, top_k))
         elapsed_seconds = time.monotonic() - started
+        packed_sources = None if pack is None else pack(results)[1]
         score = score_ranked_results(
             results,
             question.relevant_sections,
@@ -292,9 +446,19 @@ def evaluate_retrieval(
         )
         retention = (
             {}
-            if pack is None
+            if packed_sources is None
             else score_context_retention(
-                results, pack(results)[1], question.relevant_sections, top_k=top_k
+                results, packed_sources, question.relevant_sections, top_k=top_k
+            )
+        )
+        source_coverage = (
+            {}
+            if question.evidence is None
+            else score_source_evidence_coverage(
+                results,
+                question.evidence,
+                top_k=top_k,
+                sources=packed_sources,
             )
         )
         cases.append(
@@ -304,6 +468,7 @@ def evaluate_retrieval(
                 "relevant_sections": list(question.relevant_sections),
                 **score,
                 **retention,
+                **source_coverage,
                 "elapsed_seconds": round(elapsed_seconds, 6),
             }
         )
@@ -336,6 +501,37 @@ def evaluate_retrieval(
                 "mean_context_chars": sum(case["context_chars"] for case in cases) / count,
             }
         )
+    source_scored = [case for case in cases if "source_evidence_coverage_at_k" in case]
+    if source_scored:
+        aggregate.update(
+            {
+                "questions_with_source_evidence": len(source_scored),
+                "mean_source_evidence_coverage_at_k": sum(
+                    case["source_evidence_coverage_at_k"] for case in source_scored
+                )
+                / len(source_scored),
+                "full_source_evidence_hit_rate_at_k": sum(
+                    case["source_evidence_fully_retrieved"] for case in source_scored
+                )
+                / len(source_scored),
+            }
+        )
+        context_scored = [
+            case for case in source_scored if "source_evidence_context_coverage" in case
+        ]
+        if context_scored:
+            aggregate.update(
+                {
+                    "mean_source_evidence_context_coverage": sum(
+                        case["source_evidence_context_coverage"] for case in context_scored
+                    )
+                    / len(context_scored),
+                    "full_source_evidence_context_rate": sum(
+                        case["source_evidence_fully_retained"] for case in context_scored
+                    )
+                    / len(context_scored),
+                }
+            )
     aggregate["cases"] = cases
     return aggregate
 
@@ -421,9 +617,10 @@ def run_retrieval_strategies(
         for strategy in selected
     }
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "ndcg_scope": "corpus" if candidates_by_book is not None else "returned_results_only",
         "relevance_policy": "heading_hierarchy_v2",
+        "source_evidence_policy": "normalized_character_shingles_v1",
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "question_count": len(questions),
         "top_k": top_k,

@@ -638,6 +638,12 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
                 f"（丢弃 {result['relevant_dropped_total']} 条，"
                 f"截断 {result['relevant_truncated_total']} 条）"
             )
+        source_coverage = result.get("mean_source_evidence_coverage_at_k")
+        if source_coverage is not None:
+            line += f"，标注正文覆盖={source_coverage:.3f}"
+            context_coverage = result.get("mean_source_evidence_context_coverage")
+            if context_coverage is not None:
+                line += f"，正文送达={context_coverage:.3f}"
         print(line)
     print(f"报告: {report_path}")
     return 0

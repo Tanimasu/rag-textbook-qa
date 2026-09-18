@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 from rag_textbook_qa.evaluation.retrieval import (
     RETRIEVAL_STRATEGIES,
     RetrievalQuestion,
+    SourceEvidence,
     evaluate_retrieval,
     grade_result,
     load_retrieval_questions,
@@ -16,6 +18,7 @@ from rag_textbook_qa.evaluation.retrieval import (
     run_retrieval_strategies,
     save_retrieval_report,
     score_ranked_results,
+    score_source_evidence_coverage,
     search_with_strategy,
     select_split,
 )
@@ -120,6 +123,45 @@ class RetrievalEvaluationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "split"):
                 load_retrieval_questions(path)
+
+    def test_loads_and_hash_checks_optional_source_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source_path = directory / "source.md"
+            source_path.write_text("标题\n关键正文用于回答问题\n结尾\n", encoding="utf-8")
+            digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            questions_path = directory / "questions.json"
+            questions_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "question": "问题",
+                            "book_name": "os",
+                            "relevant_sections": ["3.5"],
+                            "evidence": {
+                                "path": "source.md",
+                                "start_line": 2,
+                                "end_line": 2,
+                                "sha256": digest,
+                            },
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            question = load_retrieval_questions(questions_path)[0]
+
+            self.assertIsNotNone(question.evidence)
+            self.assertEqual(question.evidence.text, "关键正文用于回答问题")
+            self.assertEqual(question.evidence.path, "source.md")
+
+            payload = json.loads(questions_path.read_text(encoding="utf-8"))
+            payload[0]["evidence"]["sha256"] = "0" * 64
+            questions_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "哈希不匹配"):
+                load_retrieval_questions(questions_path)
 
     def test_select_split_filters_and_refuses_an_empty_selection(self):
         dev = RetrievalQuestion("问题1", "os", ("3.5",), "dev")
@@ -262,6 +304,47 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertEqual(score["first_relevant_rank"], 2)
         self.assertEqual(score["matched_sections"], ["3.5", "3.6"])
 
+    def test_source_evidence_coverage_exposes_a_heading_only_hit(self):
+        evidence = SourceEvidence(
+            path="book.md",
+            start_line=10,
+            end_line=11,
+            sha256="0" * 64,
+            text="发送端插入转义字符接收端删除转义字符还原数据",
+        )
+        heading_only = {
+            "chunk_id": "before",
+            "section_h3": "3.1.2 三个基本问题",
+            "content": "数据里出现控制字符会造成帧定界错误",
+        }
+        answer_chunk = {
+            "chunk_id": "answer",
+            "section_h3": "3.1.2 三个基本问题",
+            "content": "发送端插入转义字符，接收端删除转义字符还原数据。",
+        }
+
+        missed = score_source_evidence_coverage([heading_only], evidence)
+        found = score_source_evidence_coverage([heading_only, answer_chunk], evidence)
+
+        self.assertEqual(missed["source_evidence_coverage_at_k"], 0.0)
+        self.assertFalse(missed["source_evidence_fully_retrieved"])
+        self.assertEqual(found["source_evidence_coverage_at_k"], 1.0)
+        self.assertTrue(found["source_evidence_fully_retrieved"])
+        self.assertNotIn("text", found["source_evidence"])
+
+    def test_source_evidence_reports_retrieval_and_packed_context_separately(self):
+        evidence = SourceEvidence("book.md", 1, 1, "0" * 64, "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未")
+        complete = {"chunk_id": "a", "content": evidence.text}
+        truncated = {"chunk_id": "a", "content": evidence.text[:16], "truncated": True}
+
+        score = score_source_evidence_coverage(
+            [complete], evidence, sources=[truncated]
+        )
+
+        self.assertEqual(score["source_evidence_coverage_at_k"], 1.0)
+        self.assertLess(score["source_evidence_context_coverage"], 1.0)
+        self.assertFalse(score["source_evidence_fully_retained"])
+
     def test_aggregates_metrics_without_models_or_network(self):
         questions = [
             RetrievalQuestion("命中", "os", ("3.5",)),
@@ -310,7 +393,7 @@ class RetrievalEvaluationTests(unittest.TestCase):
             top_k=3,
         )
 
-        self.assertEqual(report["schema_version"], 3)
+        self.assertEqual(report["schema_version"], 4)
         self.assertIsNone(report["context_budget"])
         self.assertNotIn("mean_context_retention", report["strategies"]["bm25"])
         self.assertEqual(report["question_count"], 1)

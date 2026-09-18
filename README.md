@@ -254,7 +254,9 @@ rag-qa evaluate-retrieval --split holdout            # 仅在确认最终结论�
 
 **检索层**读取 `data/evaluation/retrieval_questions.json`（65 题，dev 35 / holdout 30），
 比较 BM25、Embedding、Hybrid 和 Hybrid + Reranker，输出 Recall@K、Hit@K、MRR、nDCG@K、
-证据保留率与检索耗时。`--split` 默认 dev，调参过程读不到留出集。评测关闭 HyDE、不调用 LLM；
+证据保留率、标注正文覆盖与检索耗时。带教材行段证据的题目会区分“章节标题命中”和“正文真正进入
+Top K / 生成上下文”；没有正文证据的旧题集保持原指标。`--split` 默认 dev，调参过程读不到留出集。
+评测关闭 HyDE、不调用 LLM；
 远程 Worker 不可用时直接报错而不静默回退到本地，以保证结果可比。报告写入
 `artifacts/evaluations/retrieval/`。
 

@@ -2,6 +2,7 @@ import unittest
 
 from rag_textbook_qa.evaluation.retrieval import (
     RetrievalQuestion,
+    SourceEvidence,
     evaluate_retrieval,
     score_context_retention,
 )
@@ -46,6 +47,30 @@ class ContextRetentionTests(unittest.TestCase):
         self.assertEqual(packed["relevant_dropped_total"], 1)
         self.assertEqual(packed["questions_with_relevant_evidence"], 1)
         self.assertEqual(packed["cases"][0]["relevant_retained"], 1)
+
+    def test_evaluation_aggregates_optional_source_evidence_coverage(self):
+        evidence = SourceEvidence(
+            "book.md",
+            1,
+            1,
+            "0" * 64,
+            "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未",
+        )
+        question = RetrievalQuestion("问题", "os", ("3.5.3 避免",), evidence=evidence)
+        exact = {**EXACT, "content": evidence.text}
+
+        report = evaluate_retrieval(
+            [question],
+            lambda q, k: [exact],
+            top_k=5,
+            pack=lambda rows: ("", rows),
+        )
+
+        self.assertEqual(report["questions_with_source_evidence"], 1)
+        self.assertEqual(report["mean_source_evidence_coverage_at_k"], 1.0)
+        self.assertEqual(report["full_source_evidence_hit_rate_at_k"], 1.0)
+        self.assertEqual(report["mean_source_evidence_context_coverage"], 1.0)
+        self.assertEqual(report["full_source_evidence_context_rate"], 1.0)
 
 
 if __name__ == "__main__":
