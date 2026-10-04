@@ -48,7 +48,7 @@
 更大的候选池增加了重排片段数，减少调用次数不等于延迟一定降低。
 
 原始逐题结果及可重跑脚本保存在本地：
-`artifacts/evaluations/retrieval-optimization-20261004/`。检索候选预算与评分方式没有再改变。
+`artifacts/evaluations/retrieval-optimization-20261004/`。检索模型的候选预算与排序方式没有再改变。
 
 ## 实际推理与 HTTP 验收
 
@@ -88,9 +88,16 @@ CPU 运行的进程峰值 RSS 约 4000 MiB，同样不能归因于单条路线�
 逐次计时、批大小实验及 HTTP 状态记录保存在
 `artifacts/evaluations/serving-performance-20261004/`。
 
+## 跨教材人工复核准备
+
+已按两版全库前五名的并集导出 35 道 dev 题、268 个候选，保留教材、片段编号、
+完整正文与正文哈希。候选随机排列，所有评分为空；排名及路线放在单独的审计清单中。
+本地文件为 `artifacts/evaluations/serving-performance-20261004/crossbook-review/review.json`。
+当前状态是待复核，没有生成或冒充人工标注；这批已用于开发的题目不能作为新的独立测试集。
+
 ## 验证范围
 
-- 本机 Python 3.11：389 项离线单元与集成测试；新增跨书指标修复前的 Python 3.12 全套 386 项也通过。
+- 本机 Python 3.11：393 项离线单元与集成测试；新增跨书指标修复前的 Python 3.12 全套 386 项也通过。
 - 真实 Chrome：6 项交互测试，覆盖提交、流式结果、引用、访问口令重试、断流、停止、清空和反馈。
 - 锁定依赖环境：核心测试、评估包导入、Ruff、源码编译、sdist / wheel 构建和包清单检查。
 - GitHub Actions 曾通过 Windows / Linux / macOS、Chromium 与发布包共八个任务：
@@ -100,6 +107,8 @@ CPU 运行的进程峰值 RSS 约 4000 MiB，同样不能归因于单条路线�
   已显式设置矩阵的解释器版本并增加断言，真正的六组矩阵、Chromium、发布包均已通过：
   [实际解释器矩阵 CI，0489480](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37207353919)。
   中间一次 Windows CI 出现过 Chroma 索引读取与资源清理失败，尚未确认根因。
-  已加入两个相关场景各连续 25 轮的 Windows 检查，首次失败即中止；这部分与跨书指标修复仍需远端验收。
+  两个相关场景各连续 25 轮检查在 macOS 上通过；Windows Python 3.11 在第 12 轮复现 HNSW 读取失败，
+  见 [连续验收 CI，8455c38](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37208172225)。
+  该门槛仍未通过，正在补充失败现场诊断，不能据此发布“Windows 已稳定”的结论。
 
 本机性能与受控 HTTP 并发已验收；Windows CUDA 实测、外部部署及独立跨教材相关性标注仍未完成。

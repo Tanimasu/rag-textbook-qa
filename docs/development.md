@@ -72,6 +72,7 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 
 `benchmark_retrieval.py` 使用 dev 题、当前索引副本及本机已缓存的模型，测量真实推理耗时。
 脚本强制离线、不加载 `.env`；输出路径必须未使用过，以免覆盖旧记录。
+复制索引前应停止索引写入；SQLite 备份与原生向量文件复制不是同一个原子操作。
 先在已安装 `local-models` 且模型已缓存的环境中运行：
 
 ```bash
@@ -84,6 +85,19 @@ python scripts/benchmark_retrieval.py --device mps --baseline-ref f4606cc --repe
 峰值内存覆盖整次运行，不能用它比较单条路线的内存。
 队列脚本使用受控的无模型后端，其人工延迟不能作为真实问答延迟。
 
+### 跨教材候选复核准备
+
+已完成的 dev 对照报告可以导出未评分候选，不需要模型推理：
+
+```bash
+python scripts/prepare_crossbook_review.py --report artifacts/evaluations/retrieval-optimization-20261004/report.json --output-dir artifacts/evaluations/local/crossbook-review
+```
+
+工具要求索引版本与报告一致，按教材与片段编号合并两条全库路线的候选，保留完整正文与哈希。
+`review.json` 随机排列候选，所有评分为空，不含路线与排名；对照关系单独存于 `manifest.json`。
+复核时只打开 `review.json`，根据正文填写评分、原文证据和理由，完成后再查看排名。
+这是已使用过的 dev 题候选池，不能作为新的独立测试集；未入池内容也不能直接记零分。
+
 ## 工具脚本
 
 | 脚本 | 用途 |
@@ -95,6 +109,7 @@ python scripts/benchmark_retrieval.py --device mps --baseline-ref f4606cc --repe
 | `benchmark_retrieval.py` | 离线模型实际推理计时，支持历史 Git 版本对照 |
 | `check_serving_queue.py` | 启动本机 HTTP API 验收有界队列与断连取消 |
 | `check_index_lifecycle.py` | 连续检查曾在 Windows CI 间歇失败的两个 Chroma 场景，首次失败即退出 |
+| `prepare_crossbook_review.py` | 从锁定版本的 dev 对照报告导出未评分跨教材候选 |
 
 ## 评估数据集
 

@@ -13,14 +13,12 @@ import json
 import math
 import os
 import platform
-import shutil
-import sqlite3
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
-from contextlib import ExitStack, closing
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -29,6 +27,7 @@ from typing import Any
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.evaluation.retrieval import load_retrieval_questions
 from rag_textbook_qa.indexing.revision import index_revision
+from rag_textbook_qa.indexing.snapshot import copy_index
 from rag_textbook_qa.providers import ComputeSettings
 from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalRerankerProvider
 from rag_textbook_qa.rag import RAGEngine
@@ -58,19 +57,6 @@ class CountedProvider:
 
     def rerank(self, query: str, documents: Any) -> Any:
         return self._call("rerank", documents, query)
-
-
-def copy_index(source: Path, target: Path) -> str:
-    revision = index_revision(source)
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("chroma.sqlite3*", "*.lock"))
-    with (
-        closing(sqlite3.connect(f"{(source / 'chroma.sqlite3').as_uri()}?mode=ro", uri=True)) as connection,
-        closing(sqlite3.connect(target / "chroma.sqlite3")) as copied,
-    ):
-        connection.backup(copied)
-    if index_revision(source) != revision:
-        raise RuntimeError("索引复制期间发生更新，请重新运行")
-    return revision
 
 
 def historical_engine(root: Path, ref: str, directory: Path) -> type:
