@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 import sys
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory
 from rag_textbook_qa.llm import GenerationCancelled, LLMClient, LLMGenerationIncompleteError
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
@@ -249,7 +249,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
         before = {"sentence_transformers", "torch"}.intersection(sys.modules)
         with (
             patch.dict("os.environ", {"RAG_QA_COMPUTE_BACKEND": "invalid"}),
-            tempfile.TemporaryDirectory() as temporary_directory,
+            TemporaryIndexDirectory() as temporary_directory,
             contextlib.redirect_stdout(io.StringIO()),
             RAGEngine(
                 db_path=temporary_directory,
@@ -282,7 +282,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
         vectorizer.close.assert_called_once_with()
 
     def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 contextlib.redirect_stdout(io.StringIO()),
@@ -320,7 +320,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertNotIn("token", repr(execution).lower())
 
     def test_engine_reports_missing_llm_configuration_without_hiding_retrieval(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 patch.dict("os.environ", {}, clear=True),
@@ -344,7 +344,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertIn("LLM_API_KEY", result["error"])
 
     def test_hybrid_search_can_skip_configured_reranker(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 contextlib.redirect_stdout(io.StringIO()),
@@ -458,7 +458,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertEqual(len({result["content"] for result in results}), len(results))
 
     def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 contextlib.redirect_stdout(io.StringIO()),
