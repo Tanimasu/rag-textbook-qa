@@ -239,8 +239,6 @@ class MultiBookVectorizer:
         total = len(chunks)
         print(f"加载了 {total} 个 chunks\n")
 
-        first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
-        first_embeddings = self.embedding_provider.embed_documents(first_documents)
         collection_name = f"textbook_{book_name}"
         collection_metadata = {
             "book_name": book_name,
@@ -255,6 +253,8 @@ class MultiBookVectorizer:
             existing = self.client.get_collection(collection_name)
             self.validate_collection_embedding(existing)
             collection_metadata = {**(existing.metadata or {}), **collection_metadata}
+        first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
+        first_embeddings = self.embedding_provider.embed_documents(first_documents)
         # Private until promotion; failed builds never publish this revision.
         collection_metadata[INDEX_REVISION_KEY] = uuid.uuid4().hex
         write_collection_name = f"ragbuild_{uuid.uuid4().hex}"

@@ -167,6 +167,18 @@ class IndexRevisionTests(unittest.TestCase):
                 # Chroma re-normalizes copied cosine vectors in float32.
                 self.assertAlmostEqual(old_value, copied_value, places=6)
 
+    def test_append_rejects_model_mismatch_before_embedding(self):
+        provider = FakeEmbeddingProvider(model="other-embedding")
+        before = index_revision(self.db)
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            MultiBookVectorizer(db_path=self.db, embedding_provider=provider) as writer,
+            self.assertRaisesRegex(ValueError, "模型与当前 Provider 不一致"),
+        ):
+            writer.vectorize_book(self.chunks_path, "os", clear_existing=False)
+        self.assertEqual(provider.document_calls, 0)
+        self.assertEqual(index_revision(self.db), before)
+
     def test_staging_is_invisible_and_a_publication_gap_is_retried(self):
         before = index_revision(self.db)
         self.vectorizer.client.create_collection("ragbuild_unfinished")

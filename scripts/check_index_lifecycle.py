@@ -54,7 +54,9 @@ def diagnose_copy_error(original):
                 diagnostics["post_failure_reads"] = attempts
             except Exception as error:  # noqa: BLE001 - diagnostics must not replace the test error
                 diagnostics["diagnostic_error_type"] = type(error).__name__
-            print("Chroma failed-read diagnostics: " + json.dumps(diagnostics), flush=True)
+            # The fixtures redirect stdout/stderr while the writer is running.
+            print("Chroma failed-read diagnostics: " + json.dumps(diagnostics),
+                  file=sys.__stderr__, flush=True)
             raise
     return copy
 
