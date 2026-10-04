@@ -269,6 +269,18 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertEqual(results[0]["content"], "second")
         self.assertEqual(results[0]["rerank_score"], 1.0)
 
+    def test_failed_reranker_initialization_closes_the_open_index(self):
+        vectorizer = MagicMock()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed"),
+            patch("rag_textbook_qa.rag.engine.create_reranker_provider", side_effect=RuntimeError("offline")),
+            self.assertRaisesRegex(RuntimeError, "offline"),
+        ):
+            RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider())
+        vectorizer.close.assert_called_once_with()
+
     def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

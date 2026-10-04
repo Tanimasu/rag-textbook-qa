@@ -422,7 +422,9 @@ class MultiBookVectorizer:
     def validate_collection_embedding(self, collection: Any) -> None:
         metadata = collection.metadata or {}
         fingerprint = metadata.get("embedding_fingerprint")
-        if fingerprint and fingerprint != self.embedding_provider.identity.fingerprint:
+        model = metadata.get("embedding_model")
+        identity = self.embedding_provider.identity
+        if (fingerprint and fingerprint != identity.fingerprint) or (model and model != identity.model):
             raise ValueError(
                 "向量库 embedding 模型与当前 Provider 不一致；"
                 "请使用同一模型或重新向量化该教材"
@@ -477,24 +479,24 @@ def interactive_main() -> None:
         print("未选中任何文件，退出。")
         return
 
-    vectorizer = MultiBookVectorizer(db_path=settings.paths.vector_db)
     success: list[str] = []
     failed: list[str] = []
-    for index in selected_indices:
-        path = chunk_files[index]
-        book_name = book_id_from_chunk_stem(path.stem)
-        try:
-            vectorizer.vectorize_book(path, book_name)
-            success.append(book_name)
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            print(f"\n错误：{path.name} 向量化失败 — {exc}")
-            traceback.print_exc()
-            failed.append(book_name)
+    with MultiBookVectorizer(db_path=settings.paths.vector_db) as vectorizer:
+        for index in selected_indices:
+            path = chunk_files[index]
+            book_name = book_id_from_chunk_stem(path.stem)
+            try:
+                vectorizer.vectorize_book(path, book_name)
+                success.append(book_name)
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                print(f"\n错误：{path.name} 向量化失败 — {exc}")
+                traceback.print_exc()
+                failed.append(book_name)
 
-    print("\n" + "=" * 70)
-    print("向量化汇总")
-    print(f"成功: {len(success)} 本 {success}")
-    if failed:
-        print(f"失败: {len(failed)} 本 {failed}")
-    print("=" * 70)
-    vectorizer.list_books()
+        print("\n" + "=" * 70)
+        print("向量化汇总")
+        print(f"成功: {len(success)} 本 {success}")
+        if failed:
+            print(f"失败: {len(failed)} 本 {failed}")
+        print("=" * 70)
+        vectorizer.list_books()

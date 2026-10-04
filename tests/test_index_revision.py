@@ -180,6 +180,22 @@ class IndexRevisionTests(unittest.TestCase):
         self.assertEqual(provider.document_calls, 0)
         self.assertEqual(index_revision(self.db), before)
 
+    def test_legacy_model_name_blocks_incompatible_append_without_fingerprint(self):
+        collection = self.vectorizer.client.get_collection("textbook_os")
+        metadata = {key: value for key, value in collection.metadata.items()
+                    if key not in {"embedding_fingerprint", "hnsw:space"}}
+        collection.modify(metadata=metadata)
+        before = index_revision(self.db)
+        provider = FakeEmbeddingProvider(model="other-embedding")
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            MultiBookVectorizer(db_path=self.db, embedding_provider=provider) as writer,
+            self.assertRaisesRegex(ValueError, "模型与当前 Provider 不一致"),
+        ):
+            writer.vectorize_book(self.chunks_path, "os", clear_existing=False)
+        self.assertEqual(provider.document_calls, 0)
+        self.assertEqual(index_revision(self.db), before)
+
     def test_published_vectors_survive_a_small_native_cache(self):
         # Windows uses a much smaller native cache. Reproduce that limit on
         # every platform, without changing the process's real handle limits.

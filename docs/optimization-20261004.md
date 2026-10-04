@@ -23,6 +23,10 @@
 - 生成评估输出目录增加进程锁，防止两个续跑进程重复生成、交错写入协议与 JSONL。
 - 索引构建锁使用固定长度摘要，允许长教材标识；备份集合名遵守 Chroma 的 512 字符上限。
 - 检索评估的去重和证据保留以教材与片段编号共同识别来源，不把跨书同编号视为同一片段。
+- 追加构建在 embedding 前检查模型兼容性；旧索引没有协议指纹时，也会检查已保存的模型名。
+- 新建临时集合使用 `sync_threshold=1`，每批原生日志应用后写入 HNSW 文件。
+  这修复了小缓存淘汰未同步索引后无法读取旧向量的问题；现有索引的配置未被迁移。
+- reranker 初始化失败时关闭已经打开的索引；兼容的交互式构建与数据库工具也显式关闭客户端。
 
 此前已修复生成前失败的额度退款、跨 UTC 日期退款、空回答完成判断、截断生成评估排除、
 跨教材相邻片段去重和 Docker 代理信任默认值。
@@ -95,9 +99,30 @@ CPU 运行的进程峰值 RSS 约 4000 MiB，同样不能归因于单条路线�
 本地文件为 `artifacts/evaluations/serving-performance-20261004/crossbook-review/review.json`。
 当前状态是待复核，没有生成或冒充人工标注；这批已用于开发的题目不能作为新的独立测试集。
 
+## HNSW 缓存故障复现与修复
+
+Chroma 1.5.9 的 Python 绑定根据文件句柄上限决定索引缓存容量，Windows 默认值为 102；
+底层缓存分成 64 份。原生执行器只在集合第一次读取时回放 WAL，后续缓存淘汰不会重新回放。
+因此未达到默认同步阈值的索引被淘汰后，文档计数仍在 SQLite 中，而读取向量会报
+`Nothing found on disk`。这里依据的是锁定版本的
+[缓存配置](https://github.com/chroma-core/chroma/blob/1.5.9/rust/cache/src/foyer.rs)、
+[绑定配置](https://github.com/chroma-core/chroma/blob/1.5.9/rust/python_bindings/src/bindings.rs)和
+[读取流程](https://github.com/chroma-core/chroma/blob/1.5.9/rust/frontend/src/executor/local.rs)，
+并通过本机缩小原生缓存的实验核对。
+
+相同的两个生命周期场景，在本机模拟容量 102 时，修复前第 5 轮失败，随后的两次只读也失败；
+修复后连续 100 轮通过，没有读失败后的业务重试。另一个回归场景在容量 64 下构建 131 个小集合，
+原集合仍能读取完整向量并查询，新集合的持久化元数据也已写盘。
+SQLite 关闭后偶发文件清理失败尚未单独确定根因，CI 保留首次失败与延迟释放诊断。
+
+另用操作系统教材的 1183 个现有片段、固定的 1024 维随机归一化向量，在本机交替构建各 3 次：
+阈值 1000 / 1 的中位耗时分别为 3.140 / 0.927 秒，每次均为 37 批。
+这是无模型的索引写入实验，本次没有观察到同步配置增加构建耗时；不能推广为真实 embedding
+构建或所有设备上的提速结论。结果为 `serving-performance-20261004/index-write-cost-varied.json`。
+
 ## 验证范围
 
-- 本机 Python 3.11：393 项离线单元与集成测试；新增跨书指标修复前的 Python 3.12 全套 386 项也通过。
+- 本机 Python 3.11 / 3.12：各 397 项离线单元与集成测试通过。
 - 真实 Chrome：6 项交互测试，覆盖提交、流式结果、引用、访问口令重试、断流、停止、清空和反馈。
 - 锁定依赖环境：核心测试、评估包导入、Ruff、源码编译、sdist / wheel 构建和包清单检查。
 - GitHub Actions 曾通过 Windows / Linux / macOS、Chromium 与发布包共八个任务：
@@ -109,6 +134,8 @@ CPU 运行的进程峰值 RSS 约 4000 MiB，同样不能归因于单条路线�
   中间一次 Windows CI 出现过 Chroma 索引读取与资源清理失败，尚未确认根因。
   两个相关场景各连续 25 轮检查在 macOS 上通过；Windows Python 3.11 在第 12 轮复现 HNSW 读取失败，
   见 [连续验收 CI，8455c38](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37208172225)。
-  该门槛仍未通过，正在补充失败现场诊断，不能据此发布“Windows 已稳定”的结论。
+  持久化修复后，真正的六组矩阵、Chromium 与发布包八个任务全部通过，Windows 两种 Python
+  版本的上述两个场景各连续 25 轮通过：
+  [持久化修复 CI，fa62798](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37210750841)。
 
 本机性能与受控 HTTP 并发已验收；Windows CUDA 实测、外部部署及独立跨教材相关性标注仍未完成。

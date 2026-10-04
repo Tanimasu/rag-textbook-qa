@@ -331,10 +331,14 @@ class RAGEngine:
                 compute_settings,
                 reranker_model=reranker_model or compute_settings.reranker_model,
             )
-            self.reranker = create_reranker_provider(
-                reranker_settings,
-                allow_query_fallback=True,
-            )
+            try:
+                self.reranker = create_reranker_provider(
+                    reranker_settings,
+                    allow_query_fallback=True,
+                )
+            except BaseException:
+                self.vectorizer.close()
+                raise
         if self.reranker is not None and self.verbose:
             print(f"Reranker 已配置: {self.reranker.identity.model}")
 
