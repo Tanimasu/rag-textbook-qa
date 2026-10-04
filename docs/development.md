@@ -34,6 +34,7 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 - Windows、macOS、Linux 上的 Python 3.11 / 3.12 测试矩阵
 - `src/`、`tests/` 与 `scripts/` 的 Ruff 静态检查
 - 完整的无模型、无外部 API 单元与集成测试
+- Chromium 中运行真实聊天页，验证提交、流式回答、引用、重试、停止和反馈
 - Python 源码编译检查
 - source distribution 与 wheel 构建
 - 发布包清单检查：wheel 与源码包中必需文件齐全，且不含本地数据、索引或密钥
@@ -41,11 +42,26 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 本地可运行等价的核心检查：
 
 ```bash
-python -m ruff check src tests scripts
-python -m unittest discover -s tests -v
-python -m compileall -q src tests project
-python -m build
+uv sync --locked --extra ui --extra worker --extra api
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync python -m compileall -q src tests project
 ```
+
+CI 通过 `uv.lock` 安装固定依赖，锁文件与 `pyproject.toml` 不一致时直接失败。
+构建使用锁定的 `build` 分组和 `python -m build --no-isolation`，避免构建时另行解析依赖。
+
+浏览器测试独立运行，后端为本机假服务，浏览器执行仓库中的原始 HTML / JavaScript：
+
+```bash
+uv sync --locked --only-group browser
+uv run --no-sync python -m playwright install chromium
+uv run --no-sync python tests/browser/public_chat_browser.py -v
+```
+
+Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系统库。
+本机已有 Chrome 时可设置 `RAG_QA_BROWSER_CHANNEL=chrome`，省去浏览器下载。
+`--only-group browser` 创建的环境仅含浏览器测试依赖，运行核心测试前需重新执行上面的完整同步命令。
 
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
