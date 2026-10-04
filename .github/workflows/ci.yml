@@ -22,6 +22,8 @@ jobs:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +53,9 @@ jobs:
 
       - name: Install locked test dependencies
         run: uv sync --locked --extra ui --extra worker --extra api
+
+      - name: Verify matrix interpreter
+        run: uv run --no-sync python -c "import sys; print(sys.version); assert f'{sys.version_info.major}.{sys.version_info.minor}' == '${{ matrix.python-version }}'"
 
       - name: Lint packaged code, tests, and release helpers
         run: uv run --no-sync python -m ruff check src tests scripts

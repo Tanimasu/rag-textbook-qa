@@ -51,6 +51,7 @@ uv run --no-sync python -m compileall -q src tests project
 ```
 
 CI 通过 `uv.lock` 安装固定依赖，锁文件与 `pyproject.toml` 不一致时直接失败。
+矩阵任务显式设置 `UV_PYTHON` 并断言实际解释器版本，避免 `.python-version` 的本机 3.11 设置覆盖 3.12。
 构建使用锁定的 `build` 分组和 `python -m build --no-isolation`，避免构建时另行解析依赖。
 
 浏览器测试独立运行，后端为本机假服务，浏览器执行仓库中的原始 HTML / JavaScript：
