@@ -130,6 +130,11 @@ class IndexRevisionTests(unittest.TestCase):
         self.assertIn("外部更新后的正文", [row["content"] for row in rows])
 
     def test_failed_replace_and_append_keep_the_published_revision(self):
+        # Append inputs must have new identities; failed inference still exercises
+        # copying the old vectors into staging before the second batch fails.
+        self.chunks_path.write_text(json.dumps([
+            {**chunk, "chunk_id": f"new_p{index}"} for index, chunk in enumerate(_chunks())
+        ]), encoding="utf-8")
         for clear_existing in (True, False):
             with self.subTest(clear_existing=clear_existing):
                 old_revision = index_revision(self.db)
@@ -179,6 +184,81 @@ class IndexRevisionTests(unittest.TestCase):
             writer.vectorize_book(self.chunks_path, "os", clear_existing=False)
         self.assertEqual(provider.document_calls, 0)
         self.assertEqual(index_revision(self.db), before)
+
+    def test_duplicate_append_is_refused_before_embedding_and_keeps_old_text(self):
+        before = index_revision(self.db)
+        calls_before = self.provider.document_calls
+        self.chunks_path.write_text(json.dumps([
+            {**_chunks()[0], "chunk_id": "old_p0", "content": "修改过的正文"}
+        ]), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "已存在的 chunk_id"):
+            self.vectorizer.vectorize_book(self.chunks_path, "os", clear_existing=False)
+        self.assertEqual(self.provider.document_calls, calls_before)
+        self.assertEqual(index_revision(self.db), before)
+        stored = self.vectorizer.client.get_collection("textbook_os").get(ids=["old_p0"], include=["documents"])
+        self.assertEqual(stored["documents"], [_chunks()[0]["content"]])
+
+    def test_interrupted_publication_is_restored_even_if_new_inference_fails(self):
+        before = index_revision(self.db)
+        published = self.vectorizer.client.get_collection("textbook_os")
+        published_id = published.id
+        published.modify(name="ragbackup_interrupted")
+        self.vectorizer.client.create_collection("ragbuild_abandoned", metadata={"book_name": "os"})
+        provider = FakeEmbeddingProvider(error=TransientProviderError("offline"))
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            MultiBookVectorizer(db_path=self.db, embedding_provider=provider) as writer,
+            self.assertRaises(TransientProviderError),
+        ):
+            writer.vectorize_book(self.chunks_path, "os")
+        self.assertEqual(index_revision(self.db), before)
+        self.assertEqual(self.vectorizer.client.get_collection("textbook_os").id, published_id)
+        self.assertEqual(self.vectorizer.client.get_collection("ragbuild_abandoned").count(), 0)
+
+    def test_append_after_interrupted_publication_preserves_previous_chunks(self):
+        self.vectorizer.client.get_collection("textbook_os").modify(name="ragbackup_interrupted")
+        calls_before = self.provider.document_calls
+        self.write([{**_chunks()[0], "chunk_id": "new_p0"}], clear_existing=False)
+        collection = self.vectorizer.client.get_collection("textbook_os")
+        self.assertEqual(set(collection.get()["ids"]), {"old_p0", "old_p1", "new_p0"})
+        self.assertEqual(self.provider.document_calls, calls_before + 1)
+
+    def test_ambiguous_backups_are_preserved_without_embedding(self):
+        self.vectorizer.client.get_collection("textbook_os").modify(name="ragbackup_first")
+        self.vectorizer.client.create_collection("ragbackup_second", metadata={"book_name": "os"})
+        calls_before = self.provider.document_calls
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "多个发布备份"):
+            self.vectorizer.vectorize_book(self.chunks_path, "os")
+        self.assertEqual(self.provider.document_calls, calls_before)
+        self.assertEqual({collection.name for collection in self.vectorizer.client.list_collections()},
+                         {"ragbackup_first", "ragbackup_second"})
+
+    def test_backup_cleanup_failure_does_not_hide_a_successful_publication(self):
+        for deleted_before_error in (False, True):
+            with self.subTest(deleted_before_error=deleted_before_error):
+                book = f"cleanup_{deleted_before_error}"
+                self.write(_chunks(), book)
+                original_id = self.vectorizer.client.get_collection("textbook_" + book).id
+                original_delete = self.vectorizer.client.delete_collection
+
+                def failed_cleanup(name, deleted_before_error=deleted_before_error,
+                                   original_delete=original_delete, **kwargs):
+                    if name.startswith("ragbackup_"):
+                        if deleted_before_error:
+                            original_delete(name, **kwargs)
+                        raise RuntimeError("cleanup unavailable")
+                    return original_delete(name, **kwargs)
+
+                with patch.object(self.vectorizer.client, "delete_collection", side_effect=failed_cleanup):
+                    self.write([{**_chunks()[0], "chunk_id": "new_p0", "content": "完整的新正文"}], book)
+                published = self.vectorizer.client.get_collection("textbook_" + book)
+                self.assertNotEqual(published.id, original_id)
+                self.assertEqual(published.get()["documents"], ["完整的新正文"])
+                self.assertTrue(index_revision(self.db))
+                backups = [collection for collection in self.vectorizer.client.list_collections()
+                           if collection.name.startswith("ragbackup_")
+                           and collection.metadata["book_name"] == book]
+                self.assertEqual(len(backups), 0 if deleted_before_error else 1)
 
     def test_legacy_model_name_blocks_incompatible_append_without_fingerprint(self):
         collection = self.vectorizer.client.get_collection("textbook_os")

@@ -204,6 +204,27 @@ class MultiBookVectorizer:
         digest = hashlib.sha256(book_name.encode("utf-8")).hexdigest()
         return self.db_path / f"ragbuild_{digest}.lock"
 
+    def _recover_interrupted_publication(self, book_name: str) -> None:
+        """Restore the sole old backup after a crash between the two renames.
+
+        The caller holds this book's writer lock. A staged build has no completion
+        marker, so it cannot be promoted during recovery. Multiple old backups
+        require inspection; guessing could restore the wrong published version.
+        """
+
+        collection_name = f"textbook_{book_name}"
+        collections = self.client.list_collections()
+        if any(collection.name == collection_name for collection in collections):
+            return
+        backups = [collection for collection in collections
+                   if collection.name.startswith("ragbackup_")
+                   and (collection.metadata or {}).get("book_name") == book_name]
+        if len(backups) > 1:
+            raise RuntimeError(f"教材 {book_name} 存在多个发布备份，无法自动确定版本，请检查索引")
+        if backups:
+            backups[0].modify(name=collection_name)
+            print(f"已恢复中断前的已发布索引: {collection_name}")
+
     def vectorize_book(
         self,
         chunks_path: str | Path,
@@ -240,6 +261,7 @@ class MultiBookVectorizer:
         print(f"加载了 {total} 个 chunks\n")
 
         collection_name = f"textbook_{book_name}"
+        self._recover_interrupted_publication(book_name)
         collection_metadata = {
             "book_name": book_name,
             "description": f"{book_name} 教材分块",
@@ -252,6 +274,10 @@ class MultiBookVectorizer:
         if not clear_existing and self._collection_exists(collection_name):
             existing = self.client.get_collection(collection_name)
             self.validate_collection_embedding(existing)
+            for offset in range(0, total, 256):
+                identifiers = [chunk["chunk_id"] for chunk in chunks[offset : offset + 256]]
+                if existing.get(ids=identifiers, include=[])["ids"]:
+                    raise ValueError("追加构建包含已存在的 chunk_id；请移除重复片段或使用替换构建")
             collection_metadata = {**(existing.metadata or {}), **collection_metadata}
         first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
         first_embeddings = self.embedding_provider.embed_documents(first_documents)
@@ -365,8 +391,15 @@ class MultiBookVectorizer:
             raise
 
         if backup_name and self._collection_exists(backup_name):
-            self.client.delete_collection(backup_name)
-            print(f"已替换旧数据: {collection_name}")
+            try:
+                self.client.delete_collection(backup_name)
+            except Exception as error:  # noqa: BLE001 - publication has already committed
+                # Publication has completed. A failed maintenance operation must
+                # not report the new, readable index as a failed build. Retained
+                # backups remain private and can be inspected separately.
+                print(f"新索引已发布，旧备份清理未确认完成: {type(error).__name__}")
+            else:
+                print(f"已替换旧数据: {collection_name}")
         return self.client.get_collection(collection_name)
 
     def search_book(self, book_name: str, query: str, top_k: int = 5) -> None:
