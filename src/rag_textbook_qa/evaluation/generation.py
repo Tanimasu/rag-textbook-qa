@@ -45,6 +45,7 @@ PAIRED_METRICS = (
 MIN_QUOTE_RUN = 5
 MAX_CLAIMS = 60
 EXACT_PERMUTATION_LIMIT = 16
+SUMMARY_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -444,13 +445,30 @@ def _mean(values: Sequence[float | None]) -> float | None:
     return statistics.fmean(present) if present else None
 
 
-def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Summarize one case under one arm; each sample may carry a judge ``score``."""
+def generation_is_complete(sample: Mapping[str, Any]) -> bool:
+    """Only nonempty, normally finished answers (or stored answers) can be judged."""
 
-    scores = [sample["score"] for sample in samples if sample.get("score") is not None]
+    answer = sample.get("answer")
+    return (
+        sample.get("finish_reason") in ("stop", "stored")
+        and isinstance(answer, str)
+        and bool(answer.strip())
+    )
+
+
+def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Quality is conditional on complete answers; retain incomplete sample counts."""
+
+    completed = [sample for sample in samples if generation_is_complete(sample)]
+    # Older logs may contain judgments for truncated answers. Filtering here also
+    # prevents those scores from leaking into means or paired comparisons on resume.
+    scores = [sample["score"] for sample in completed if sample.get("score") is not None]
     counts = [score["problem_claims"] for score in scores]
     return {
         "samples": len(samples),
+        "completed": len(completed),
+        "incomplete": len(samples) - len(completed),
+        "empty_answers": sum(not str(sample.get("answer") or "").strip() for sample in samples),
         "judged": len(scores),
         "problem_claims": _mean(counts),
         "problem_claims_sd": statistics.stdev(counts) if len(counts) > 1 else None,
@@ -462,8 +480,8 @@ def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "abstentions": sum(score["fact_claims"] == 0 for score in scores),
         "mixed_verdicts": len({count > 0 for count in counts}) > 1,
         "truncated": sum(sample.get("finish_reason") == "length" for sample in samples),
-        "answer_chars": _mean([len(sample["answer"]) for sample in samples]),
-        "overlap": mean_pairwise_overlap([sample["answer"] for sample in samples]),
+        "answer_chars": _mean([len(sample["answer"]) for sample in completed]),
+        "overlap": mean_pairwise_overlap([sample["answer"] for sample in completed]),
     }
 
 
@@ -518,7 +536,10 @@ def summarize(
         for case in cases
     }
     averaged = (*PAIRED_METRICS, "problem_claims_sd", "answer_chars", "overlap")
-    counted = ("samples", "judged", "abstentions", "truncated", "mixed_verdicts")
+    counted = (
+        "samples", "completed", "incomplete", "empty_answers", "judged", "abstentions",
+        "truncated", "mixed_verdicts",
+    )
     arm_summary = {}
     for arm in arms:
         rows = [per_case[case.case_id][arm.name] for case in cases]
@@ -529,6 +550,8 @@ def summarize(
             **{metric: sum(row[metric] for row in rows) for metric in counted},
         }
     return {
+        "summary_version": SUMMARY_VERSION,
+        "quality_sample_policy": "completed_answers_only",
         "reference_arm": arms[0].name,
         "arms": arm_summary,
         "comparisons": {

@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any, Self
 
 import chromadb
+from filelock import FileLock, Timeout
 from tqdm import tqdm
 
 from rag_textbook_qa.catalog import book_id_from_chunk_stem
 from rag_textbook_qa.config import Settings
+from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
 
@@ -208,6 +210,20 @@ class MultiBookVectorizer:
         if batch_size <= 0:
             raise ValueError("batch_size 必须大于 0")
 
+        # Serialise writers across processes before reading an append snapshot.
+        # Readers never acquire this lock, so a long embedding batch does not
+        # prevent serving the previously published collection.
+        build_lock = FileLock(self.db_path / f"ragbuild_{book_name}.lock", timeout=0)
+        try:
+            with build_lock:
+                return self._vectorize_book_locked(chunks_path, book_name, batch_size, clear_existing)
+        except Timeout as exc:
+            raise RuntimeError(f"教材 {book_name} 正在构建索引，请稍后重试") from exc
+
+    def _vectorize_book_locked(
+        self, chunks_path: str | Path, book_name: str, batch_size: int, clear_existing: bool,
+    ) -> str:
+
         print("=" * 70)
         print(f"开始向量化教材: {book_name}")
         print("=" * 70)
@@ -220,30 +236,32 @@ class MultiBookVectorizer:
         first_embeddings = self.embedding_provider.embed_documents(first_documents)
         collection_name = f"textbook_{book_name}"
         collection_metadata = {
+            "book_name": book_name,
             "description": f"{book_name} 教材分块",
             "hnsw:space": "cosine",
             "embedding_model": self.embedding_provider.identity.model,
             "embedding_fingerprint": self.embedding_provider.identity.fingerprint,
         }
 
-        if clear_existing:
-            write_collection_name = f"ragbuild_{uuid.uuid4().hex}"
-            collection = self.client.create_collection(
-                name=write_collection_name,
-                metadata=collection_metadata,
-            )
-        else:
-            write_collection_name = collection_name
-            collection = self.client.get_or_create_collection(
-                name=collection_name,
-                metadata=collection_metadata,
-            )
-            self.validate_collection_embedding(collection)
+        existing = None
+        if not clear_existing and self._collection_exists(collection_name):
+            existing = self.client.get_collection(collection_name)
+            self.validate_collection_embedding(existing)
+            collection_metadata = {**(existing.metadata or {}), **collection_metadata}
+        # Private until promotion; failed builds never publish this revision.
+        collection_metadata[INDEX_REVISION_KEY] = uuid.uuid4().hex
+        write_collection_name = f"ragbuild_{uuid.uuid4().hex}"
+        collection = self.client.create_collection(
+            name=write_collection_name,
+            metadata=collection_metadata,
+        )
         print(f"集合写入目标: {write_collection_name}\n")
 
         print(f"开始向量化（批大小={batch_size}）...")
         start_time = time.time()
         try:
+            if existing is not None:
+                self._copy_collection(existing, collection, batch_size)
             for offset in tqdm(range(0, total, batch_size), desc="向量化进度"):
                 batch_chunks = chunks[offset : offset + batch_size]
                 ids = [chunk["chunk_id"] for chunk in batch_chunks]
@@ -274,12 +292,11 @@ class MultiBookVectorizer:
                     metadatas=metadatas,
                 )
         except BaseException:
-            if clear_existing and self._collection_exists(write_collection_name):
+            if self._collection_exists(write_collection_name):
                 self.client.delete_collection(write_collection_name)
             raise
 
-        if clear_existing:
-            collection = self._promote_collection(collection, collection_name)
+        collection = self._promote_collection(collection, collection_name)
 
         elapsed_time = time.time() - start_time
         print("\n" + "=" * 70)
@@ -293,19 +310,41 @@ class MultiBookVectorizer:
         print("=" * 70)
         return collection_name
 
+    @staticmethod
+    def _copy_collection(source: Any, target: Any, batch_size: int) -> None:
+        """Keep append builds private until all batches have succeeded."""
+
+        for offset in range(0, source.count(), batch_size):
+            data = source.get(
+                offset=offset,
+                limit=batch_size,
+                include=["embeddings", "documents", "metadatas"],
+            )
+            if data["ids"]:
+                target.add(
+                    ids=data["ids"],
+                    embeddings=data["embeddings"],
+                    documents=data["documents"],
+                    metadatas=data["metadatas"],
+                )
+
     def _promote_collection(self, staging_collection: Any, collection_name: str):
         """Replace the visible collection only after staging is complete."""
 
         staging_name = staging_collection.name
         backup_name = None
-        if self._collection_exists(collection_name):
-            backup_name = f"ragbackup_{uuid.uuid4().hex}"
-            self.client.get_collection(collection_name).modify(name=backup_name)
-
         try:
+            if self._collection_exists(collection_name):
+                book_name = collection_name.removeprefix("textbook_")
+                backup_name = f"ragbackup_{uuid.uuid4().hex}_{book_name}"
+                self.client.get_collection(collection_name).modify(name=backup_name)
             staging_collection.modify(name=collection_name)
         except BaseException:
             if backup_name and self._collection_exists(backup_name):
+                if self._collection_exists(collection_name):
+                    current = self.client.get_collection(collection_name)
+                    if current.id == staging_collection.id:
+                        self.client.delete_collection(collection_name)
                 self.client.get_collection(backup_name).modify(name=collection_name)
             if self._collection_exists(staging_name):
                 self.client.delete_collection(staging_name)

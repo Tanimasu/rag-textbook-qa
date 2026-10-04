@@ -6,8 +6,10 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -16,6 +18,7 @@ from typing import Any, Protocol, Self
 from rank_bm25 import BM25Okapi
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.indexing.revision import IndexPublicationInProgress, index_revision
 from rag_textbook_qa.llm import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
@@ -34,6 +37,7 @@ from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.rag.adjacent import (
     append_same_section_neighbours,
     load_ordered_chunks,
+    order_indexed_chunks,
 )
 from rag_textbook_qa.rag.conflicts import conflict_prompt_note, find_source_conflicts
 from rag_textbook_qa.rag.context import (
@@ -312,7 +316,14 @@ class RAGEngine:
         self.bm25_indexes: dict[str, BM25Okapi] = {}
         self.bm25_corpus: dict[str, list[str]] = {}
         self.bm25_doc_ids: dict[str, list[str]] = {}
-        self._build_bm25_indexes()
+        self.bm25_metadatas: dict[str, list[dict[str, Any]]] = {}
+        self._index_lock = threading.RLock()
+        self._index_revision: str | None = None
+        try:
+            self.refresh_index_if_changed()
+        except Exception:
+            self.vectorizer.close()
+            raise
 
         self.reranker = reranker_provider
         if enable_reranker and self.reranker is None:
@@ -378,7 +389,84 @@ class RAGEngine:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
-    def _build_bm25_indexes(self) -> None:
+    @property
+    def index_revision(self) -> str | None:
+        return getattr(self, "_index_revision", None)
+
+    def refresh_index_if_changed(self) -> str | None:
+        """Rebuild cached corpora only when a published collection changes."""
+
+        db_path = getattr(getattr(self, "vectorizer", None), "db_path", None)
+        if not isinstance(db_path, (str, Path)):
+            return None
+        with self._index_lock:
+            for _ in range(3):
+                try:
+                    revision = index_revision(db_path)
+                except IndexPublicationInProgress:
+                    time.sleep(0.05)
+                    continue
+                if revision == self._index_revision:
+                    return revision
+                try:
+                    if self._build_bm25_indexes(expected_revision=revision):
+                        self._index_revision = revision
+                        return revision
+                except Exception:
+                    if self._published_revision() == revision:
+                        raise
+            raise RuntimeError("教材索引正在连续更新，请稍后重试")
+
+    def _published_revision(self) -> str | None:
+        try:
+            return index_revision(self.vectorizer.db_path)
+        except IndexPublicationInProgress:
+            return None
+
+    def _run_with_index_snapshot(self, operation: Callable[[], Any]) -> Any:
+        """Retry a retrieval if publication crossed its semantic/keyword reads."""
+
+        db_path = getattr(getattr(self, "vectorizer", None), "db_path", None)
+        if not isinstance(db_path, (str, Path)):
+            return operation()
+        with self._index_lock:
+            for _ in range(3):
+                revision = self.refresh_index_if_changed()
+                try:
+                    result = operation()
+                except Exception:
+                    if self._published_revision() == revision:
+                        raise
+                    continue
+                if self._published_revision() == revision:
+                    return result
+            raise RuntimeError("检索期间教材索引连续更新，请稍后重试")
+
+    def list_indexed_books(self) -> list[dict[str, Any]]:
+        """Read the live catalog without waiting on a running retrieval or rebuilding BM25."""
+
+        for _ in range(3):
+            revision = self._published_revision()
+            if revision is None:
+                time.sleep(0.05)
+                continue
+            try:
+                books = [
+                    {"book_name": collection.name.removeprefix("textbook_"),
+                     "count": collection.count()}
+                    for collection in sorted(self.vectorizer.client.list_collections(),
+                                             key=lambda collection: collection.name)
+                    if collection.name.startswith("textbook_")
+                ]
+            except Exception:
+                if self._published_revision() == revision:
+                    raise
+                continue
+            if self._published_revision() == revision:
+                return books
+        raise RuntimeError("教材目录正在更新，请稍后重试")
+
+    def _build_bm25_indexes(self, *, expected_revision: str) -> bool:
         if self.verbose:
             print("构建 BM25 关键词索引...")
         collections = self.vectorizer.client.list_collections()
@@ -404,17 +492,34 @@ class RAGEngine:
                 for metadata in metadatas
                 for field in ("chapter", "section_h2", "section_h3", "section_h4")
             )
-        self.bm25_tokenizer = BM25Tokenizer(self.bm25_mode, sorted(terms))
+        tokenizer = BM25Tokenizer(self.bm25_mode, sorted(terms))
+        indexes = {}
+        corpora = {}
+        doc_ids = {}
+        metadata_by_book = {}
 
-        for book_name, documents, document_ids, _ in harvested:
-            self.bm25_indexes[book_name] = BM25Okapi(
-                [self.bm25_tokenizer(document) for document in documents]
+        for book_name, documents, document_ids, metadatas in harvested:
+            if len(documents) != len(document_ids) or len(documents) != len(metadatas):
+                raise ValueError(f"{book_name} 的向量库记录不完整")
+            indexes[book_name] = BM25Okapi(
+                [tokenizer(document) for document in documents]
             )
-            self.bm25_corpus[book_name] = documents
-            self.bm25_doc_ids[book_name] = document_ids
+            corpora[book_name] = documents
+            doc_ids[book_name] = document_ids
+            metadata_by_book[book_name] = [dict(metadata or {}) for metadata in metadatas]
             indexed_count += 1
+        if self._published_revision() != expected_revision:
+            return False
+        # Readers use the same lock, so they can never observe half a refresh.
+        self.bm25_tokenizer = tokenizer
+        self.bm25_indexes = indexes
+        self.bm25_corpus = corpora
+        self.bm25_doc_ids = doc_ids
+        self.bm25_metadatas = metadata_by_book
+        self._adjacent_corpora = {}
         if self.verbose:
             print(f"BM25 索引构建完成（{indexed_count} 本教材）")
+        return True
 
     def _rerank(
         self,
@@ -439,24 +544,26 @@ class RAGEngine:
         query: str,
         top_k: int = 3,
     ) -> list[dict[str, Any]]:
-        if book_name not in self.bm25_indexes:
-            return []
-
-        bm25 = self.bm25_indexes[book_name]
-        documents = self.bm25_corpus[book_name]
-        document_ids = self.bm25_doc_ids[book_name]
-        tokenize = self.bm25_tokenizer or BM25Tokenizer(self.bm25_mode)
+        if top_k <= 0:
+            raise ValueError("top_k 必须大于 0")
+        self.refresh_index_if_changed()
+        with self._index_lock:
+            if book_name not in self.bm25_indexes:
+                return []
+            bm25 = self.bm25_indexes[book_name]
+            documents = self.bm25_corpus[book_name]
+            document_ids = self.bm25_doc_ids[book_name]
+            metadatas = self.bm25_metadatas[book_name]
+            tokenize = self.bm25_tokenizer or BM25Tokenizer(self.bm25_mode)
         scores = bm25.get_scores(tokenize(query))
         top_indices = sorted(
             range(len(scores)),
             key=lambda index: scores[index],
             reverse=True,
         )[:top_k]
-        collection = self.vectorizer.client.get_collection(f"textbook_{book_name}")
-
         results = []
         for rank, index in enumerate(top_indices, 1):
-            metadata = collection.get(ids=[document_ids[index]])["metadatas"][0]
+            metadata = metadatas[index]
             results.append(
                 {
                     "chunk_id": document_ids[index],
@@ -501,12 +608,25 @@ class RAGEngine:
                 print(f"HyDE 生成失败，回退原始查询: {exc}")
         return query
 
+    def _embed_query(
+        self, query: str, use_hyde: bool | None,
+    ) -> list[list[float]]:
+        """Compute once per request; the result can be queried against every book."""
+
+        hyde_enabled = self.enable_hyde if use_hyde is None else use_hyde
+        if hyde_enabled and self.enable_llm and self.llm:
+            hypothetical_document = self._generate_hypothetical_doc(query)
+            return self.vectorizer.embedding_provider.embed_documents([hypothetical_document])
+        return self.vectorizer.embedding_provider.embed_queries([query])
+
     def search_embedding(
         self,
         book_name: str,
         query: str,
         top_k: int = 3,
         use_hyde: bool | None = None,
+        *,
+        _query_embedding: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -521,14 +641,10 @@ class RAGEngine:
 
         collection = self.vectorizer.client.get_collection(collection_name)
         self.vectorizer.validate_collection_embedding(collection)
-        hyde_enabled = self.enable_hyde if use_hyde is None else use_hyde
-        if hyde_enabled and self.enable_llm and self.llm:
-            hypothetical_document = self._generate_hypothetical_doc(query)
-            query_embedding = self.vectorizer.embedding_provider.embed_documents(
-                [hypothetical_document]
-            )
-        else:
-            query_embedding = self.vectorizer.embedding_provider.embed_queries([query])
+        query_embedding = (
+            self._embed_query(query, use_hyde)
+            if _query_embedding is None else _query_embedding
+        )
 
         response = collection.query(
             query_embeddings=query_embedding,
@@ -568,18 +684,29 @@ class RAGEngine:
         top_k: int = 5,
         use_hyde: bool | None = None,
         use_reranker: bool = True,
+        *,
+        _query_embedding: list[list[float]] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._run_with_index_snapshot(
+            lambda: self._search_single_book(
+                book_name, query, top_k, use_hyde, use_reranker,
+                _query_embedding=_query_embedding,
+            )
+        )
+
+    def _search_single_book(
+        self, book_name: str, query: str, top_k: int, use_hyde: bool | None,
+        use_reranker: bool, *, _query_embedding: list[list[float]] | None,
     ) -> list[dict[str, Any]]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
         rerank_enabled = self.reranker is not None and use_reranker
         candidate_count = top_k * 3 if rerank_enabled else top_k
         retrieval_count = candidate_count * 3
-        semantic = self.search_embedding(
-            book_name,
-            query,
-            retrieval_count,
-            use_hyde=use_hyde,
-        )
+        semantic_options: dict[str, Any] = {"use_hyde": use_hyde}
+        if _query_embedding is not None:
+            semantic_options["_query_embedding"] = _query_embedding
+        semantic = self.search_embedding(book_name, query, retrieval_count, **semantic_options)
         keyword = self.search_bm25(book_name, query, retrieval_count)
         combined = _reciprocal_rank_fusion(
             (("embedding", semantic), ("bm25", keyword)),
@@ -595,6 +722,15 @@ class RAGEngine:
         query: str,
         top_k_per_book: int = 3,
         use_hyde: bool | None = None,
+        *,
+        use_reranker: bool = True,
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self._run_with_index_snapshot(
+            lambda: self._search_all_books(query, top_k_per_book, use_hyde, use_reranker)
+        )
+
+    def _search_all_books(
+        self, query: str, top_k_per_book: int, use_hyde: bool | None, use_reranker: bool,
     ) -> dict[str, list[dict[str, Any]]]:
         if top_k_per_book <= 0:
             raise ValueError("top_k_per_book 必须大于 0")
@@ -603,15 +739,23 @@ class RAGEngine:
             self.vectorizer.client.list_collections(),
             key=lambda collection: collection.name,
         )
+        collections = [c for c in collections if c.name.startswith("textbook_")]
+        if not collections:
+            return all_results
+        # Reusing a query vector is safe only if every collection matches this
+        # provider. Fail before the shared model call when one book is incompatible.
         for collection in collections:
-            if not collection.name.startswith("textbook_"):
-                continue
+            self.vectorizer.validate_collection_embedding(collection)
+        query_embedding = self._embed_query(query, use_hyde)
+        for collection in collections:
             book_name = collection.name.removeprefix("textbook_")
             results = self.search_single_book(
                 book_name,
                 query,
                 top_k_per_book,
                 use_hyde=use_hyde,
+                use_reranker=use_reranker,
+                _query_embedding=query_embedding,
             )
             if results:
                 all_results[book_name] = results
@@ -660,7 +804,8 @@ class RAGEngine:
         """Run the planned retrieval route, returning its telemetry trace and duration."""
 
         started = time.monotonic()
-        with provider_trace() as trace_id:
+
+        def retrieve() -> list[dict[str, Any]]:
             if plan["status"] == "active":
                 results = self.search_decomposed(query, plan["queries"], book_name, top_k)
             elif book_name:
@@ -668,15 +813,20 @@ class RAGEngine:
             else:
                 grouped = self.search_all_books(
                     query,
-                    top_k_per_book=max(1, top_k // 2),
+                    top_k_per_book=top_k * 3 if self.reranker is not None else top_k,
                     use_hyde=use_hyde,
+                    use_reranker=False,
                 )
                 results = [result for group in grouped.values() for result in group]
                 results.sort(
-                    key=lambda item: item.get("final_score", item["similarity"]),
+                    key=lambda item: item.get("final_score", item.get("similarity", 0.0)),
                     reverse=True,
                 )
                 results = self._rerank(query, results, top_k)
+            return results
+
+        with provider_trace() as trace_id:
+            results = self._run_with_index_snapshot(retrieve)
         return results, trace_id, time.monotonic() - started
 
     def _context_candidates(
@@ -698,8 +848,19 @@ class RAGEngine:
         }:
             if book_name in corpora:
                 continue
-            collection = self.vectorizer.client.get_collection(f"textbook_{book_name}")
-            corpora[book_name] = load_ordered_chunks(collection, book_name)
+            cached_metadata = getattr(self, "bm25_metadatas", None)
+            if cached_metadata is not None:
+                corpora[book_name] = order_indexed_chunks(
+                    {
+                        "ids": self.bm25_doc_ids.get(book_name, []),
+                        "documents": self.bm25_corpus.get(book_name, []),
+                        "metadatas": cached_metadata.get(book_name, []),
+                    },
+                    book_name,
+                )
+            else:
+                collection = self.vectorizer.client.get_collection(f"textbook_{book_name}")
+                corpora[book_name] = load_ordered_chunks(collection, book_name)
         return append_same_section_neighbours(results, corpora)
 
     def _compose_prompt(
@@ -734,6 +895,7 @@ class RAGEngine:
         on_answer_chunk: Callable[[str], None] | None,
         started: float,
         should_stop: Callable[[], bool] | None = None,
+        on_generation_start: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any], float | None]:
         """Generate one answer, streamed when a sink is given, normalising SDK errors.
 
@@ -744,6 +906,8 @@ class RAGEngine:
 
         if should_stop is not None and should_stop():
             raise GenerationCancelled(request_sent=False)
+        if on_generation_start is not None:
+            on_generation_start()
         if on_answer_chunk is None:
             response = self.llm.generate_answer(
                 prompt, temperature=temperature, max_tokens=max_tokens
@@ -849,6 +1013,7 @@ class RAGEngine:
         context_budget: int | None = None,
         use_adjacent_context: bool | None = None,
         should_stop: Callable[[], bool] | None = None,
+        on_generation_start: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
@@ -861,20 +1026,20 @@ class RAGEngine:
             plan = plan_queries(query, self.llm if use_llm and self.enable_llm else None, top_k)
         embedding_provider = self.vectorizer.embedding_provider
 
-        results, trace_id, retrieval_seconds = self._retrieve(
-            query, plan, book_name, top_k, use_hyde
-        )
-
         adjacent_enabled = (
             getattr(self, "enable_adjacent_context", False)
             if use_adjacent_context is None
             else use_adjacent_context
         )
         adjacent_applied = adjacent_enabled and plan["status"] != "active"
-        context_candidates = self._context_candidates(
-            results,
-            use_adjacent_context=adjacent_applied,
-        )
+        # Keep neighbour expansion on the same cached corpus as hybrid retrieval.
+        with getattr(self, "_index_lock", nullcontext()):
+            results, trace_id, retrieval_seconds = self._retrieve(
+                query, plan, book_name, top_k, use_hyde
+            )
+            context_candidates = self._context_candidates(
+                results, use_adjacent_context=adjacent_applied,
+            )
         budget = self.context_budget if context_budget is None else context_budget
         context, context_sources = select_context(
             context_candidates, budget, fair_share=plan["status"] == "active"
@@ -933,6 +1098,7 @@ class RAGEngine:
                 on_answer_chunk=None if verify_citations else on_answer_chunk,
                 started=generation_started,
                 should_stop=should_stop,
+                on_generation_start=on_generation_start,
             )
             answer = llm_response["answer"]
             if verify_citations and llm_response["success"]:

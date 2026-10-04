@@ -717,11 +717,16 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
 
     print(
         f"生成评测：计划 {report['planned']} 份回答，"
-        f"已生成 {report['generated']}，已评判 {report['judged']}"
+        f"已生成 {report['generated']}，完整 {report['completed']}，"
+        f"未完成 {report['incomplete']}（截断 {report['truncated']}，"
+        f"空回答 {report['empty_answers']}），已评判 {report['judged']}"
     )
+    print("质量均分与配对比较仅使用完整回答；未完成的生成结果与用量保留，续跑不会重新生成。")
     for name, arm in report["arms"].items():
         print(
-            f"{name}: 实质问题={shown(arm['problem_claims'])} 条/份，"
+            f"{name}: 完整 {arm['completed']}/{arm['samples']}，"
+            f"未完成 {arm['incomplete']}，已评判 {arm['judged']}；"
+            f"实质问题={shown(arm['problem_claims'])} 条/份，"
             f"实质问题比例={shown(arm['problem_rate'])}，严格口径={shown(arm['strict_rate'])}，"
             f"覆盖={shown(arm['coverage'])}，样本相似度={shown(arm['overlap'])}"
         )

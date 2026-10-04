@@ -33,13 +33,17 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
-    def run_cli(self, environment: dict[str, str]) -> tuple[MagicMock, Path]:
+    def run_cli(self, environment: dict[str, str], *, report: dict | None = None,
+                stdout: io.StringIO | None = None) -> tuple[MagicMock, Path]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cases_path = workspace(root)
             output_path = root / "generation"
-            report = {"planned": 2, "generated": 2, "judged": 2, "reference_arm": "hot",
-                      "arms": {}, "comparisons": {}}
+            report = report or {
+                "planned": 2, "generated": 2, "completed": 2, "incomplete": 0,
+                "truncated": 0, "empty_answers": 0, "judged": 2, "reference_arm": "hot",
+                "arms": {}, "comparisons": {},
+            }
             with (
                 patch.dict(os.environ, environment, clear=True),
                 patch(
@@ -50,7 +54,7 @@ class GenerationCliTests(unittest.TestCase):
                     "rag_textbook_qa.evaluation.generation_runner.run_generation_experiment",
                     return_value=report,
                 ) as run,
-                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stdout(stdout if stdout is not None else io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 main([
@@ -77,6 +81,28 @@ class GenerationCliTests(unittest.TestCase):
     def test_refuses_to_let_the_generator_judge_itself(self):
         with self.assertRaises(SystemExit):
             self.run_cli({"LLM_API_KEY": SECRET, "LLM_MODEL": "gen-model"})
+
+    def test_reports_incomplete_answers_and_the_quality_denominator(self):
+        stdout = io.StringIO()
+        self.run_cli(
+            {"LLM_API_KEY": SECRET, "LLM_MODEL": "gen-model", "RAGAS_MODEL": "judge-model"},
+            report={
+                "planned": 3, "generated": 3, "completed": 1, "incomplete": 2,
+                "truncated": 1, "empty_answers": 1, "judged": 1, "reference_arm": "hot",
+                "arms": {"hot": {
+                    "completed": 1, "samples": 3, "incomplete": 2, "judged": 1,
+                    "problem_claims": 0.0, "problem_rate": 0.0, "strict_rate": 0.0,
+                    "coverage": 1.0, "overlap": None,
+                }},
+                "comparisons": {},
+            },
+            stdout=stdout,
+        )
+
+        self.assertIn("完整 1，未完成 2（截断 1，空回答 1），已评判 1", stdout.getvalue())
+        self.assertIn("质量均分与配对比较仅使用完整回答", stdout.getvalue())
+        self.assertIn("续跑不会重新生成", stdout.getvalue())
+        self.assertIn("hot: 完整 1/3，未完成 2，已评判 1", stdout.getvalue())
 
 
 if __name__ == "__main__":

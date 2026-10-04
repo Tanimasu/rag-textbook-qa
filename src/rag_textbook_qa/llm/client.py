@@ -192,10 +192,13 @@ class LLMClient:
                 answer = choice.message.content or ""
                 usage = self._usage(response)
                 finish_reason = getattr(choice, "finish_reason", None)
-                if finish_reason != "stop":
+                if finish_reason != "stop" or not answer.strip():
                     return {
                         "success": False,
-                        "error": _incomplete_generation_message(finish_reason),
+                        "error": (
+                            _incomplete_generation_message(finish_reason)
+                            if finish_reason != "stop" else "模型响应为空，无法生成回答"
+                        ),
                         "answer": answer,
                         "model": selected_model,
                         "tokens": usage,

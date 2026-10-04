@@ -17,8 +17,10 @@ rag-qa serve                     # http://127.0.0.1:8000
 IP、访问口令、API Key、Worker token 或模型内部提示词。该目录默认被 Git 忽略。
 
 回答较慢时可以停止生成。浏览器一断开，服务端立即通知后台线程；模型每返回一个流式片段都会检查一次，
-包括正文出现前的隐藏推理片段，随后关闭上游请求并释放单进程生成槽，仍在排队的请求直接放弃。已经发给
-大模型的请求仍计入每日额度，尚未发出的会退回。等待期间每 10 秒发一次 SSE 注释保持连接。
+包括正文出现前的隐藏推理片段，随后关闭上游请求并释放单进程生成槽。已经发给
+大模型的请求仍计入每日额度，尚未发出的会退回。排队请求断开后立即退出队列，不会启动回答线程；
+正在执行的请求保持生成槽，直到工作线程实际退出。等待期间每 10 秒发一次 SSE 注释保持连接。
+检索失败或没有可用证据时也不会消耗生成额度。
 失败、限流、断流或主动停止后可以一键重试原问题，
 页面也可以直接清空当前对话；这些临时对话内容不会因为清空操作写入服务端。首页示例会自动选择对应
 教材，当前浏览器标签页也会记住上次选择；没有索引的教材示例会保持禁用。
@@ -58,10 +60,19 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 | `RAG_QA_RATE_LIMIT` / `RAG_QA_RATE_WINDOW_SECONDS` | 10 / 600 | 每个 IP 的提问滑动窗口限流 |
 | `RAG_QA_FEEDBACK_RATE_LIMIT` | 30 | 同一窗口内单独计算的反馈提交限流，不占用提问次数 |
 | `RAG_QA_DAILY_GENERATIONS` | 200 | 每日生成上限，用完后只返回检索到的原文、不调用大模型 |
+| `RAG_QA_MAX_PENDING_REQUESTS` | 8 | 正在执行与排队的请求总数上限；满时两种提问接口均返回 HTTP 503 |
+| `RAG_QA_QUEUE_TIMEOUT` | 90 | 最大排队秒数；流式接口已经开始响应时通过 SSE `error` 返回超时 |
 | `RAG_QA_TRUST_PROXY` | false | 前面恰有一层可信代理时才开启 |
 
 监听非本机地址时，必须设置 `RAG_QA_ACCESS_CODE`，或显式加 `--public` 确认无口令开放。
 计数器存在进程内存里，重启即清零，只适合单进程演示。
+排队使用协程，仅取得执行槽的请求创建回答线程。`/health` 提供
+`requests_in_flight`、`requests_queued` 和 `request_capacity`，便于观察队列。
+
+索引更新后，服务会检查集合版本和写入位置，刷新 BM25、教材列表及相邻片段缓存。
+替换和追加构建都先写入临时集合，成功后发布；失败构建保持原索引。
+同一本教材同时只允许一个构建进程，重复构建会在调用 embedding 前被拒绝，防止并发追加丢失数据。
+检索期间发生更新时会重试，避免把旧正文与新元数据混在一次回答中。
 
 ## Docker 与 Hugging Face Spaces
 
@@ -74,6 +85,10 @@ docker build -t rag-textbook-qa .
 docker run -p 7860:7860 -e LLM_API_KEY -e LLM_API_BASE -e LLM_MODEL rag-textbook-qa
 ```
 
+镜像默认不信任客户端发送的 `X-Forwarded-For`，直接映射端口时保持这个默认值，避免伪造地址绕过
+每 IP 限流。只有服务前面恰有一层可信代理，且代理会追加真实客户端地址时，才设置
+`RAG_QA_TRUST_PROXY=true`。
+
 部署到 Hugging Face Spaces 时，先生成 Space 目录。注意 Docker Space 需要 PRO 订阅（免费账号只能托管静态页面）：
 
 ```bash
@@ -82,5 +97,6 @@ python scripts/prepare_hf_space.py      # 检查索引后生成 artifacts/hf-spa
 
 脚本会拒绝空集合、嵌入模型不一致或冲突锚点失效的索引，本身不上传任何内容；末尾打印的 `hf`
 命令要用你自己的账号执行，之后在 Space 设置里配置 `LLM_API_KEY`（Secret）、`LLM_API_BASE`、
-`LLM_MODEL`。镜像以 `--public` 无口令开放，费用靠限流和每日额度控制；设置 `RAG_QA_ACCESS_CODE`
+`LLM_MODEL`，以及 `RAG_QA_TRUST_PROXY=true`（仅用于 Space 的可信代理部署，使每 IP 限流使用真实
+访客地址）。镜像以 `--public` 无口令开放，费用靠限流和每日额度控制；设置 `RAG_QA_ACCESS_CODE`
 即可改为口令访问。Space 的磁盘不持久，重启后反馈库会清空。

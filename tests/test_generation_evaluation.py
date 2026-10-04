@@ -202,6 +202,40 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(report["arms"]["cool"]["mixed_verdicts"], 1)
         json.dumps(report)
 
+    def test_summary_excludes_legacy_incomplete_scores_from_means_and_pairing(self):
+        def record(case_id: str, arm: str, reason: str | None, problems: int,
+                   answer: str = "回答") -> dict:
+            return {
+                "case_id": case_id, "arm": arm, "finish_reason": reason, "answer": answer,
+                "score": {
+                    "fact_claims": 4, "problem_claims": problems,
+                    "problem_rate": problems / 4, "strict_rate": problems / 4,
+                    "coverage": 1.0,
+                },
+            }
+
+        cases = [GenerationCase("01", "问", (), {}), GenerationCase("02", "问", (), {})]
+        arms = [Arm("hot", "baseline", 0.7), Arm("cool", "baseline", None)]
+        records = [
+            record("01", "hot", "stop", 2), record("01", "hot", "length", 100),
+            record("01", "hot", "stop", 100, answer=" \n"),
+            record("01", "cool", "stored", 1), record("02", "hot", None, 100),
+            record("02", "cool", "stored", 0),
+        ]
+
+        report = summarize(records, cases, arms)
+
+        hot = report["arms"]["hot"]
+        self.assertEqual((hot["samples"], hot["completed"], hot["incomplete"], hot["judged"],
+                          hot["truncated"], hot["empty_answers"]), (4, 1, 3, 1, 1, 1))
+        self.assertEqual(hot["problem_claims"], 2.0)
+        self.assertEqual(hot["answer_chars"], 2.0)
+        self.assertIsNone(hot["overlap"])
+        self.assertEqual(report["arms"]["cool"]["judged"], 2)
+        comparison = report["comparisons"]["cool"]["problem_claims"]
+        self.assertEqual((comparison["cases"], comparison["mean_difference"]), (1, -1.0))
+        self.assertIsNone(report["cases"]["02"]["hot"]["coverage"])
+
 
 if __name__ == "__main__":
     unittest.main()

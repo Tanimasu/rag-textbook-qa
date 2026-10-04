@@ -61,6 +61,8 @@ class FakeEngine:
         if self.raises is not None:
             raise self.raises
         generating = kwargs["use_llm"] and bool(self.sources)
+        if generating and (started := kwargs.get("on_generation_start")) is not None:
+            started()
         sink = kwargs.get("on_answer_chunk")
         if generating and sink is not None:
             for piece in ("进程是", "程序的执行【参考资料 1】"):
@@ -163,10 +165,24 @@ class GuardTests(unittest.TestCase):
         day = [date(2026, 9, 15)]
         guard = AccessGuard(GuardSettings(daily_generations=2), today=lambda: day[0])
 
-        self.assertEqual([guard.reserve_generation() for _ in range(3)], [True, True, False])
+        self.assertEqual(
+            [guard.reserve_generation() for _ in range(3)], [day[0], day[0], None]
+        )
         self.assertEqual(guard.status()["generations_remaining_today"], 0)
         day[0] = date(2026, 9, 16)
         self.assertTrue(guard.reserve_generation())
+
+    def test_refund_from_yesterday_does_not_release_todays_budget(self):
+        day = [date(2026, 9, 15)]
+        guard = AccessGuard(GuardSettings(daily_generations=2), today=lambda: day[0])
+        yesterday = guard.reserve_generation()
+        day[0] = date(2026, 9, 16)
+        today = guard.reserve_generation()
+
+        guard.refund_generation(yesterday)
+        self.assertEqual(guard.status()["generations_remaining_today"], 1)
+        guard.refund_generation(today)
+        self.assertEqual(guard.status()["generations_remaining_today"], 2)
 
     def test_a_held_generation_slot_times_out_as_busy(self):
         guard = AccessGuard(GuardSettings(queue_timeout_seconds=0.05))
@@ -522,6 +538,34 @@ class ApiAppTests(unittest.TestCase):
             [("error", {"status": "failed", "message": PUBLIC_FAILURE})],
         )
         self.assertNotIn(SECRET, streamed.text)
+
+    def test_retrieval_failures_refund_the_budget_on_both_routes(self):
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                client = self.client(
+                    engine=FakeEngine(raises=RuntimeError("retrieval failed")),
+                    daily_generations=5,
+                )
+                with patch("sys.stderr"):
+                    client.post(route, json={"query": "问题"})
+                self.assertEqual(
+                    client.get("/health").json()["generations_remaining_today"], 5
+                )
+
+    def test_failures_after_generation_starts_keep_the_budget_claim(self):
+        class GenerationFailureEngine(FakeEngine):
+            def ask(self, **kwargs):
+                kwargs["on_generation_start"]()
+                raise RuntimeError("generation failed")
+
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                client = self.client(engine=GenerationFailureEngine(), daily_generations=5)
+                with patch("sys.stderr"):
+                    client.post(route, json={"query": "问题"})
+                self.assertEqual(
+                    client.get("/health").json()["generations_remaining_today"], 4
+                )
 
     def test_stopping_before_the_model_is_called_refunds_the_budget(self):
         for request_sent, remaining in ((False, 5), (True, 4)):

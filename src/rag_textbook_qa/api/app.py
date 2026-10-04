@@ -32,6 +32,7 @@ from rag_textbook_qa.api.guard import (
     Busy,
     GuardSettings,
     RateLimited,
+    RequestAdmission,
 )
 from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.llm import GenerationCancelled
@@ -60,6 +61,7 @@ _CITATION_REFERENCE = re.compile(r"【参考资料\s*(\d+)】")
 # Long enough to cost nothing, short enough that no proxy idles out the connection
 # while a reasoning model has produced no visible text yet.
 _KEEPALIVE_SECONDS = 10.0
+_QUEUE_POLL_SECONDS = 0.05
 
 
 class AskRequest(BaseModel):
@@ -205,56 +207,95 @@ def _client_address(request: Request, *, trust_proxy: bool) -> str:
     return request.client.host if request.client else "unknown"
 
 
+class _AnswerJob:
+    """Start a thread only after an admitted coroutine has the execution slot."""
+
+    def __init__(
+        self,
+        produce: Callable[[Callable[[str], None], Callable[[], bool]], dict[str, Any]],
+        admission: RequestAdmission,
+    ) -> None:
+        self._produce = produce
+        self.admission = admission
+        self.events: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
+        self._loop = asyncio.get_running_loop()
+
+    def _put(self, item: tuple[str, dict[str, Any]] | None) -> None:
+        # The loop is gone if the server shut down while this answer was running.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self.events.put_nowait, item)
+
+    def start(self) -> None:
+        def work() -> None:
+            try:
+                if self.admission.is_cancelled():
+                    return
+                result = self._produce(
+                    lambda chunk: self._put(("chunk", {"text": chunk})),
+                    self.admission.is_cancelled,
+                )
+                self._put(("result", result))
+            except GenerationCancelled:
+                pass  # The reader stopped the answer. This is not a server error.
+            except Exception as exc:  # noqa: BLE001 - hide provider text at the public boundary
+                _log_failure(exc)
+                self._put(("error", {"status": "failed", "message": PUBLIC_FAILURE}))
+            finally:
+                self.admission.release()
+                self._put(None)
+
+        try:
+            threading.Thread(target=work, name="rag-qa-answer", daemon=True).start()
+        except BaseException:
+            self.admission.release()
+            raise
+
+
+class _AnswerStreamResponse(StreamingResponse):
+    """Release an admission even if disconnect happens before iteration begins."""
+
+    def __init__(self, *args: Any, admission: RequestAdmission, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._admission = admission
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._admission.cancel()
+
+
 async def _stream(
     produce: Callable[[Callable[[str], None], Callable[[], bool]], dict[str, Any]],
     guard: AccessGuard,
     *,
     keepalive_seconds: float = _KEEPALIVE_SECONDS,
+    admission: RequestAdmission | None = None,
 ) -> AsyncIterator[str]:
     """Relay one answer as server-sent events.
 
-    The answer runs on its own thread, and only that thread holds the generation
-    slot, so a client that disconnects mid-answer cannot strand the slot and wedge
-    every later request.
-
-    The relay itself is a coroutine so that a disconnect reaches the producer at
-    once. Starlette cancels the response task when the client leaves; a relay that
-    blocked in the threadpool would only see that at its next event, and during a
-    reasoning model's silent first seconds there is none. Cancelling this coroutine
-    runs its ``finally``, and the producer checks that flag on every model chunk.
+    Waiting requests hold only bounded admissions and coroutines. One answer thread
+    starts after acquiring the execution slot. Starlette cancels this relay when a
+    client leaves, releasing a queued admission immediately or signalling the active
+    producer to stop. An active worker keeps its slot until it really exits.
     """
 
+    admission = admission or guard.admit_request()
+    job = _AnswerJob(produce, admission)
     loop = asyncio.get_running_loop()
-    events: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
-    cancelled = threading.Event()
-
-    def put(item: tuple[str, dict[str, Any]] | None) -> None:
-        # The loop is gone if the server shut down while this answer was running.
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(events.put_nowait, item)
-
-    def work() -> None:
-        try:
-            with guard.generation_slot():
-                if cancelled.is_set():
-                    return  # The reader left while this request waited in the queue.
-                result = produce(lambda chunk: put(("chunk", {"text": chunk})), cancelled.is_set)
-            put(("result", result))
-        except GenerationCancelled:
-            pass  # The reader stopped the answer. This is not a server error.
-        except Busy as exc:
-            put(("error", {"status": "busy", "message": str(exc)}))
-        except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
-            _log_failure(exc)
-            put(("error", {"status": "failed", "message": PUBLIC_FAILURE}))
-        finally:
-            put(None)
-
-    threading.Thread(target=work, name="rag-qa-answer", daemon=True).start()
+    next_keepalive = loop.time() + keepalive_seconds
     try:
+        while not admission.try_start():
+            if admission.is_cancelled():
+                return
+            if loop.time() >= next_keepalive:
+                yield ": keepalive\n\n"
+                next_keepalive = loop.time() + keepalive_seconds
+            await asyncio.sleep(min(_QUEUE_POLL_SECONDS, keepalive_seconds))
+        job.start()
         while True:
             try:
-                item = await asyncio.wait_for(events.get(), keepalive_seconds)
+                item = await asyncio.wait_for(job.events.get(), keepalive_seconds)
             except TimeoutError:
                 # An SSE comment: the page ignores it, but the connection stays warm.
                 yield ": keepalive\n\n"
@@ -263,8 +304,47 @@ async def _stream(
                 return
             name, data = item
             yield f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    except Busy as exc:
+        yield f"event: error\ndata: {json.dumps({'status': 'busy', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+    except Exception as exc:  # noqa: BLE001 - thread startup failures are public-safe too
+        _log_failure(exc)
+        yield f"event: error\ndata: {json.dumps({'status': 'failed', 'message': PUBLIC_FAILURE}, ensure_ascii=False)}\n\n"
     finally:
-        cancelled.set()
+        admission.cancel()
+
+
+async def _answer_once(
+    produce: Callable[[Callable[[str], None], Callable[[], bool]], dict[str, Any]],
+    admission: RequestAdmission,
+    request: Request,
+) -> dict[str, Any]:
+    """Wait for a REST answer without occupying the shared FastAPI threadpool."""
+
+    job = _AnswerJob(produce, admission)
+    try:
+        while True:
+            if admission.is_cancelled() or await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="请求已取消")
+            if admission.try_start():
+                break
+            await asyncio.sleep(_QUEUE_POLL_SECONDS)
+        job.start()
+        while True:
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="请求已取消")
+            try:
+                item = await asyncio.wait_for(job.events.get(), _QUEUE_POLL_SECONDS)
+            except TimeoutError:
+                continue
+            if item is None:
+                raise HTTPException(status_code=499, detail="请求已取消")
+            name, data = item
+            if name == "result":
+                return data
+            if name == "error":
+                raise HTTPException(status_code=500, detail=PUBLIC_FAILURE)
+    finally:
+        admission.cancel()
 
 
 def create_api_app(
@@ -277,7 +357,6 @@ def create_api_app(
     """Build the public app around one shared engine and one guard."""
 
     book_list = [dict(book) for book in books]
-    known_books = {book["book_id"] for book in book_list}
     answers = AnswerRegistry()
     page = (
         resources.files("rag_textbook_qa.api")
@@ -293,6 +372,19 @@ def create_api_app(
             "公开版关闭了尚未通过验收的实验功能，并对调用频率和每日生成次数设了上限。"
         ),
     )
+
+    def current_books() -> list[dict[str, Any]]:
+        indexed_books = getattr(engine, "list_indexed_books", None)
+        if not callable(indexed_books):
+            return book_list
+        return [
+            {
+                "book_id": book["book_name"],
+                "label": BOOK_LABELS.get(book["book_name"], book["book_name"]),
+                "chunks": book["count"],
+            }
+            for book in indexed_books()
+        ]
 
     def authorize(request: Request, *, rate_scope: str = "question") -> None:
         client = _client_address(request, trust_proxy=guard.settings.trust_proxy)
@@ -314,7 +406,9 @@ def create_api_app(
         query = payload.query.strip()
         if not query:
             raise HTTPException(status_code=422, detail="问题不能为空")
-        if payload.book_id is not None and payload.book_id not in known_books:
+        if payload.book_id is not None and payload.book_id not in {
+            book["book_id"] for book in current_books()
+        }:
             raise HTTPException(status_code=404, detail="没有这本教材的索引")
         return query, payload.book_id, payload.top_k
 
@@ -325,12 +419,18 @@ def create_api_app(
         sink: Callable[[str], None] | None,
         should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        reserved_on = None
         if not getattr(engine, "enable_llm", False):
             retrieval_only = "llm_unavailable"
-        elif guard.reserve_generation():
-            retrieval_only = None
         else:
-            retrieval_only = "budget"
+            reserved_on = guard.reserve_generation()
+            retrieval_only = None if reserved_on is not None else "budget"
+        generation_started = False
+
+        def mark_generation_started() -> None:
+            nonlocal generation_started
+            generation_started = True
+
         try:
             result = engine.ask(
                 query=query,
@@ -342,15 +442,17 @@ def create_api_app(
                 verify_citations=False,
                 on_answer_chunk=sink if retrieval_only is None else None,
                 should_stop=should_stop,
+                on_generation_start=mark_generation_started,
             )
         except GenerationCancelled as exc:
-            if retrieval_only is None and not exc.request_sent:
-                # Stopped before the model was called, so nothing was spent.
-                guard.refund_generation()
+            # The client can stop between the engine's start signal and its HTTP
+            # request, so its request_sent flag is authoritative for cancellation.
+            generation_started = exc.request_sent
             raise
-        if retrieval_only is None and not result.get("context_sources"):
-            # Nothing was packed, so the engine never called the model.
-            guard.refund_generation()
+        finally:
+            if reserved_on is not None and not generation_started:
+                # No evidence, retrieval failure, or a stop before the model call.
+                guard.refund_generation(reserved_on)
         response = public_result(result, retrieval_only=retrieval_only)
         response["answer_id"] = answers.remember(
             query=query,
@@ -374,34 +476,46 @@ def create_api_app(
         return {
             "status": "ok",
             "version": __version__,
-            "books": len(book_list),
+            "books": len(current_books()),
             **guard.status(),
         }
 
     @app.get("/v1/books", summary="已索引的教材")
     def list_books() -> list[dict[str, Any]]:
-        return book_list
+        return current_books()
 
     @app.post("/v1/ask", summary="提问，一次性返回回答与引用")
-    def ask(payload: AskRequest, request: Request) -> dict[str, Any]:
+    async def ask(payload: AskRequest, request: Request) -> dict[str, Any]:
         query, book_id, top_k = admit(payload, request)
         try:
-            with guard.generation_slot():
-                return answer(query, book_id, top_k, None)
+            admission = guard.admit_request()
+            return await _answer_once(
+                lambda sink, should_stop: answer(query, book_id, top_k, None, should_stop),
+                admission,
+                request,
+            )
         except Busy as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
             _log_failure(exc)
             raise HTTPException(status_code=500, detail=PUBLIC_FAILURE) from None
 
     @app.post("/v1/ask/stream", summary="提问，以服务器推送事件（SSE）流式返回")
-    def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
+    async def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
         query, book_id, top_k = admit(payload, request)
-        return StreamingResponse(
+        try:
+            admission = guard.admit_request()
+        except Busy as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _AnswerStreamResponse(
             _stream(
                 lambda sink, should_stop: answer(query, book_id, top_k, sink, should_stop),
                 guard,
+                admission=admission,
             ),
+            admission=admission,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

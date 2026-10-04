@@ -97,6 +97,31 @@ class AdjacentContextTests(unittest.TestCase):
             [result],
         )
 
+    def test_same_chunk_ids_in_different_books_keep_both_neighbours(self):
+        network = self.corpus[1:3]
+        operating_system = [
+            {**row, "book_name": "operating_system"} for row in network
+        ]
+        results = [network[0], operating_system[0]]
+
+        expanded = append_same_section_neighbours(
+            results,
+            {
+                "computer_network": network,
+                "operating_system": operating_system,
+            },
+        )
+
+        self.assertEqual(
+            [(row["book_name"], row["chunk_id"]) for row in expanded],
+            [
+                ("computer_network", "ch3_s3_1_p186"),
+                ("operating_system", "ch3_s3_1_p186"),
+                ("computer_network", "ch3_s3_1_p187"),
+                ("operating_system", "ch3_s3_1_p187"),
+            ],
+        )
+
     def _engine(self):
         engine = object.__new__(RAGEngine)
         engine.verbose = False

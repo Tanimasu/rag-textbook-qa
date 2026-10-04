@@ -29,6 +29,7 @@ from rag_textbook_qa.evaluation.generation import (
     GenerationCase,
     context_blocks,
     extraction_prompt,
+    generation_is_complete,
     parse_json_object,
     score_answer,
     summarize,
@@ -431,23 +432,39 @@ def run_generation_experiment(
 
     options = {"failures": failures, "concurrency": concurrency, "log": log}
     _run_stage("generate", [k for k in keys if k not in generations.records], generate, **options)
-    ungraded = [k for k in keys if k in generations.records and k not in judgments.records]
+    ungraded = [
+        k for k in keys
+        if k in generations.records
+        and generation_is_complete(generations.records[k])
+        and k not in judgments.records
+    ]
     _run_stage("judge", ungraded, grade, **options)
 
     records = [
-        {**generations.records[k], "score": judgments.records.get(k, {}).get("score")}
+        {
+            **generations.records[k],
+            "score": (
+                judgments.records.get(k, {}).get("score")
+                if generation_is_complete(generations.records[k]) else None
+            ),
+        }
         for k in keys
         if k in generations.records
     ]
+    summary = summarize(records, cases, arms, seed=seed)
     report = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "settings": settings,
         "planned": len(keys),
         "generated": len(records),
         "judged": sum(record["score"] is not None for record in records),
+        **{
+            metric: sum(arm[metric] for arm in summary["arms"].values())
+            for metric in ("completed", "incomplete", "empty_answers", "truncated")
+        },
         "failures_logged": len(failures.lines),
         "usage": _usage(records, arms),
-        **summarize(records, cases, arms, seed=seed),
+        **summary,
     }
     (output_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

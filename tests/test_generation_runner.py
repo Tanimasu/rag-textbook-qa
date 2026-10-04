@@ -197,7 +197,78 @@ class ExperimentTests(unittest.TestCase):
             report = run(Path(directory), [Arm("kept", "baseline", None)], generator=generator)
 
         self.assertEqual((report["planned"], report["judged"]), (1, 1))
+        self.assertEqual((report["completed"], report["incomplete"]), (1, 0))
         self.assertEqual(report["usage"]["kept"]["prompt_tokens"], 0)
+
+    def test_incomplete_generations_are_saved_without_judging_or_regenerating(self):
+        for reason in ("length", "content_filter", "tool_calls", None, "missing"):
+            with self.subTest(finish_reason=reason), tempfile.TemporaryDirectory() as directory:
+                answer = fake_answer("未完成的正文")
+                if reason == "missing":
+                    answer.pop("finish_reason")
+                else:
+                    answer["finish_reason"] = reason
+                generator = MagicMock(return_value=answer)
+                judge = MagicMock(side_effect=fake_judge)
+                output = Path(directory)
+                arms = [Arm("hot", "baseline", 0.7)]
+
+                report = run(output, arms, generator=generator, judge=judge, samples=1)
+                again = run(output, arms, generator=generator, judge=judge, samples=1)
+                saved = JsonlLog(output / "generations.jsonl")
+
+                self.assertEqual(generator.call_count, 1)
+                judge.assert_not_called()
+                self.assertEqual(len(saved.lines), 1)
+                self.assertEqual(saved.lines[0]["answer"], "未完成的正文")
+                self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
+                self.assertEqual((report["generated"], report["completed"], report["incomplete"],
+                                  report["judged"], report["failures_logged"]), (1, 0, 1, 0, 0))
+                self.assertEqual(report["truncated"], int(reason == "length"))
+                self.assertIsNone(report["arms"]["hot"]["problem_claims"])
+                self.assertEqual(again["incomplete"], 1)
+                self.assertFalse((output / "judgments.jsonl").exists())
+
+    def test_empty_stopped_answers_are_saved_without_judging(self):
+        for text in ("", " \n\t"):
+            with self.subTest(answer=text), tempfile.TemporaryDirectory() as directory:
+                generator = MagicMock(return_value=fake_answer(text))
+                judge = MagicMock(side_effect=fake_judge)
+                report = run(Path(directory), [Arm("hot", "baseline", 0.7)],
+                             generator=generator, judge=judge, samples=1)
+
+                judge.assert_not_called()
+                self.assertEqual((report["generated"], report["completed"], report["incomplete"],
+                                  report["empty_answers"], report["judged"]), (1, 0, 1, 1, 0))
+                self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
+
+    def test_resume_excludes_legacy_incomplete_judgments_and_preserves_paid_results(self):
+        arms = [Arm("hot", "baseline", 0.7), Arm("cool", "baseline", 0.2)]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            run(output, arms, samples=1)
+            path = output / "generations.jsonl"
+            records = JsonlLog(path).lines
+            for record in records:
+                if record["arm"] == "hot":
+                    record["finish_reason"] = "length"
+            path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            original_judgments = (output / "judgments.jsonl").read_bytes()
+            generator = MagicMock()
+            judge = MagicMock()
+
+            report = run(output, arms, generator=generator, judge=judge, samples=1)
+
+            generator.assert_not_called()
+            judge.assert_not_called()
+            self.assertEqual((output / "judgments.jsonl").read_bytes(), original_judgments)
+            self.assertEqual((report["generated"], report["judged"], report["incomplete"]), (2, 1, 1))
+            self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
+            self.assertEqual(report["summary_version"], 2)
+            self.assertEqual(report["quality_sample_policy"], "completed_answers_only")
+            self.assertEqual(report["settings"]["judge_version"], 3)
+            self.assertIsNone(report["arms"]["hot"]["problem_claims"])
+            self.assertTrue(all(value is None for value in report["comparisons"]["cool"].values()))
 
     def test_malformed_judge_output_fails_only_that_sample(self):
         with tempfile.TemporaryDirectory() as directory:

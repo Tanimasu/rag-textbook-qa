@@ -57,7 +57,7 @@ USER app
 ENV RAG_QA_HOME=/app \
     RAG_QA_COMPUTE_BACKEND=local \
     RAG_QA_DEVICE=cpu \
-    RAG_QA_TRUST_PROXY=true \
+    RAG_QA_TRUST_PROXY=false \
     HF_HUB_OFFLINE=1 \
     ANONYMIZED_TELEMETRY=False
 
@@ -65,4 +65,6 @@ EXPOSE 7860
 # --public: this is a portfolio demo meant to open without a password. Cost stays
 # bounded by the per-IP rate limit and the daily generation budget, and setting
 # RAG_QA_ACCESS_CODE still enforces a code.
+# Only set RAG_QA_TRUST_PROXY=true behind exactly one trusted proxy that appends
+# the real client address; direct port mappings must ignore client-supplied headers.
 CMD ["rag-qa", "serve", "--host", "0.0.0.0", "--port", "7860", "--db-path", "/app/artifacts/vector_db", "--public"]

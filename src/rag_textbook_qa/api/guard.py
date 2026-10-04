@@ -36,7 +36,7 @@ class RateLimited(GuardError):
 
 
 class Busy(GuardError):
-    """Another answer held the generation slot for longer than the queue allows."""
+    """The request queue is full, or an admitted request waited too long."""
 
 
 def _positive_number(environ: Mapping[str, str], name: str, default: int) -> int:
@@ -60,6 +60,8 @@ class GuardSettings:
     window_seconds: float = 600
     daily_generations: int = 200
     queue_timeout_seconds: float = 90
+    # Includes the one executing request; waiters use coroutines, not threads.
+    max_pending_requests: int = 8
     # Enable only behind exactly one trusted proxy, such as a Hugging Face Space.
     trust_proxy: bool = False
 
@@ -86,6 +88,7 @@ class GuardSettings:
             window_seconds=_positive_number(environ, "RAG_QA_RATE_WINDOW_SECONDS", 600),
             daily_generations=_positive_number(environ, "RAG_QA_DAILY_GENERATIONS", 200),
             queue_timeout_seconds=_positive_number(environ, "RAG_QA_QUEUE_TIMEOUT", 90),
+            max_pending_requests=_positive_number(environ, "RAG_QA_MAX_PENDING_REQUESTS", 8),
             trust_proxy=environ.get("RAG_QA_TRUST_PROXY", "").strip().lower()
             in {"1", "true", "yes"},
         )
@@ -93,6 +96,41 @@ class GuardSettings:
 
 def _utc_today() -> date:
     return datetime.now(UTC).date()
+
+
+class RequestAdmission:
+    """One bounded request, queued until its caller can start the answer thread.
+
+    Cancellation releases a waiting request immediately. An executing request
+    keeps its slot and capacity until its worker finishes, even if the reader has
+    gone away; otherwise the next request could overlap an uncancelled model call.
+    """
+
+    def __init__(self, guard: AccessGuard, admitted_at: float) -> None:
+        self._guard = guard
+        self._admitted_at = admitted_at
+        self._state = "queued"
+        self._cancelled = threading.Event()
+
+    def try_start(self) -> bool:
+        """Acquire the execution slot without blocking; FIFO among admitted callers."""
+
+        return self._guard._try_start(self)
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        with self._guard._lock:
+            if self._state == "queued":
+                self._guard._release_request(self)
+
+    def release(self) -> None:
+        """Return capacity once; only the executing worker may release an active slot."""
+
+        with self._guard._lock:
+            self._guard._release_request(self)
 
 
 class AccessGuard:
@@ -110,6 +148,10 @@ class AccessGuard:
         self._hits: dict[tuple[str, str], deque[float]] = {}
         self._day = today()
         self._generations = 0
+        if settings.max_pending_requests <= 0:
+            raise ValueError("max_pending_requests 必须是正整数")
+        self._requests: deque[RequestAdmission] = deque()
+        self._pending_requests = 0
         # One answer at a time: on a two-core CPU host, concurrent reranking only
         # makes every caller wait longer.
         self._slot = threading.BoundedSemaphore(1)
@@ -151,28 +193,64 @@ class AccessGuard:
                 while len(self._hits) > _MAX_RATE_BUCKETS:
                     del self._hits[next(iter(self._hits))]
 
-    def reserve_generation(self) -> bool:
-        """Claim one generation from today's budget; False means answer from retrieval."""
+    def reserve_generation(self) -> date | None:
+        """Claim a generation and return its UTC day; None means retrieval only."""
 
         with self._lock:
             self._roll_day()
             if self._generations >= self.settings.daily_generations:
-                return False
+                return None
             self._generations += 1
-            return True
+            return self._day
 
-    def refund_generation(self) -> None:
+    def refund_generation(self, reserved_on: date) -> None:
         """Return a claim that never reached the model, so the cap counts real calls."""
 
         with self._lock:
             self._roll_day()
-            self._generations = max(0, self._generations - 1)
+            if reserved_on == self._day:
+                self._generations = max(0, self._generations - 1)
 
     def _roll_day(self) -> None:
         today = self._today()
         if today != self._day:
             self._day = today
             self._generations = 0
+
+    def admit_request(self) -> RequestAdmission:
+        """Claim bounded capacity before creating a response or a worker thread."""
+
+        with self._lock:
+            if self._pending_requests >= self.settings.max_pending_requests:
+                raise Busy("当前排队已满，请稍后再试")
+            admission = RequestAdmission(self, self._clock())
+            self._requests.append(admission)
+            self._pending_requests += 1
+            return admission
+
+    def _try_start(self, admission: RequestAdmission) -> bool:
+        with self._lock:
+            if admission._state != "queued":
+                return False
+            if self._clock() - admission._admitted_at >= self.settings.queue_timeout_seconds:
+                self._release_request(admission)
+                raise Busy("等待回答超时，请稍后再试")
+            if self._requests[0] is not admission or not self._slot.acquire(blocking=False):
+                return False
+            self._requests.popleft()
+            admission._state = "active"
+            return True
+
+    def _release_request(self, admission: RequestAdmission) -> None:
+        # The caller holds _lock. Repeated release/cancel calls are harmless.
+        if admission._state == "released":
+            return
+        if admission._state == "queued":
+            self._requests.remove(admission)
+        else:
+            self._slot.release()
+        admission._state = "released"
+        self._pending_requests -= 1
 
     @contextmanager
     def generation_slot(self) -> Iterator[None]:
@@ -187,7 +265,12 @@ class AccessGuard:
         with self._lock:
             self._roll_day()
             remaining = max(0, self.settings.daily_generations - self._generations)
+            pending = self._pending_requests
+            queued = len(self._requests)
         return {
             "access_code_required": self.requires_access_code,
             "generations_remaining_today": remaining,
+            "requests_in_flight": pending,
+            "requests_queued": queued,
+            "request_capacity": self.settings.max_pending_requests,
         }

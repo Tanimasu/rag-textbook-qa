@@ -206,6 +206,22 @@ class LLMClientTests(unittest.TestCase):
         with self.assertRaisesRegex(LLMGenerationIncompleteError, "长度上限"):
             list(client.stream_answer("问题", raise_on_error=True))
 
+    def test_generate_answer_rejects_empty_content_without_retrying(self):
+        for answer in (None, "", " \n\t"):
+            with self.subTest(answer=answer):
+                sdk = FakeSDKClient([completion_response(answer)])
+                client = LLMClient(
+                    api_key="key",
+                    base_url="https://llm.example/v1",
+                    sdk_client=sdk,
+                    verbose=False,
+                )
+                result = client.generate_answer("问题")
+                self.assertFalse(result["success"])
+                self.assertEqual(result["finish_reason"], "stop")
+                self.assertIn("响应为空", result["error"])
+                self.assertEqual(len(sdk.completions.calls), 1)
+
     def test_a_stop_during_hidden_reasoning_ends_and_closes_the_request(self):
         stream = FakeStream(
             [reasoning_chunk() for _ in range(20)] + [answer_chunk("答案", "stop")]

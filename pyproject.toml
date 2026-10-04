@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "chromadb",
+    "filelock",
     "jieba",
     "openai",
     "python-dotenv",
@@ -57,6 +58,13 @@ dev = [
     "pytest-cov",
     "requests",
     "ruff",
+]
+browser = [
+    "playwright>=1.55,<2",
+]
+build = [
+    "build",
+    "hatchling",
 ]
 
 [project.scripts]

@@ -139,6 +139,46 @@ def chunks():
 
 
 class RagProviderIntegrationTests(unittest.TestCase):
+    def test_generation_start_signal_precedes_both_model_paths(self):
+        for streamed in (False, True):
+            with self.subTest(streamed=streamed):
+                engine = object.__new__(RAGEngine)
+                engine.llm = FakeLLMClient()
+                calls = []
+
+                def started(engine=engine, calls=calls):
+                    self.assertEqual(engine.llm.prompts, [])
+                    calls.append("started")
+
+                result, _ = engine._generate(
+                    "提示词",
+                    temperature=0.7,
+                    max_tokens=20,
+                    on_answer_chunk=calls.append if streamed else None,
+                    started=time.monotonic(),
+                    on_generation_start=started,
+                )
+                self.assertTrue(result["success"])
+                self.assertEqual(calls.count("started"), 1)
+                self.assertEqual(len(engine.llm.prompts), 1)
+
+    def test_pre_request_stop_does_not_signal_generation_start(self):
+        engine = object.__new__(RAGEngine)
+        engine.llm = FakeLLMClient()
+        started = MagicMock()
+        with self.assertRaises(GenerationCancelled):
+            engine._generate(
+                "提示词",
+                temperature=0.7,
+                max_tokens=20,
+                on_answer_chunk=None,
+                started=time.monotonic(),
+                should_stop=lambda: True,
+                on_generation_start=started,
+            )
+        started.assert_not_called()
+        self.assertEqual(engine.llm.prompts, [])
+
     def test_engine_does_not_report_a_truncated_stream_as_success(self):
         class TruncatedLLM:
             default_model = "fake-llm"
