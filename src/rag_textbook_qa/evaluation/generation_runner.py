@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
+
 from rag_textbook_qa.evaluation.generation import (
     EXTRACTION_PROMPT,
     VERIFICATION_PROMPT,
@@ -367,6 +369,38 @@ def run_generation_experiment(
     prompt_builder: Callable[[str, str], str] | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
+    """Own the output directory for the whole run, including resume and reporting."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_lock = FileLock(output_dir / ".run.lock", timeout=0)
+    try:
+        run_lock.acquire()
+    except Timeout as exc:
+        raise ValueError("该输出目录的实验正在运行；请等待结束或使用其他输出目录") from exc
+    try:
+        return _run_generation_experiment_locked(
+            cases, arms, output_dir=output_dir, generator=generator, judge=judge,
+            samples=samples, seed=seed, concurrency=concurrency, protocol=protocol,
+            prompt_builder=prompt_builder, log=log,
+        )
+    finally:
+        run_lock.release()
+
+
+def _run_generation_experiment_locked(
+    cases: Sequence[GenerationCase],
+    arms: Sequence[Arm],
+    *,
+    output_dir: Path,
+    generator: Generator,
+    judge: Judge,
+    samples: int,
+    seed: int,
+    concurrency: int,
+    protocol: Mapping[str, Any],
+    prompt_builder: Callable[[str, str], str] | None,
+    log: Callable[[str], None],
+) -> dict[str, Any]:
     if len({arm.name for arm in arms}) != len(arms):
         raise ValueError("方案名称重复")
     if concurrency < 1:
@@ -393,7 +427,6 @@ def run_generation_experiment(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    output_dir.mkdir(parents=True, exist_ok=True)
     judge_prompts = (EXTRACTION_PROMPT + VERIFICATION_PROMPT).encode("utf-8")
     settings = {
         **protocol,

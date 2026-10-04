@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from filelock import FileLock
+
 from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, GenerationCase
 from rag_textbook_qa.evaluation.generation_runner import (
     JsonlLog,
@@ -117,6 +119,25 @@ class ClientTests(unittest.TestCase):
 
 
 class ExperimentTests(unittest.TestCase):
+    def test_directory_lock_refuses_another_runner_before_paid_calls(self):
+        generator, judge = MagicMock(), MagicMock()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with FileLock(output / ".run.lock", timeout=0), self.assertRaisesRegex(ValueError, "正在运行"):
+                run(output, [Arm("hot", "baseline", 0.7)], generator=generator, judge=judge)
+            generator.assert_not_called()
+            judge.assert_not_called()
+            self.assertFalse((output / "protocol.json").exists())
+            self.assertEqual(run(output, [Arm("hot", "baseline", 0.7)])["judged"], 2)
+
+    def test_directory_lock_releases_when_prompt_preparation_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "cannot render"):
+                run(output, [Arm("hot", "baseline", 0.7)],
+                    prompt_builder=MagicMock(side_effect=RuntimeError("cannot render")))
+            self.assertEqual(run(output, [Arm("hot", "baseline", 0.7)])["judged"], 2)
+
     def test_sample_order_is_seeded_and_stored_arms_use_their_answers(self):
         arms = [Arm("hot", "baseline", 0.7), Arm("kept", "baseline", None)]
         keys = sample_keys([CASE], arms, 3, seed=1)
