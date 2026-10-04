@@ -3,8 +3,9 @@ test_vector_db.py
 检查 ChromaDB 向量数据库的状态：列出所有已向量化的教材集合，并显示样本数据。
 运行方式：python test_vector_db.py
 """
-import chromadb
 from pathlib import Path
+
+import chromadb
 
 DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 

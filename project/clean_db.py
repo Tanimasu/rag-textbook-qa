@@ -3,8 +3,10 @@ clean_db.py
 交互式清理 ChromaDB 向量数据库：列出所有集合，按名称删除指定集合或清空全部。
 运行方式：python clean_db.py
 """
-import chromadb
 from pathlib import Path
+
+import chromadb
+from chromadb.errors import NotFoundError
 
 DB_PATH = Path(__file__).resolve().parents[1] / "artifacts" / "vector_db"
 
@@ -39,7 +41,7 @@ def clean_collections(db_path: str | Path = DB_PATH):
             try:
                 client.delete_collection(name)
                 print(f"已删除: {name}")
-            except Exception:
+            except NotFoundError:
                 print(f"集合不存在: {name}")
 
 
