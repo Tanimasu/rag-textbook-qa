@@ -11,6 +11,7 @@ import json
 import platform
 import sqlite3
 import sys
+import tempfile
 import time
 import unittest
 from contextlib import closing
@@ -61,6 +62,31 @@ def diagnose_copy_error(original):
     return copy
 
 
+def diagnose_cleanup_error(original):
+    """Measure delayed native release while preserving the first failure."""
+
+    def cleanup(temporary):
+        try:
+            return original(temporary)
+        except PermissionError:
+            started = time.monotonic()
+            released = False
+            for _ in range(20):
+                time.sleep(0.01)
+                try:
+                    original(temporary)
+                    released = True
+                    break
+                except PermissionError:
+                    pass
+            print("Chroma cleanup diagnostics: " + json.dumps({
+                "released_after_failure": released,
+                "seconds": time.monotonic() - started,
+            }), file=sys.__stderr__, flush=True)
+            raise
+    return cleanup
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=25)
@@ -72,6 +98,7 @@ def main() -> None:
         parser.error("输出文件已存在，请换一个路径")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
     MultiBookVectorizer._copy_collection = staticmethod(diagnose_copy_error(MultiBookVectorizer._copy_collection))
+    tempfile.TemporaryDirectory.cleanup = diagnose_cleanup_error(tempfile.TemporaryDirectory.cleanup)
     report = {"started_at_utc": datetime.now(UTC).isoformat(),
               "python": platform.python_version(), "platform": platform.system(),
               "iterations": args.iterations, "completed_iterations": 0,

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from chromadb.api.models.Collection import Collection
+from chromadb.api.rust import RustBindingsAPI
 from filelock import FileLock
 from test_vectorizer_provider import FakeEmbeddingProvider, _chunks
 
@@ -178,6 +179,34 @@ class IndexRevisionTests(unittest.TestCase):
             writer.vectorize_book(self.chunks_path, "os", clear_existing=False)
         self.assertEqual(provider.document_calls, 0)
         self.assertEqual(index_revision(self.db), before)
+
+    def test_published_vectors_survive_a_small_native_cache(self):
+        # Windows uses a much smaller native cache. Reproduce that limit on
+        # every platform, without changing the process's real handle limits.
+        original_init = RustBindingsAPI.__init__
+
+        def small_cache(api, system):
+            original_init(api, system)
+            api.hnsw_cache_size = 64
+
+        with (
+            patch.object(RustBindingsAPI, "__init__", small_cache),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+            MultiBookVectorizer(db_path=self.root / "small-cache", embedding_provider=self.provider) as writer,
+        ):
+            writer.vectorize_book(self.chunks_path, "seed")
+            source = writer.client.get_collection("textbook_seed")
+            expected = source.get(include=["embeddings"])["embeddings"].tolist()
+            # This file is absent under Chroma's default sync threshold, even
+            # after count/get. Check durability before applying cache pressure.
+            self.assertTrue(list(writer.db_path.glob("*/index_metadata.pickle")))
+            for index in range(130):
+                writer.vectorize_book(self.chunks_path, f"other{index}")
+            rows = source.get(include=["embeddings"])
+            self.assertEqual(rows["embeddings"].tolist(), expected)
+            ranked = source.query(query_embeddings=[[1., 0.]], n_results=2)
+            self.assertEqual(set(ranked["ids"][0]), {"old_p0", "old_p1"})
 
     def test_staging_is_invisible_and_a_publication_gap_is_retried(self):
         before = index_revision(self.db)

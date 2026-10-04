@@ -261,6 +261,11 @@ class MultiBookVectorizer:
         collection = self.client.create_collection(
             name=write_collection_name,
             metadata=collection_metadata,
+            # Rust Chroma marks collections as backfilled for the lifetime of
+            # the client. If an unsynced HNSW index is evicted, later reads do
+            # not replay its WAL and can fail (or reload stale vectors). Sync
+            # every applied log batch so published indexes survive eviction.
+            configuration={"hnsw": {"space": "cosine", "sync_threshold": 1}},
         )
         print(f"集合写入目标: {write_collection_name}\n")
 
