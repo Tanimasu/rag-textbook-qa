@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -197,6 +198,12 @@ class MultiBookVectorizer:
             for collection in self.client.list_collections()
         )
 
+    def _build_lock_path(self, book_name: str) -> Path:
+        # Chroma permits ids longer than a filesystem component. A fixed digest
+        # also keeps distinct case-sensitive book ids separate on Windows.
+        digest = hashlib.sha256(book_name.encode("utf-8")).hexdigest()
+        return self.db_path / f"ragbuild_{digest}.lock"
+
     def vectorize_book(
         self,
         chunks_path: str | Path,
@@ -213,7 +220,7 @@ class MultiBookVectorizer:
         # Serialise writers across processes before reading an append snapshot.
         # Readers never acquire this lock, so a long embedding batch does not
         # prevent serving the previously published collection.
-        build_lock = FileLock(self.db_path / f"ragbuild_{book_name}.lock", timeout=0)
+        build_lock = FileLock(self._build_lock_path(book_name), timeout=0)
         try:
             with build_lock:
                 return self._vectorize_book_locked(chunks_path, book_name, batch_size, clear_existing)
@@ -336,7 +343,9 @@ class MultiBookVectorizer:
         try:
             if self._collection_exists(collection_name):
                 book_name = collection_name.removeprefix("textbook_")
-                backup_name = f"ragbackup_{uuid.uuid4().hex}_{book_name}"
+                # Keep the whole name within Chroma's 512-character limit. The
+                # backup's metadata retains the complete book id for readers.
+                backup_name = f"ragbackup_{uuid.uuid4().hex}_{book_name[:469]}"
                 self.client.get_collection(collection_name).modify(name=backup_name)
             staging_collection.modify(name=collection_name)
         except BaseException:

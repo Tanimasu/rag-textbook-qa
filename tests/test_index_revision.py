@@ -201,7 +201,7 @@ class IndexRevisionTests(unittest.TestCase):
         calls_before = self.provider.document_calls
         before = index_revision(self.db)
         with (
-            FileLock(self.db / "ragbuild_os.lock", timeout=0),
+            FileLock(self.vectorizer._build_lock_path("os"), timeout=0),
             self.assertRaisesRegex(RuntimeError, "正在构建"),
         ):
             self.vectorizer.vectorize_book(self.chunks_path, "os", clear_existing=False)
@@ -209,6 +209,17 @@ class IndexRevisionTests(unittest.TestCase):
         self.assertEqual(index_revision(self.db), before)
         self.write(_chunks(), clear_existing=False)
         self.assertNotEqual(index_revision(self.db), before)
+
+    def test_long_book_id_can_be_created_replaced_and_read(self):
+        book = "a" * 503
+        self.write(_chunks(), book)
+        before = index_revision(self.db)
+        old_id = self.vectorizer.client.get_collection("textbook_" + book).id
+        self.write(_chunks(), book)
+        self.assertNotEqual(index_revision(self.db), before)
+        self.assertNotEqual(self.vectorizer.client.get_collection("textbook_" + book).id, old_id)
+        self.assertEqual(self.vectorizer.client.get_collection("textbook_" + book).count(), 2)
+        self.assertEqual(len(self.vectorizer.client.list_collections()), 2)
 
     def test_publication_failures_before_and_after_rename_restore_the_old_collection(self):
         for failure in ("old_rename", "new_rename", "new_rename_after_commit"):
