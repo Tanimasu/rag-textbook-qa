@@ -23,6 +23,7 @@ from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
 
 _BOOK_ID_PATTERN = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?")
+_BACKUP_NAME_PATTERN = re.compile(r"ragbackup_[0-9a-f]{32}_(.+)")
 _REQUIRED_CHUNK_FIELDS = {
     "chunk_id",
     "content",
@@ -216,9 +217,22 @@ class MultiBookVectorizer:
         collections = self.client.list_collections()
         if any(collection.name == collection_name for collection in collections):
             return
-        backups = [collection for collection in collections
-                   if collection.name.startswith("ragbackup_")
-                   and (collection.metadata or {}).get("book_name") == book_name]
+        backups = []
+        for collection in collections:
+            if not collection.name.startswith("ragbackup_"):
+                continue
+            saved_book = (collection.metadata or {}).get("book_name")
+            if saved_book == book_name:
+                backups.append(collection)
+            elif not saved_book:
+                # Older published collections may lack book metadata. Their
+                # generated backup name identifies short ids exactly; a clipped
+                # long id is ambiguous and must never become a fresh append.
+                legacy_name = _BACKUP_NAME_PATTERN.fullmatch(collection.name)
+                if legacy_name and legacy_name.group(1) == book_name[:469]:
+                    if len(book_name) > 469:
+                        raise RuntimeError("旧发布备份缺少完整教材标识，无法安全恢复，请检查索引")
+                    backups.append(collection)
         if len(backups) > 1:
             raise RuntimeError(f"教材 {book_name} 存在多个发布备份，无法自动确定版本，请检查索引")
         if backups:
@@ -377,7 +391,18 @@ class MultiBookVectorizer:
                 # Keep the whole name within Chroma's 512-character limit. The
                 # backup's metadata retains the complete book id for readers.
                 backup_name = f"ragbackup_{uuid.uuid4().hex}_{book_name[:469]}"
-                self.client.get_collection(collection_name).modify(name=backup_name)
+                published = self.client.get_collection(collection_name)
+                metadata = published.metadata or {}
+                if metadata.get("book_name") == book_name:
+                    published.modify(name=backup_name)
+                else:
+                    # Legacy collections need an explicit identity before the
+                    # publication gap. Chroma rejects hnsw:space in modify()
+                    # metadata even when unchanged; its actual configuration
+                    # remains intact when this legacy metadata key is omitted.
+                    backup_metadata = {**metadata, "book_name": book_name}
+                    backup_metadata.pop("hnsw:space", None)
+                    published.modify(name=backup_name, metadata=backup_metadata)
             staging_collection.modify(name=collection_name)
         except BaseException:
             if backup_name and self._collection_exists(backup_name):

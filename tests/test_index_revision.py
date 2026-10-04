@@ -223,6 +223,62 @@ class IndexRevisionTests(unittest.TestCase):
         self.assertEqual(set(collection.get()["ids"]), {"old_p0", "old_p1", "new_p0"})
         self.assertEqual(self.provider.document_calls, calls_before + 1)
 
+    def test_legacy_backup_without_book_metadata_is_restored_before_append(self):
+        published = self.vectorizer.client.get_collection("textbook_os")
+        metadata = {key: value for key, value in published.metadata.items()
+                    if key not in {"book_name", "hnsw:space"}}
+        published.modify(metadata=metadata)
+        published.modify(name=f"ragbackup_{'0' * 32}_os")
+        self.write([{**_chunks()[0], "chunk_id": "new_p0"}], clear_existing=False)
+        collection = self.vectorizer.client.get_collection("textbook_os")
+        self.assertEqual(set(collection.get()["ids"]), {"old_p0", "old_p1", "new_p0"})
+
+    def test_clipped_legacy_backup_is_preserved_without_embedding(self):
+        book = "b" * 500
+        self.write(_chunks(), book)
+        published = self.vectorizer.client.get_collection(f"textbook_{book}")
+        published.modify(metadata={"description": "legacy"})
+        backup_name = f"ragbackup_{'0' * 32}_{book[:469]}"
+        published.modify(name=backup_name)
+        calls_before = self.provider.document_calls
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "完整教材标识"):
+            self.vectorizer.vectorize_book(self.chunks_path, book, clear_existing=False)
+        self.assertEqual(self.provider.document_calls, calls_before)
+        self.assertFalse(self.vectorizer._collection_exists(f"textbook_{book}"))
+        self.assertEqual(self.vectorizer.client.get_collection(backup_name).count(), 2)
+
+    def test_backup_of_legacy_collection_saves_full_book_identity_and_configuration(self):
+        book = "b" * 500
+        self.write(_chunks(), book)
+        published = self.vectorizer.client.get_collection(f"textbook_{book}")
+        data = published.get(include=["embeddings", "documents", "metadatas"])
+        legacy_metadata = {key: value for key, value in published.metadata.items()
+                           if key != "book_name"}
+        self.vectorizer.client.delete_collection(f"textbook_{book}")
+        # Build a real legacy collection with hnsw:space still in its metadata.
+        legacy = self.vectorizer.client.create_collection(
+            f"textbook_{book}", metadata=legacy_metadata,
+            configuration={"hnsw": {"space": "cosine", "sync_threshold": 1}},
+        )
+        legacy.add(**{key: data[key] for key in ("ids", "documents", "metadatas", "embeddings")})
+        original_get = self.vectorizer.client.get_collection
+        original_modify = Collection.modify
+        backups = []
+
+        def record_backup(collection, *args, **kwargs):
+            result = original_modify(collection, *args, **kwargs)
+            if kwargs.get("name", "").startswith("ragbackup_"):
+                backup = original_get(kwargs["name"])
+                backups.append((backup.metadata, backup.configuration["hnsw"]["space"]))
+            return result
+
+        with patch.object(Collection, "modify", record_backup):
+            self.write(_chunks(), book)
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0][0]["book_name"], book)
+        self.assertEqual(backups[0][0]["embedding_model"], legacy_metadata["embedding_model"])
+        self.assertEqual(backups[0][1], "cosine")
+
     def test_ambiguous_backups_are_preserved_without_embedding(self):
         self.vectorizer.client.get_collection("textbook_os").modify(name="ragbackup_first")
         self.vectorizer.client.create_collection("ragbackup_second", metadata={"book_name": "os"})
