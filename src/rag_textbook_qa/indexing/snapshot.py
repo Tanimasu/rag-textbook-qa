@@ -4,10 +4,34 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
+import time
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from rag_textbook_qa.indexing.revision import index_revision
+
+
+class TemporaryIndexDirectory(TemporaryDirectory):
+    """Private index copies whose Windows native handles may close asynchronously.
+
+    Only retry Windows sharing violations during removal of this owned temporary
+    directory. Persistent leaks still fail after one second; index operations and
+    other permission errors are never retried.
+    """
+
+    def cleanup(self) -> None:
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                super().cleanup()
+                return
+            except PermissionError as error:
+                if (sys.platform != "win32" or getattr(error, "winerror", None) != 32
+                        or time.monotonic() >= deadline):
+                    raise
+            time.sleep(0.01)
 
 
 def copy_index(source: Path, target: Path) -> str:

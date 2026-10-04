@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 import sqlite3
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -15,13 +14,14 @@ from test_vectorizer_provider import FakeEmbeddingProvider, _chunks
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.indexing.revision import IndexPublicationInProgress, index_revision
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory
 from rag_textbook_qa.providers import TransientProviderError
 from rag_textbook_qa.rag import RAGEngine
 
 
 class IndexRevisionTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = TemporaryIndexDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.db = self.root / "db"

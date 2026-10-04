@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,13 +10,13 @@ from test_vectorizer_provider import FakeEmbeddingProvider, _chunks
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.indexing.revision import index_revision
-from rag_textbook_qa.indexing.snapshot import copy_index
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory, copy_index
 from scripts.prepare_crossbook_review import prepare_review
 
 
 class CrossbookReviewTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = TemporaryIndexDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.db = self.root / "db"

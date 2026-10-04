@@ -16,7 +16,6 @@ import platform
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -27,7 +26,7 @@ from typing import Any
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.evaluation.retrieval import load_retrieval_questions
 from rag_textbook_qa.indexing.revision import index_revision
-from rag_textbook_qa.indexing.snapshot import copy_index
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory, copy_index
 from rag_textbook_qa.providers import ComputeSettings
 from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalRerankerProvider
 from rag_textbook_qa.rag import RAGEngine
@@ -149,7 +148,7 @@ def main() -> None:
         temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(args.output)
 
-    with tempfile.TemporaryDirectory(prefix="rag-benchmark-") as temporary, ExitStack() as stack:
+    with TemporaryIndexDirectory(prefix="rag-benchmark-") as temporary, ExitStack() as stack:
         directory = Path(temporary)
         report["index_revision"] = copy_index(paths.vector_db, directory / "db")
         options = {"db_path": directory / "db", "embedding_provider": embedding,

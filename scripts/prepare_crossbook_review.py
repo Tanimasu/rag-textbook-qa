@@ -10,7 +10,6 @@ import argparse
 import hashlib
 import json
 import random
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ from typing import Any
 import chromadb
 
 from rag_textbook_qa.config import Settings
-from rag_textbook_qa.indexing.snapshot import copy_index
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory, copy_index
 
 ROUTES = ("all_before", "all_after")
 
@@ -47,7 +46,7 @@ def prepare_review(report_path: Path, db_path: Path, output: Path, *, seed: int 
                     raise ValueError("排名必须由教材与片段编号对组成")
                 wanted.setdefault(row[0], set()).add(row[1])
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="crossbook-review-", dir=output.parent) as temporary:
+    with TemporaryIndexDirectory(prefix="crossbook-review-", dir=output.parent) as temporary:
         directory = Path(temporary)
         revision = copy_index(db_path, directory / "db")
         if revision != report.get("index_revision"):
