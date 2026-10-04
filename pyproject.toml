@@ -65,6 +65,8 @@ browser = [
 build = [
     "build",
     "hatchling",
+    "setuptools",
+    "wheel",
 ]
 
 [project.scripts]

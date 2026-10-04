@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 INDEX_REVISION_KEY = "rag_index_revision"
@@ -26,7 +27,7 @@ def index_catalog(db_path: str | Path) -> list[tuple[str, str, str, str]]:
     sqlite_path = Path(db_path).expanduser().resolve() / "chroma.sqlite3"
     if not sqlite_path.exists():
         return []
-    with sqlite3.connect(f"{sqlite_path.as_uri()}?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(f"{sqlite_path.as_uri()}?mode=ro", uri=True)) as connection:
         connection.execute("BEGIN")
         replacing = connection.execute(
             """

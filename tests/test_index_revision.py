@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -68,6 +69,26 @@ class IndexRevisionTests(unittest.TestCase):
         self.vectorizer.client.delete_collection("textbook_os")
         self.assertEqual(engine.list_indexed_books(), [{"book_name": "database", "count": 2}])
         self.assertEqual(engine.search_bm25("os", "进程"), [])
+
+    def test_catalog_closes_its_sqlite_handle_on_success_and_publication_gap(self):
+        real_connect = sqlite3.connect
+        connections = []
+
+        def tracked_connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+
+        with patch("rag_textbook_qa.indexing.revision.sqlite3.connect", side_effect=tracked_connect):
+            index_revision(self.db)
+            old = self.vectorizer.client.get_collection("textbook_os")
+            old.modify(name="ragbackup_test")
+            with self.assertRaises(IndexPublicationInProgress):
+                index_revision(self.db)
+        self.assertEqual(len(connections), 2)
+        for connection in connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
     def test_catalog_does_not_wait_for_the_model_execution_lock(self):
         engine = self.engine()
