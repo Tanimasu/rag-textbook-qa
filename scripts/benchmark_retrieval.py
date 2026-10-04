@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
-from importlib.metadata import version
 import json
 import math
 import os
@@ -23,6 +22,7 @@ import tempfile
 import time
 from contextlib import ExitStack, closing
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
