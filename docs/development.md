@@ -34,6 +34,7 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 - Windows、macOS、Linux 上的 Python 3.11 / 3.12 测试矩阵
 - `src/`、`tests/` 与 `scripts/` 的 Ruff 静态检查
 - 完整的无模型、无外部 API 单元与集成测试
+- 真实 HTTP 连接验证队列饱和、排队断连及取消线程的执行槽释放
 - Chromium 中运行真实聊天页，验证提交、流式回答、引用、重试、停止和反馈
 - Python 源码编译检查
 - source distribution 与 wheel 构建
@@ -45,6 +46,7 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 uv sync --locked --extra ui --extra worker --extra api
 uv run --no-sync python -m ruff check src tests scripts
 uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/local/queue-http.json
 uv run --no-sync python -m compileall -q src tests project
 ```
 
@@ -65,6 +67,22 @@ Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系�
 
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
+### 本机性能验收
+
+`benchmark_retrieval.py` 使用 dev 题、当前索引副本及本机已缓存的模型，测量真实推理耗时。
+脚本强制离线、不加载 `.env`；输出路径必须未使用过，以免覆盖旧记录。
+先在已安装 `local-models` 且模型已缓存的环境中运行：
+
+```bash
+python scripts/benchmark_retrieval.py --device mps --baseline-ref f4606cc --repeats 2 --output artifacts/evaluations/local/retrieval-mps.json
+```
+
+设备可选 `cpu` / `mps`；省略 `--baseline-ref` 时只测当前代码。
+`--reranker-batch-size` 默认 32，可用来比较不同推理批大小；历史引擎和当前引擎共用这一设置。
+每本教材选一题，交替执行路线；每条路线的样本量较小，P95 只用于描述本次结果。
+峰值内存覆盖整次运行，不能用它比较单条路线的内存。
+队列脚本使用受控的无模型后端，其人工延迟不能作为真实问答延迟。
+
 ## 工具脚本
 
 | 脚本 | 用途 |
@@ -73,6 +91,8 @@ CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或�
 | `test_llm_api.py` | 验证 LLM API 连通性与模型响应 |
 | `extract_images.py` | 从 PDF 中提取图片为 PNG 文件 |
 | `clean_db.py` | 管理 ChromaDB 集合（列出 / 删除） |
+| `benchmark_retrieval.py` | 离线模型实际推理计时，支持历史 Git 版本对照 |
+| `check_serving_queue.py` | 启动本机 HTTP API 验收有界队列与断连取消 |
 
 ## 评估数据集
 

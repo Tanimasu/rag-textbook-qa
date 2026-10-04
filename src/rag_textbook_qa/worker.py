@@ -200,6 +200,7 @@ def run_worker_server(
     device: str,
     token: str | None,
     warmup: bool = False,
+    reranker_batch_size: int = 32,
 ) -> None:
     validate_worker_bind(host, token)
     try:
@@ -211,7 +212,7 @@ def run_worker_server(
 
     runtime = WorkerRuntime(
         LocalEmbeddingProvider(embedding_model, device=device),
-        LocalRerankerProvider(reranker_model, device=device),
+        LocalRerankerProvider(reranker_model, device=device, batch_size=reranker_batch_size),
         token=token,
         device=device,
     )

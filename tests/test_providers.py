@@ -15,6 +15,8 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION, validate_embeddings
+from rag_textbook_qa.providers.config import ComputeSettings
+from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
     RemoteEmbeddingProvider,
@@ -70,6 +72,18 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_local_reranker_batches_without_reordering_documents(self):
+        provider = create_reranker_provider(ComputeSettings(device="cpu", reranker_batch_size=8))
+        scores = [0.2, 0.9, 0.1]
+        with patch.object(provider, "_load") as load:
+            load.return_value.predict.return_value = scores
+            self.assertEqual(provider.rerank("query", ["first", "second", "third"]), scores)
+        load.return_value.predict.assert_called_once_with(
+            [("query", "first"), ("query", "second"), ("query", "third")],
+            batch_size=8, show_progress_bar=False,
+        )
+        self.assertEqual(len(provider.telemetry.since(0)), 1)
+
     def test_provider_telemetry_is_isolated_by_request_trace(self):
         telemetry = ProviderTelemetry()
         call = ProviderCall(

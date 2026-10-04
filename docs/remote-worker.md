@@ -20,6 +20,10 @@ RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
 ```
 
+本地模型重排可通过 `RAG_QA_RERANK_BATCH_SIZE` 调整推理批大小，默认 32。
+应在实际设备上使用同一批候选计时并检查排名；更大的批大小不一定更快。
+使用远程 Worker 时该值应配置在 Worker 机器，Mac 上的值只控制本地查询回退。
+
 ## Windows Worker（4070 Super）
 
 拉取同一分支后，在 PowerShell 中创建环境并安装依赖：

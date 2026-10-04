@@ -1017,6 +1017,7 @@ def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
         reranker_model=compute.reranker_model,
         device=compute.device,
         token=compute.remote_token,
+        reranker_batch_size=compute.reranker_batch_size,
         warmup=args.warmup,
     )
     return 0

@@ -45,7 +45,8 @@ def create_reranker_provider(
     allow_query_fallback: bool = False,
 ):
     settings = settings or ComputeSettings.from_env()
-    local = LocalRerankerProvider(settings.reranker_model, device=settings.device)
+    local = LocalRerankerProvider(settings.reranker_model, device=settings.device,
+                                 batch_size=settings.reranker_batch_size)
     if settings.backend == "local":
         return local
 

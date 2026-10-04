@@ -73,6 +73,7 @@ class ComputeSettings:
     remote_token: str | None = None
     remote_timeout_seconds: float = 120.0
     query_fallback_to_local: bool = False
+    reranker_batch_size: int = 32
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ComputeSettings:
@@ -90,6 +91,12 @@ class ComputeSettings:
             raise ProviderError("RAG_QA_REMOTE_TIMEOUT 必须是数字") from exc
         if timeout <= 0:
             raise ProviderError("RAG_QA_REMOTE_TIMEOUT 必须大于 0")
+        try:
+            reranker_batch_size = int(values.get("RAG_QA_RERANK_BATCH_SIZE", "32"))
+        except ValueError as exc:
+            raise ProviderError("RAG_QA_RERANK_BATCH_SIZE 必须是正整数") from exc
+        if reranker_batch_size <= 0:
+            raise ProviderError("RAG_QA_RERANK_BATCH_SIZE 必须是正整数")
 
         if backend == "remote":
             if remote_url is None:
@@ -110,6 +117,7 @@ class ComputeSettings:
             query_fallback_to_local=_parse_bool(
                 values.get("RAG_QA_QUERY_FALLBACK_TO_LOCAL"), default=False
             ),
+            reranker_batch_size=reranker_batch_size,
         )
 
     def safe_summary(self) -> dict[str, str | float | bool | None]:
@@ -118,6 +126,7 @@ class ComputeSettings:
             "embedding_model": self.embedding_model,
             "reranker_model": self.reranker_model,
             "device": self.device,
+            "reranker_batch_size": self.reranker_batch_size,
             "remote_url": self.remote_url,
             "remote_token_configured": self.remote_token is not None,
             "remote_timeout_seconds": self.remote_timeout_seconds,

@@ -58,6 +58,9 @@ jobs:
       - name: Run offline test suite
         run: uv run --no-sync python -m unittest discover -s tests -v
 
+      - name: Verify queue saturation and cancellation over real HTTP
+        run: uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/ci/queue-http.json
+
       - name: Compile Python sources
         run: uv run --no-sync python -m compileall -q src tests project
 
