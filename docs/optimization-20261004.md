@@ -139,7 +139,7 @@ Chroma 1.5.9 的 Python 绑定根据文件句柄上限决定索引缓存容量�
   标为 Python 3.12 的任务实际仍运行 3.11；这些结果不能作为 3.12 的验收证据。
   已显式设置矩阵的解释器版本并增加断言，真正的六组矩阵、Chromium、发布包均已通过：
   [实际解释器矩阵 CI，0489480](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37207353919)。
-  中间一次 Windows CI 出现过 Chroma 索引读取与资源清理失败，尚未确认根因。
+  中间一次 Windows CI 出现过 Chroma 索引读取与资源清理失败，当时尚未确认根因。
   两个相关场景各连续 25 轮检查在 macOS 上通过；Windows Python 3.11 在第 12 轮复现 HNSW 读取失败，
   见 [连续验收 CI，8455c38](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37208172225)。
   持久化修复后，真正的六组矩阵、Chromium 与发布包八个任务全部通过，Windows 两种 Python
@@ -150,10 +150,17 @@ Chroma 1.5.9 的 Python 绑定根据文件句柄上限决定索引缓存容量�
   统一处理和远程拆批后，六组矩阵、Chromium、发布包八个任务全部通过，Windows 两种版本
   的 25 轮连续检查均通过：
   [临时目录与远程批次 CI，c713fd0](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37212618332)。
+  追加编号检查、中断恢复和发布后清理修复后的最新代码也通过全部八个任务，
+  两种 Windows Python 的连续检查均通过：
+  [追加与恢复 CI，69fea91](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37215917740)。
 
 远程拆批的离线验证使用实际 Worker HTTP 路由和无模型 Provider：旧客户端提交 150 个候选
 得到 HTTP 422，修复后以 128 + 22 合并完整分数，五教材全库前十名也能正常返回。
 257 条 embedding 按 128 + 128 + 1 返回；字符上限、跨批维度、后续批次失败和模型变化均有回归检查。
 这验证了协议兼容性，尚未运行实际 Windows CUDA 模型推理。
+
+10 月 5 日还对本地配置的外部 Worker 做了一次只读 `/health` 检查，使用三秒超时设置但未能连通，
+未能确认其认证、设备和模型状态。检查没有触发 embedding、rerank 或模型预热。
+这只能说明本次无法连通，不能判断是机器、网络还是 Worker 进程的问题。
 
 本机性能与受控 HTTP 并发已验收；Windows CUDA 实测、外部部署及独立跨教材相关性标注仍未完成。
