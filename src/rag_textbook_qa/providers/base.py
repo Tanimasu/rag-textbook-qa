@@ -16,6 +16,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 DEFAULT_QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 PROTOCOL_VERSION = "1"
+WORKER_MAX_BATCH_ITEMS = 128
+WORKER_MAX_BATCH_CHARACTERS = 250_000
 _TRACE_ID: ContextVar[str | None] = ContextVar("rag_qa_provider_trace_id", default=None)
 
 

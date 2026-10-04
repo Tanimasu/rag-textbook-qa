@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 
 from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
+    WORKER_MAX_BATCH_CHARACTERS,
+    WORKER_MAX_BATCH_ITEMS,
     AuthenticationError,
     ModelIdentity,
     ModelMismatchError,
@@ -22,6 +24,28 @@ from rag_textbook_qa.providers.base import (
     validate_scores,
 )
 from rag_textbook_qa.providers.config import validate_worker_token
+
+
+def _worker_batches(values: list[str]) -> list[list[str]]:
+    """Preserve whole inputs and their order within the worker protocol limits."""
+
+    # Validate all inputs before the first request, so a later oversized document
+    # does not waste earlier inference or silently lose text by truncation.
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ProviderProtocolError("远程模型输入必须是非空字符串")
+    if any(len(value) > WORKER_MAX_BATCH_CHARACTERS for value in values):
+        raise ProviderProtocolError(f"单条远程模型输入不能超过 {WORKER_MAX_BATCH_CHARACTERS} 字符")
+    batches, batch, characters = [], [], 0
+    for value in values:
+        if batch and (len(batch) >= WORKER_MAX_BATCH_ITEMS
+                      or characters + len(value) > WORKER_MAX_BATCH_CHARACTERS):
+            batches.append(batch)
+            batch, characters = [], 0
+        batch.append(value)
+        characters += len(value)
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 class RemoteWorkerClient:
@@ -160,19 +184,20 @@ class RemoteEmbeddingProvider(_RemoteProvider):
             return []
         started = time.monotonic()
         try:
+            batches = _worker_batches(values)
             self._ensure_compatible()
-            response = self.client.request(
-                "/v1/embeddings",
-                method="POST",
-                payload={
-                    "model": self.identity.model,
-                    "input_type": input_type,
-                    "texts": values,
-                },
-            )
-            if response.get("fingerprint") != self.identity.fingerprint:
-                raise ModelMismatchError("远程 embedding 响应指纹与配置不一致")
-            result = validate_embeddings(response.get("embeddings"), len(values))
+            embeddings = []
+            for batch in batches:
+                response = self.client.request(
+                    "/v1/embeddings",
+                    method="POST",
+                    payload={"model": self.identity.model, "input_type": input_type, "texts": batch},
+                )
+                if response.get("fingerprint") != self.identity.fingerprint:
+                    raise ModelMismatchError("远程 embedding 响应指纹与配置不一致")
+                embeddings.extend(validate_embeddings(response.get("embeddings"), len(batch)))
+            # Also check that dimensions agree across separate worker responses.
+            result = validate_embeddings(embeddings, len(values))
         except Exception as exc:
             self._record_call(started, success=False, error_category=type(exc).__name__)
             raise
@@ -196,19 +221,18 @@ class RemoteRerankerProvider(_RemoteProvider):
             return []
         started = time.monotonic()
         try:
+            batches = _worker_batches(values)
             self._ensure_compatible()
-            response = self.client.request(
-                "/v1/rerank",
-                method="POST",
-                payload={
-                    "model": self.identity.model,
-                    "query": query,
-                    "documents": values,
-                },
-            )
-            if response.get("fingerprint") != self.identity.fingerprint:
-                raise ModelMismatchError("远程 reranker 响应指纹与配置不一致")
-            result = validate_scores(response.get("scores"), len(values))
+            result = []
+            for batch in batches:
+                response = self.client.request(
+                    "/v1/rerank",
+                    method="POST",
+                    payload={"model": self.identity.model, "query": query, "documents": batch},
+                )
+                if response.get("fingerprint") != self.identity.fingerprint:
+                    raise ModelMismatchError("远程 reranker 响应指纹与配置不一致")
+                result.extend(validate_scores(response.get("scores"), len(batch)))
         except Exception as exc:
             self._record_call(started, success=False, error_category=type(exc).__name__)
             raise
