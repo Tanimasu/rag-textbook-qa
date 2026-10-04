@@ -67,6 +67,15 @@ class FakeRetrievalEngine:
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_ranked_deduplication_keeps_same_id_from_distinct_books(self):
+        rows = [
+            {"chunk_id": "same", "book_name": "os", "section_h2": "调度"},
+            {"chunk_id": "same", "book_name": "database", "section_h2": "事务"},
+        ]
+        score = score_ranked_results(rows, ["调度", "事务"], top_k=2)
+        self.assertEqual(score["recall_at_k"], 1.0)
+        self.assertEqual(len(score["grades"]), 2)
+
     def test_loads_validated_questions(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "questions.json"

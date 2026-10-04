@@ -317,6 +317,13 @@ def result_section(result: dict[str, Any]) -> str:
     return " > ".join(str(result.get(field, "")).strip() for field in fields if result.get(field))
 
 
+def _chunk_key(result: dict[str, Any]) -> tuple[str | None, str] | None:
+    identifier = result.get("chunk_id")
+    if identifier is None:
+        return None
+    return result.get("book_name"), identifier
+
+
 def score_ranked_results(
     results: Sequence[dict[str, Any]],
     relevant_sections: Sequence[str],
@@ -333,14 +340,14 @@ def score_ranked_results(
         raise ValueError("relevant_sections 不能为空")
 
     # Repeated chunk IDs must not manufacture extra relevance gain.
-    seen_ids: set[str] = set()
+    seen_ids: set[tuple[str | None, str]] = set()
     unique_results = []
     for result in results:
-        chunk_id = result.get("chunk_id")
-        if chunk_id is not None:
-            if chunk_id in seen_ids:
+        identity = _chunk_key(result)
+        if identity is not None:
+            if identity in seen_ids:
                 continue
-            seen_ids.add(chunk_id)
+            seen_ids.add(identity)
         unique_results.append(result)
     results = unique_results
     matched: set[str] = set()
@@ -398,21 +405,22 @@ def score_context_retention(
     """
 
     markers = [str(section) for section in relevant_sections]
-    kept = {source.get("chunk_id") for source in sources}
-    truncated = {source.get("chunk_id") for source in sources if source.get("truncated")}
+    kept = {key for source in sources if (key := _chunk_key(source)) is not None}
+    truncated = {key for source in sources
+                 if source.get("truncated") and (key := _chunk_key(source)) is not None}
     relevant = [
         result
         for result in list(results)[:top_k]
         if grade_result(result, markers) >= minimum_grade
     ]
-    retained = [result for result in relevant if result.get("chunk_id") in kept]
+    retained = [result for result in relevant if _chunk_key(result) in kept]
     exact = [result for result in relevant if grade_result(result, markers) == EXACT_GRADE]
     return {
         "relevant_retrieved": len(relevant),
         "relevant_retained": len(retained),
-        "relevant_truncated": sum(result.get("chunk_id") in truncated for result in retained),
+        "relevant_truncated": sum(_chunk_key(result) in truncated for result in retained),
         "exact_retrieved": len(exact),
-        "exact_retained": sum(result.get("chunk_id") in kept for result in exact),
+        "exact_retained": sum(_chunk_key(result) in kept for result in exact),
         "context_retention": len(retained) / len(relevant) if relevant else None,
         "sources_packed": len(sources),
         "context_chars": sum(len(str(source.get("content", ""))) for source in sources),

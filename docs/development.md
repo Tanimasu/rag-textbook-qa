@@ -94,6 +94,7 @@ python scripts/benchmark_retrieval.py --device mps --baseline-ref f4606cc --repe
 | `clean_db.py` | 管理 ChromaDB 集合（列出 / 删除） |
 | `benchmark_retrieval.py` | 离线模型实际推理计时，支持历史 Git 版本对照 |
 | `check_serving_queue.py` | 启动本机 HTTP API 验收有界队列与断连取消 |
+| `check_index_lifecycle.py` | 连续检查曾在 Windows CI 间歇失败的两个 Chroma 场景，首次失败即退出 |
 
 ## 评估数据集
 
