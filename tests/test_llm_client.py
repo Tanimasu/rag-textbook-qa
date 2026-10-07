@@ -80,6 +80,21 @@ def answer_chunk(text, finish_reason=None):
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_context_manager_closes_real_sdk_even_after_an_exception(self):
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200))) as transport:
+            sdk = OpenAI(api_key="fixture-key", base_url="http://fixture.invalid/v1", http_client=transport)
+            self.addCleanup(sdk.close)
+            client = LLMClient(
+                api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                sdk_client=sdk, verbose=False,
+            )
+            with patch.object(sdk, "close", wraps=sdk.close) as close:
+                with self.assertRaisesRegex(RuntimeError, "body failed"), client:
+                    raise RuntimeError("body failed")
+                self.assertTrue(transport.is_closed)
+                client.close()
+                close.assert_called_once_with()
+
     def test_settings_are_resolved_explicitly_at_factory_call_time(self):
         environment = {
             "LLM_API_KEY": "test-key",

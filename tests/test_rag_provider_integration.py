@@ -292,6 +292,44 @@ class RagProviderIntegrationTests(unittest.TestCase):
             RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider(), enable_reranker=False)
         vectorizer.close.assert_called_once_with()
 
+    def test_engine_closes_only_llm_clients_it_creates(self):
+        for injected in (False, True):
+            with self.subTest(injected=injected):
+                vectorizer, llm = MagicMock(), MagicMock()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+                    patch.object(RAGEngine, "refresh_index_if_changed"),
+                    patch("rag_textbook_qa.rag.engine.create_llm_client", return_value=llm),
+                ):
+                    engine = RAGEngine(
+                        embedding_provider=FakeEmbeddingProvider(), enable_reranker=False,
+                        llm_client=llm if injected else None, verbose=False,
+                    )
+                    engine.close()
+                    engine.close()
+                if injected:
+                    llm.close.assert_not_called()
+                else:
+                    llm.close.assert_called_once_with()
+                self.assertTrue(vectorizer.close.called)
+
+    def test_sdk_close_failure_still_releases_the_index(self):
+        vectorizer, llm = MagicMock(), MagicMock()
+        llm.close.side_effect = RuntimeError("SDK close failed")
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed"),
+            patch("rag_textbook_qa.rag.engine.create_llm_client", return_value=llm),
+        ):
+            engine = RAGEngine(
+                embedding_provider=FakeEmbeddingProvider(), enable_reranker=False, verbose=False,
+            )
+            with self.assertRaisesRegex(RuntimeError, "SDK close failed"):
+                engine.close()
+        vectorizer.close.assert_called_once_with()
+
     def test_unexpected_llm_initialization_failure_closes_the_open_index(self):
         for error in (KeyboardInterrupt(), Exception("SDK setup failed")):
             with self.subTest(error=type(error).__name__):

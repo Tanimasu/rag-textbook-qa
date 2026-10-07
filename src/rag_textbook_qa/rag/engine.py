@@ -343,6 +343,7 @@ class RAGEngine:
             print(f"Reranker 已配置: {self.reranker.identity.model}")
 
         self.llm = llm_client
+        self._owned_llm = None
         self.enable_llm = enable_llm
         self.llm_initialization_error: str | None = None
         if enable_llm and self.llm is None:
@@ -372,6 +373,7 @@ class RAGEngine:
                     model=resolved_model,
                     verbose=verbose,
                 )
+                self._owned_llm = self.llm
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 self.llm_initialization_error = str(exc)
                 if self.verbose:
@@ -386,9 +388,17 @@ class RAGEngine:
             print("RAG 引擎初始化完成\n")
 
     def close(self) -> None:
-        """Release the underlying Chroma client and its file handles."""
+        """Release the owned LLM connections and Chroma file handles."""
 
-        self.vectorizer.close()
+        try:
+            owned_llm = getattr(self, "_owned_llm", None)
+            if owned_llm is not None:
+                owned_llm.close()
+                self._owned_llm = None
+        finally:
+            # An injected LLM belongs to its caller. Even if closing our own SDK
+            # fails, the index must still release its native resources.
+            self.vectorizer.close()
 
     def __enter__(self) -> Self:
         return self

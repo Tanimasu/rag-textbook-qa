@@ -7,7 +7,7 @@ import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlsplit
 
 from openai import APIStatusError, OpenAI
@@ -101,11 +101,28 @@ class LLMClient:
             # it and also retry streaming requests without the caller's intent.
             else OpenAI(api_key=api_key, base_url=self.base_url, max_retries=0)
         )
+        self._closed = False
 
         if self.verbose:
             print("LLM 客户端初始化:")
             print(f"Base URL: {self.base_url}")
             print(f"默认模型: {self.default_model}")
+
+    def close(self) -> None:
+        """Release the SDK's HTTP connections; repeated closure is harmless."""
+
+        if self._closed:
+            return
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
+        self._closed = True
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     @staticmethod
     def _usage(response: Any) -> dict[str, int]:
