@@ -10,6 +10,7 @@ from filelock import FileLock
 from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, GenerationCase
 from rag_textbook_qa.evaluation.generation_runner import (
     JsonlLog,
+    freeze_protocol,
     generation_request,
     llm_pair_from_env,
     openai_generator,
@@ -141,7 +142,58 @@ class PairLifecycleTests(unittest.TestCase):
                     judge.close.assert_not_called()
 
 
+class ProtocolPersistenceTests(unittest.TestCase):
+    def test_failed_protocol_write_leaves_no_frozen_partial_file(self):
+        original_write = Path.write_text
+
+        def interrupted(path, text, **kwargs):
+            original_write(path, text[:10], **kwargs)
+            raise OSError("fixture protocol write interrupted")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "protocol.json"
+            settings = {"generator": {"model": "fixture"}}
+            with patch.object(Path, "write_text", interrupted), self.assertRaises(OSError):
+                freeze_protocol(path, settings)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            freeze_protocol(path, settings)
+            original = path.read_bytes()
+            freeze_protocol(path, settings)
+            self.assertEqual(path.read_bytes(), original)
+            with self.assertRaises(ValueError):
+                freeze_protocol(path, {"generator": {"model": "changed"}})
+            self.assertEqual(path.read_bytes(), original)
+
+
 class ExperimentTests(unittest.TestCase):
+    def test_failed_report_update_preserves_the_previous_complete_report(self):
+        original_write = Path.write_text
+
+        def interrupted(path, text, **kwargs):
+            original_write(path, text[:10], **kwargs)
+            raise OSError("fixture report write interrupted")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("hot", "baseline", 0.7)]
+            generator = MagicMock(return_value=fake_answer("回答"))
+            judge = MagicMock(side_effect=fake_judge)
+            run(output, arms, generator=generator, judge=judge)
+            original = (output / "report.json").read_bytes()
+            previous_files = set(output.iterdir())
+            generator.reset_mock()
+            judge.reset_mock()
+            with patch.object(Path, "write_text", interrupted), self.assertRaises(OSError):
+                run(output, arms, generator=generator, judge=judge)
+            self.assertEqual((output / "report.json").read_bytes(), original)
+            self.assertEqual(set(output.iterdir()), previous_files)
+            generator.assert_not_called()
+            judge.assert_not_called()
+            self.assertEqual(run(output, arms, generator=generator, judge=judge)["judged"], 2)
+            generator.assert_not_called()
+            judge.assert_not_called()
+
     def test_directory_lock_refuses_another_runner_before_paid_calls(self):
         generator, judge = MagicMock(), MagicMock()
         with tempfile.TemporaryDirectory() as directory:

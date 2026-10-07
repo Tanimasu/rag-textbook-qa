@@ -15,6 +15,7 @@ import random
 import statistics
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
@@ -241,6 +242,16 @@ def sample_keys(
     return keys
 
 
+def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
+    serialized = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def freeze_protocol(path: Path, settings: Mapping[str, Any]) -> None:
     normalized = json.loads(json.dumps(settings, ensure_ascii=False))
     if path.exists():
@@ -248,7 +259,7 @@ def freeze_protocol(path: Path, settings: Mapping[str, Any]) -> None:
             raise ValueError("该输出目录的实验协议已冻结；参数不同请换一个输出目录")
         return
     frozen = {"frozen_at_utc": datetime.now(UTC).isoformat(), "settings": normalized}
-    path.write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_json_atomic(path, frozen)
 
 
 def _ask(judge: Judge, prompt: str, validate: Callable[[dict[str, Any]], Any]) -> Any:
@@ -514,7 +525,5 @@ def _run_generation_experiment_locked(
         "usage": _usage(records, arms),
         **summary,
     }
-    (output_dir / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_json_atomic(output_dir / "report.json", report)
     return report
