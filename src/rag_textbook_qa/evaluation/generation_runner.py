@@ -191,25 +191,33 @@ class JsonlLog:
         self._lock = threading.Lock()
         self._needs_separator = False
         if path.exists():
-            raw = path.read_text(encoding="utf-8")
-            self._needs_separator = bool(raw and not raw.endswith("\n"))
-            for line in raw.splitlines():
+            raw = path.read_bytes()
+            self._needs_separator = bool(raw and not raw.endswith(b"\n"))
+            for line in raw.split(b"\n"):
                 try:
-                    self.lines.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue  # a line cut off by a crash is simply redone
+                    self.lines.append(json.loads(line.decode("utf-8")))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    # A crash can cut a Chinese character as well as JSON syntax.
+                    # Decode each row strictly: never alter a saved answer by
+                    # substituting replacement characters into corrupt bytes.
+                    continue
         self.records = {_key(line): line for line in self.lines}
 
     def append(self, record: dict[str, Any]) -> None:
-        with self._lock, self.path.open("a", encoding="utf-8") as handle:
-            if self._needs_separator:
-                # Preserve a crash-truncated tail as its own invalid line instead of
-                # gluing the next paid result to it and losing both on the next resume.
-                handle.write("\n")
-                self._needs_separator = False
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        key = _key(record)
+        serialized = json.dumps(record, ensure_ascii=False) + "\n"
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as handle:
+                if self._needs_separator:
+                    # Keep a damaged tail separate from the next paid result.
+                    handle.write("\n")
+                # A failed write or buffered close may leave a new partial tail.
+                # Keep this flag until closing the file confirms a complete row.
+                self._needs_separator = True
+                handle.write(serialized)
+            self._needs_separator = False
             self.lines.append(record)
-            self.records[_key(record)] = record
+            self.records[key] = record
 
 
 def sample_keys(

@@ -212,6 +212,70 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(log.records[("01", "hot", 0)], record)
         self.assertEqual(reloaded.records[("01", "hot", 0)], record)
 
+    def test_jsonl_recovers_good_records_around_invalid_utf8_without_rewriting_them(self):
+        first = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原始中文回答"}
+        following = {"case_id": "01", "arm": "hot", "index": 2, "answer": "后续回答"}
+        for damaged in (
+            b'{"case_id":"01","arm":"hot","index":1,"answer":"' + "中".encode()[:2],
+            b'{"case_id":"01","arm":"hot","index":1,"answer":"\xff"}\n',
+        ):
+            with self.subTest(damaged=damaged), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "generations.jsonl"
+                original = json.dumps(first, ensure_ascii=False).encode() + b"\n" + damaged
+                path.write_bytes(original)
+                log = JsonlLog(path)
+                self.assertEqual(log.lines, [first])
+                log.append(following)
+                reloaded = JsonlLog(path)
+                self.assertEqual(reloaded.lines, [first, following])
+                self.assertTrue(path.read_bytes().startswith(original))
+
+    def test_failed_partial_append_is_separated_from_the_next_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generations.jsonl"
+            log = JsonlLog(path)
+            failed = {"case_id": "01", "arm": "hot", "index": 0, "answer": "未完全保存"}
+            following = {"case_id": "01", "arm": "hot", "index": 1, "answer": "已保存"}
+            underlying = path.open("a", encoding="utf-8")
+
+            class PartialWriter:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    underlying.close()
+
+                def write(self, value):
+                    underlying.write(value[:len(value) // 2])
+                    underlying.flush()
+                    raise OSError("fixture disk write failed")
+
+            with patch.object(Path, "open", return_value=PartialWriter()), self.assertRaises(OSError):
+                log.append(failed)
+            self.assertEqual(log.records, {})
+            log.append(following)
+            self.assertEqual(JsonlLog(path).lines, [following])
+
+    def test_failed_close_does_not_register_an_unsaved_result_in_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = JsonlLog(Path(directory) / "generations.jsonl")
+            record = {"case_id": "01", "arm": "hot", "index": 0, "answer": "回答"}
+
+            class FailedFlush:
+                def __enter__(self):
+                    return self
+
+                def write(self, value):
+                    return len(value)
+
+                def __exit__(self, *args):
+                    raise OSError("fixture buffered flush failed")
+
+            with patch.object(Path, "open", return_value=FailedFlush()), self.assertRaises(OSError):
+                log.append(record)
+            self.assertEqual(log.lines, [])
+            self.assertEqual(log.records, {})
+
     def test_failed_samples_are_logged_without_messages_and_redone(self):
         calls = []
 
