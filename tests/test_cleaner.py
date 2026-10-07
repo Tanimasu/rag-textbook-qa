@@ -136,6 +136,18 @@ if（ready），return；
 
             self.assertEqual(output_path.read_text(encoding="utf-8"), "preserved")
 
+    def test_force_rejects_a_hardlink_to_the_source(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source.md"
+            output = root / "alias.md"
+            original = "## 第1章 原始教材\n"
+            source.write_text(original, encoding="utf-8")
+            os.link(source, output)
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                clean_markdown(source, output, overwrite=True)
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
+
 
 if __name__ == "__main__":
     unittest.main()

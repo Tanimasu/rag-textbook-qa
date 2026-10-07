@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.ingestion.path_guard import validate_output_paths
+
 
 class SmartMarkdownCleaner:
     """Clean parsed textbook Markdown while preserving the legacy V4 rules."""
@@ -392,8 +394,7 @@ def clean_markdown(
     destination = Path(output_path)
     if not source.is_file():
         raise FileNotFoundError(f"找不到 Markdown 文件: {source}")
-    if source.resolve() == destination.resolve():
-        raise ValueError("输入和输出不能是同一个文件")
+    validate_output_paths([source], [destination])
     if destination.exists() and not overwrite:
         raise FileExistsError(f"输出文件已存在，未覆盖: {destination}")
 

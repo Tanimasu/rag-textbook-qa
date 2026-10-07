@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from rag_textbook_qa.ingestion.path_guard import validate_output_paths
+
 _CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*章")
 _SECTION_NUMBER = re.compile(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?")
 _FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -436,6 +438,7 @@ class SmartTextbookChunker:
         destinations = [output]
         if write_preview:
             destinations.append(preview)
+        validate_output_paths([], destinations)
         existing = [path for path in destinations if path.exists()]
         if existing and not overwrite:
             paths = ", ".join(str(path) for path in existing)
@@ -500,8 +503,10 @@ def chunk_markdown(
     if not source.is_file():
         raise FileNotFoundError(f"找不到 Markdown 文件: {source}")
     output = Path(output_json)
-    if source.resolve() == output.resolve():
-        raise ValueError("输入 Markdown 和输出 JSON 不能是同一个文件")
+    destinations = [output]
+    if write_preview:
+        destinations.append(SmartTextbookChunker.preview_path(output))
+    validate_output_paths([source], destinations)
 
     chunker = SmartTextbookChunker(
         max_chunk_size=max_chunk_size,
@@ -539,6 +544,16 @@ def batch_chunk_markdown(
     sources = sorted(source_dir.glob(pattern), key=lambda path: path.name)
     if not sources:
         raise FileNotFoundError(f"输入目录中没有匹配 {pattern!r} 的 Markdown 文件: {source_dir}")
+    destinations = []
+    for source in sources:
+        output = destination_dir / (source.stem.replace("_cleaned", "_chunks") + ".json")
+        preview = SmartTextbookChunker.preview_path(output)
+        if not overwrite and (output.exists() or (write_preview and preview.exists())):
+            continue
+        destinations.append(output)
+        if write_preview:
+            destinations.append(preview)
+    validate_output_paths(sources, destinations)
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     created: list[Path] = []

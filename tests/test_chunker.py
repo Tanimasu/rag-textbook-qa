@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from itertools import pairwise
@@ -22,6 +23,45 @@ SAMPLE_MARKDOWN = """# 第1章 导论
 
 
 class ChunkerTests(unittest.TestCase):
+    def test_force_rejects_source_alias_in_json_or_preview(self):
+        for alias_target in ("json", "preview"):
+            with self.subTest(target=alias_target), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source.md"
+                output = root / "chunks.json"
+                preview = SmartTextbookChunker.preview_path(output)
+                source.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
+                os.link(source, output if alias_target == "json" else preview)
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                    chunk_markdown(source, output, overwrite=True)
+                self.assertEqual(source.read_text(encoding="utf-8"), SAMPLE_MARKDOWN)
+                if alias_target == "preview":
+                    self.assertFalse(output.exists())
+
+    def test_chunk_json_and_preview_cannot_alias_each_other(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "chunks.json"
+            output.write_text("original", encoding="utf-8")
+            os.link(output, SmartTextbookChunker.preview_path(output))
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                SmartTextbookChunker().save_chunks([], output, overwrite=True)
+            self.assertEqual(output.read_text(encoding="utf-8"), "original")
+
+    def test_batch_checks_all_source_aliases_before_writing_any_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a_cleaned.md"
+            second = root / "b_cleaned.md"
+            first.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
+            second.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
+            os.link(second, root / "a_chunks_preview.txt")
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                batch_chunk_markdown(root, overwrite=True)
+            self.assertFalse((root / "a_chunks.json").exists())
+            self.assertFalse((root / "b_chunks.json").exists())
+            self.assertEqual(first.read_text(encoding="utf-8"), SAMPLE_MARKDOWN)
+            self.assertEqual(second.read_text(encoding="utf-8"), SAMPLE_MARKDOWN)
+
     def test_chunk_markdown_schema_and_heading_context(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -218,9 +258,7 @@ class ChunkerTests(unittest.TestCase):
             with self.subTest(opening=opening):
                 table = opening + "<tr><td>$$x$$" + "甲" * 100 + "</td></tr>\n" + closing
                 text = "说明文字 " + table + " 完成\n" + "后续正文。" * 40
-                chunker = SmartTextbookChunker(
-                    max_chunk_size=40, min_chunk_size=1, overlap_size=0
-                )
+                chunker = SmartTextbookChunker(max_chunk_size=40, min_chunk_size=1, overlap_size=0)
                 chunks = chunker.split_section(text, 2)
                 containing = [chunk for chunk in chunks if opening in chunk.content]
                 self.assertEqual(len(containing), 1)
@@ -244,9 +282,7 @@ class ChunkerTests(unittest.TestCase):
                     f"# 第1章\n## 1.1 示例\n{block}\n收尾正文\n## 1.2 后续\n后续正文",
                     encoding="utf-8",
                 )
-                chunker = SmartTextbookChunker(
-                    max_chunk_size=500, min_chunk_size=1, overlap_size=0
-                )
+                chunker = SmartTextbookChunker(max_chunk_size=500, min_chunk_size=1, overlap_size=0)
                 with contextlib.redirect_stdout(io.StringIO()):
                     chunks = chunker.chunk_document(source)
                 self.assertEqual(len(chunks), 2)
