@@ -25,6 +25,7 @@ from rag_textbook_qa.providers.base import (
     TransientProviderError,
     validate_embeddings,
     validate_scores,
+    validate_worker_health_status,
 )
 from rag_textbook_qa.providers.config import validate_worker_token
 
@@ -145,6 +146,7 @@ class _RemoteProvider:
         if self._health_verified:
             return
         health = self.client.request("/health")
+        validate_worker_health_status(health)
         models = health.get("models")
         if not isinstance(models, dict):
             raise ProviderProtocolError("远程 Worker /health 缺少 models")

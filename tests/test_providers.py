@@ -20,6 +20,7 @@ from rag_textbook_qa.providers.config import ComputeSettings
 from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
+    FallbackRerankerProvider,
     RemoteEmbeddingProvider,
     RemoteRerankerProvider,
     RemoteWorkerClient,
@@ -40,6 +41,7 @@ class FakeRemoteClient:
         self.requests.append((path, method, payload))
         if path == "/health":
             return {
+                "status": "ok", "protocol_version": "1",
                 "device": "cuda",
                 "platform": "Windows",
                 "models": {"embedding": self.identity.as_dict()},
@@ -74,6 +76,40 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_unhealthy_or_incompatible_health_stops_before_inference_or_fallback(self):
+        invalid_states = [
+            {"status": "starting", "protocol_version": "1"},
+            {"protocol_version": "1"},
+            {"status": "ok", "protocol_version": "2"},
+            {"status": "ok"},
+            {"status": "ok", "protocol_version": 1},
+        ]
+        for primary_type, fallback_type in (
+            (RemoteEmbeddingProvider, FallbackEmbeddingProvider),
+            (RemoteRerankerProvider, FallbackRerankerProvider),
+        ):
+            for health in invalid_states:
+                with self.subTest(provider=primary_type.__name__, health=health):
+                    client = MagicMock()
+                    primary = primary_type(client, "model")
+                    client.request.return_value = {
+                        **health, "device": "cuda",
+                        "models": {primary.identity.task: primary.identity.as_dict()},
+                        "fingerprint": primary.identity.fingerprint,
+                        "embeddings": [[1.0, 0.0]], "scores": [0.5],
+                    }
+                    fallback = MagicMock(identity=primary.identity)
+                    provider = fallback_type(primary, fallback)
+                    with self.assertRaises(ProviderProtocolError):
+                        if primary.identity.task == "embedding":
+                            provider.embed_queries(["question"])
+                        else:
+                            provider.rerank("question", ["document"])
+                    client.request.assert_called_once_with("/health")
+                    fallback.embed_queries.assert_not_called()
+                    fallback.rerank.assert_not_called()
+                    self.assertFalse(primary._health_verified)
+
     def test_remote_health_is_rechecked_after_an_interrupted_worker(self):
         for provider_type in (RemoteEmbeddingProvider, RemoteRerankerProvider):
             with self.subTest(provider=provider_type.__name__):
@@ -82,7 +118,8 @@ class ProviderTests(unittest.TestCase):
                 payload = {"fingerprint": provider.identity.fingerprint,
                            "embeddings": [[1.0, 0.0]], "scores": [0.9]}
                 def health(device, platform, provider=provider):
-                    return {"device": device, "platform": platform,
+                    return {"status": "ok", "protocol_version": "1",
+                            "device": device, "platform": platform,
                             "models": {provider.identity.task: provider.identity.as_dict()}}
                 client.request.side_effect = [
                     health("cuda", "Windows"), payload,

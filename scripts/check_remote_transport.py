@@ -66,7 +66,8 @@ def run() -> dict:
                 self.respond(401 if state["mode"] == "auth" else 409, {"detail": "fixture rejection"}, truncate=True)
             else:
                 restarting = state["mode"] == "cut_second_batch"
-                self.respond(200, {"status": "ok", "protocol_version": "1",
+                self.respond(200, {"status": "starting" if state["mode"] == "unhealthy" else "ok",
+                                   "protocol_version": "2" if state["mode"] == "protocol" else "1",
                                    "device": "cuda" if restarting else "cpu",
                                    "platform": "Windows" if restarting else "Linux",
                                    "models": {"reranker": identity.as_dict()}})
@@ -121,6 +122,18 @@ def run() -> dict:
             else:
                 raise AssertionError(f"{mode} did not fail closed")
             assert fallback.rerank.call_count == 1
+        inference_batches = len(state["batches"])
+        for mode in ("unhealthy", "protocol"):
+            state["mode"] = mode
+            provider = FallbackRerankerProvider(RemoteRerankerProvider(client, identity.model), fallback)
+            try:
+                provider.rerank("question", documents)
+            except ProviderProtocolError:
+                pass
+            else:
+                raise AssertionError(f"{mode} health did not stop inference")
+            assert len(state["batches"]) == inference_batches
+            assert fallback.rerank.call_count == 1
         state["mode"] = "redirect"
         authenticated = RemoteWorkerClient(client.base_url, token="fixture-token", timeout=2)
         provider = FallbackRerankerProvider(RemoteRerankerProvider(authenticated, identity.model), fallback)
@@ -152,6 +165,8 @@ def run() -> dict:
         "recovered_worker_health_and_device_are_refreshed": True,
         "truncated_401_does_not_fallback": True, "truncated_409_does_not_fallback": True,
         "malformed_provider_payload_does_not_fallback": True,
+        "unhealthy_worker_stops_before_inference_or_fallback": True,
+        "incompatible_protocol_stops_before_inference_or_fallback": True,
         "redirect_does_not_forward_auth_or_trigger_fallback": True,
     }}
 

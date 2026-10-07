@@ -7,18 +7,19 @@ from collections.abc import Mapping
 from typing import Any
 
 from rag_textbook_qa.providers.base import (
-    WORKER_MAX_BATCH_CHARACTERS as MAX_BATCH_CHARACTERS,
-)
-from rag_textbook_qa.providers.base import (
-    WORKER_MAX_BATCH_ITEMS as MAX_BATCH_ITEMS,
-)
-from rag_textbook_qa.providers.base import (
+    PROTOCOL_VERSION,
     AuthenticationError,
     EmbeddingProvider,
     MissingOptionalDependencyError,
     ModelMismatchError,
     ProviderError,
     RerankerProvider,
+)
+from rag_textbook_qa.providers.base import (
+    WORKER_MAX_BATCH_CHARACTERS as MAX_BATCH_CHARACTERS,
+)
+from rag_textbook_qa.providers.base import (
+    WORKER_MAX_BATCH_ITEMS as MAX_BATCH_ITEMS,
 )
 from rag_textbook_qa.providers.config import (
     is_loopback_host,
@@ -73,7 +74,7 @@ class WorkerRuntime:
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok",
-            "protocol_version": "1",
+            "protocol_version": PROTOCOL_VERSION,
             "device": self.device,
             "platform": platform.system(),
             "models": {

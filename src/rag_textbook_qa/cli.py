@@ -27,6 +27,7 @@ from rag_textbook_qa.providers.base import (
     ModelMismatchError,
     ProviderError,
     ProviderProtocolError,
+    validate_worker_health_status,
 )
 from rag_textbook_qa.providers.config import ComputeSettings
 
@@ -835,10 +836,7 @@ def _validated_health_summary(
     *,
     compute: ComputeSettings,
 ) -> dict[str, Any]:
-    if payload.get("status") != "ok":
-        raise ProviderProtocolError("远程 Worker /health 状态不是 ok")
-    if payload.get("protocol_version") != PROTOCOL_VERSION:
-        raise ProviderProtocolError("远程 Worker 协议版本与客户端不一致")
+    validate_worker_health_status(payload)
 
     device = payload.get("device")
     models = payload.get("models")
