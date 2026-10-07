@@ -355,8 +355,9 @@ class RAGASEvaluator:
         answers: list[str] = []
         contexts: list[list[str]] = []
         ground_truths: list[str] = []
-        qa_records: list[dict[str, str]] = []
+        qa_records: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        self._rag_question_indices: list[int] = []
 
         for index, item in enumerate(test_questions, 1):
             question = item["question"]
@@ -399,8 +400,11 @@ class RAGASEvaluator:
                 answers.append(answer)
                 contexts.append(source_blocks or [actual_context])
                 ground_truths.append(ground_truth)
+                self._rag_question_indices.append(index)
                 qa_records.append(
                     {
+                        "question_index": index,
+                        "book_name": item.get("book_name"),
                         "question": question,
                         "answer": answer,
                         "ground_truth": ground_truth,
@@ -627,6 +631,7 @@ class RAGASEvaluator:
         answers: list[str] = []
         contexts: list[list[str]] = []
         ground_truths: list[str] = []
+        self._baseline_question_indices: list[int] = []
 
         for index, item in enumerate(test_questions, 1):
             question = item["question"]
@@ -649,6 +654,7 @@ class RAGASEvaluator:
                 answers.append(result["answer"])
                 contexts.append([""])
                 ground_truths.append(item.get("ground_truth", ""))
+                self._baseline_question_indices.append(index)
                 print(f"  [回答] {result['answer'][:200]}...")
             except (
                 AttributeError,
@@ -686,6 +692,70 @@ def load_test_questions(path: str | Path) -> list[dict[str, Any]]:
     return questions
 
 
+def _attach_question_indices(
+    dataframe: Any, indices: list[int], test_questions: list[dict[str, Any]]
+) -> None:
+    """Keep original row identities after generation has skipped failed questions."""
+
+    if dataframe is None:
+        return
+    if len(dataframe) != len(indices):
+        raise ValueError("评估结果行数与成功问题不一致，不能关联题号")
+    for column in ("question", "user_input"):
+        if column in dataframe.columns and list(dataframe[column]) != [
+            test_questions[index - 1]["question"] for index in indices
+        ]:
+            raise ValueError("评估结果顺序与成功问题不一致，不能关联题号")
+    dataframe["question_index"] = indices
+
+
+def _paired_baseline_report(
+    rag_dataframe: Any,
+    baseline_dataframe: Any,
+    rag_indices: list[int],
+    baseline_indices: list[int],
+    total: int,
+) -> dict[str, Any]:
+    metric = "answer_relevancy"
+
+    def scores(dataframe: Any) -> dict[int, float]:
+        if dataframe is None or metric not in dataframe.columns:
+            return {}
+        valid = {}
+        for index, value in zip(dataframe["question_index"], dataframe[metric], strict=True):
+            if isinstance(value, bool):
+                continue
+            try:
+                score = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(score):
+                valid[int(index)] = score
+        return valid
+
+    rag_scores, baseline_scores = scores(rag_dataframe), scores(baseline_dataframe)
+    paired = sorted(rag_scores.keys() & baseline_scores.keys())
+    generated = set(rag_indices) & set(baseline_indices)
+    rag_mean = sum(rag_scores[index] for index in paired) / len(paired) if paired else None
+    baseline_mean = (
+        sum(baseline_scores[index] for index in paired) / len(paired) if paired else None
+    )
+    return {
+        "metric": metric,
+        "scope": "same_questions_with_finite_scores_on_both_sides",
+        "total_questions": total,
+        "rag_successful_questions": len(rag_indices),
+        "baseline_successful_questions": len(baseline_indices),
+        "paired_questions": len(paired),
+        "paired_question_indices": paired,
+        "unpaired_generation_question_indices": sorted(set(range(1, total + 1)) - generated),
+        "invalid_score_question_indices": sorted(generated - set(paired)),
+        "rag_mean": rag_mean,
+        "baseline_mean": baseline_mean,
+        "delta": rag_mean - baseline_mean if paired else None,
+    }
+
+
 def run_evaluation(
     rag_engine: Any,
     test_questions: list[dict[str, Any]],
@@ -706,6 +776,7 @@ def run_evaluation(
     rag_result = evaluator.evaluate(rag_dataset)
     print("\n【RAG 系统评估结果】")
     rag_dataframe = evaluator.print_results(rag_result)
+    _attach_question_indices(rag_dataframe, evaluator._rag_question_indices, test_questions)
     if rag_dataframe is not None:
         destination.mkdir(parents=True, exist_ok=True)
         rag_output = destination / "ragas_evaluation_results.csv"
@@ -722,6 +793,9 @@ def run_evaluation(
     )
     print("\n【Baseline 评估结果（无 RAG）】")
     baseline_dataframe = evaluator.print_results(baseline_result)
+    _attach_question_indices(
+        baseline_dataframe, evaluator._baseline_question_indices, test_questions
+    )
     if baseline_dataframe is not None:
         destination.mkdir(parents=True, exist_ok=True)
         baseline_output = destination / "ragas_baseline_results.csv"
@@ -735,23 +809,23 @@ def run_evaluation(
     print("\n" + "=" * 60)
     print("RAG vs Baseline 对比摘要")
     print("=" * 60)
-    metric = "answer_relevancy"
-    rag_score = (
-        float(rag_dataframe[metric].mean())
-        if rag_dataframe is not None and metric in rag_dataframe.columns
-        else float("nan")
+    report = _paired_baseline_report(
+        rag_dataframe, baseline_dataframe, evaluator._rag_question_indices,
+        evaluator._baseline_question_indices, len(test_questions),
     )
-    baseline_score = (
-        float(baseline_dataframe[metric].mean())
-        if baseline_dataframe is not None and metric in baseline_dataframe.columns
-        else float("nan")
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "ragas_baseline_comparison.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
-    delta = rag_score - baseline_score
-    sign = "+" if delta >= 0 else ""
-    print(
-        f"  {metric:20s}  RAG={rag_score:.4f}  "
-        f"Baseline={baseline_score:.4f}  delta={sign}{delta:.4f}"
-    )
+    print(f"配对有效问题: {report['paired_questions']}/{report['total_questions']}")
+    if report["delta"] is None:
+        print("没有两边均有有效分数的同一问题，不能计算差值。")
+    else:
+        print(
+            f"  {report['metric']:20s}  RAG={report['rag_mean']:.4f}  "
+            f"Baseline={report['baseline_mean']:.4f}  delta={report['delta']:+.4f}"
+        )
     print("=" * 60)
     return rag_dataframe
 

@@ -13,10 +13,93 @@ from rag_textbook_qa.evaluation import (
     load_test_questions,
     render_evaluation_plan,
 )
-from rag_textbook_qa.evaluation.ragas import _ragas_embedding_model
+from rag_textbook_qa.evaluation.ragas import (
+    _attach_question_indices,
+    _paired_baseline_report,
+    _ragas_embedding_model,
+    run_evaluation,
+)
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_paired_comparison_excludes_failed_scores_and_has_no_empty_delta(self):
+        import pandas as pd
+
+        rag = pd.DataFrame({"question_index": [1, 2, 3],
+                            "answer_relevancy": [float("nan"), 0.5, 0.4]})
+        baseline = pd.DataFrame({"question_index": [1, 2, 3],
+                                 "answer_relevancy": [0.8, float("inf"), 0.2]})
+        report = _paired_baseline_report(rag, baseline, [1, 2, 3], [1, 2, 3], 3)
+        self.assertEqual(report["paired_question_indices"], [3])
+        self.assertEqual(report["invalid_score_question_indices"], [1, 2])
+        self.assertAlmostEqual(report["delta"], 0.2)
+        json.dumps(report, allow_nan=False)
+
+        report = _paired_baseline_report(rag.iloc[:1], baseline.iloc[1:2], [1], [2], 3)
+        self.assertEqual(report["paired_questions"], 0)
+        self.assertIsNone(report["delta"])
+        self.assertIsNone(report["rag_mean"])
+        self.assertIsNone(report["baseline_mean"])
+        json.dumps(report, allow_nan=False)
+
+    def test_result_identity_is_rejected_when_rows_are_missing_or_reordered(self):
+        import pandas as pd
+
+        questions = [{"question": "问题一"}, {"question": "问题二"}]
+        with self.assertRaisesRegex(ValueError, "行数"):
+            _attach_question_indices(pd.DataFrame({"answer_relevancy": [0.5]}), [1, 2], questions)
+        for column in ("question", "user_input"):
+            with self.subTest(column=column), self.assertRaisesRegex(ValueError, "顺序"):
+                _attach_question_indices(pd.DataFrame({column: ["问题二", "问题一"]}), [1, 2], questions)
+
+    def test_baseline_comparison_pairs_original_question_positions(self):
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as directory:
+            evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+            evaluator.output_dir = Path(directory)
+            evaluator._answer_relevancy = MagicMock(name="answer_relevancy")
+            frames = [
+                pd.DataFrame({"answer_relevancy": [0.9, 0.8]}),
+                pd.DataFrame({"answer_relevancy": [0.1, 0.6]}),
+            ]
+            evaluator.evaluate = MagicMock(side_effect=[
+                MagicMock(to_pandas=MagicMock(return_value=frame)) for frame in frames
+            ])
+            engine = MagicMock()
+            engine.enable_hyde = engine.enable_adjacent_context = False
+            engine.ask.side_effect = [
+                {"success": False},
+                {"success": True, "answer": "回答二", "context": "证据二"},
+                {"success": True, "answer": "回答三", "context": "证据三"},
+            ]
+            engine.llm.generate_answer.side_effect = [
+                {"success": True, "answer": "基线一"},
+                {"success": False},
+                {"success": True, "answer": "基线三"},
+            ]
+            # Identical wording must not merge questions from different books.
+            questions = [{"question": "相同问题", "book_name": book}
+                         for book in ("os", "database", "computer_networks")]
+            output = io.StringIO()
+            with (
+                patch("rag_textbook_qa.evaluation.ragas.RAGASEvaluator", return_value=evaluator),
+                patch("rag_textbook_qa.evaluation.ragas._dataset_from_dict", side_effect=lambda data: data),
+                contextlib.redirect_stdout(output),
+            ):
+                run_evaluation(engine, questions, directory, include_baseline=True)
+            self.assertIn("delta=+0.2000", output.getvalue())
+            report = json.loads((Path(directory) / "ragas_baseline_comparison.json").read_text())
+            self.assertEqual(report["paired_question_indices"], [3])
+            self.assertEqual(report["paired_questions"], 1)
+            self.assertEqual(report["total_questions"], 3)
+            self.assertAlmostEqual(report["delta"], 0.2)
+            self.assertEqual(report["rag_successful_questions"], 2)
+            self.assertEqual(report["baseline_successful_questions"], 2)
+            for name, expected in (("ragas_evaluation_results.csv", [2, 3]),
+                                   ("ragas_baseline_results.csv", [1, 3])):
+                self.assertEqual(list(pd.read_csv(Path(directory) / name)["question_index"]), expected)
+
     def test_evaluation_plan_is_secret_free_and_exposes_cost_factors(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             plan = build_evaluation_plan(
