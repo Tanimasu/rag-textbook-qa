@@ -231,6 +231,45 @@ class ChunkerTests(unittest.TestCase):
                     "".join(text.split()),
                 )
 
+    def test_heading_like_text_inside_atomic_blocks_keeps_section_context(self):
+        blocks = (
+            "<TABLE class='sample'>\n<tr><td>\n## 单元格原样文字\n</td></tr>\n</TABLE>",
+            "$$\n# 公式内的原样文字\nx = 1\n$$",
+            "\\[\n### 公式内的原样文字\nx = 1\n\\]",
+        )
+        for block in blocks:
+            with self.subTest(block=block), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "atomic-heading.md"
+                source.write_text(
+                    f"# 第1章\n## 1.1 示例\n{block}\n收尾正文\n## 1.2 后续\n后续正文",
+                    encoding="utf-8",
+                )
+                chunker = SmartTextbookChunker(
+                    max_chunk_size=500, min_chunk_size=1, overlap_size=0
+                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    chunks = chunker.chunk_document(source)
+                self.assertEqual(len(chunks), 2)
+                self.assertEqual(chunks[0].chapter, "第1章")
+                self.assertEqual(chunks[0].section_h2, "1.1 示例")
+                self.assertEqual(chunks[0].section_h3, "")
+                self.assertIn(block, chunks[0].content)
+                self.assertEqual(chunks[1].section_h2, "1.2 后续")
+
+    def test_headings_with_inline_formulas_still_set_context(self):
+        for formula in ("$$x = 1$$", "\\[x = 1\\]"):
+            with self.subTest(formula=formula):
+                chunker = SmartTextbookChunker()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    sections = chunker.parse_markdown(
+                        f"# 第1章\n## 1.1 公式 {formula}\n正文\n## 1.2 后续\n后续正文"
+                    )
+                self.assertEqual(
+                    [section["title"] for section in sections],
+                    ["第1章", f"1.1 公式 {formula}", "1.2 后续"],
+                )
+                self.assertEqual(sections[1]["content"], "正文")
+
     def test_existing_output_is_not_silently_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

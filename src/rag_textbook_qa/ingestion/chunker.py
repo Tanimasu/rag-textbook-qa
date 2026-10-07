@@ -16,6 +16,7 @@ from pathlib import Path
 _CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*章")
 _SECTION_NUMBER = re.compile(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?")
 _FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_HEADING_LINE = re.compile(r"^(#{1,4})\s+(.+)$")
 
 
 def _closing_line(lines: list[str], start: int, marker: str) -> int:
@@ -27,13 +28,21 @@ def _closing_line(lines: list[str], start: int, marker: str) -> int:
     return len(lines) - 1
 
 
-def _atomic_line_flags(lines: list[str]) -> list[bool]:
+def _atomic_line_flags(
+    lines: list[str], *, headings_are_boundaries: bool = False
+) -> list[bool]:
     """Mark lines belonging to a listing that must not be split."""
 
     flags = [False] * len(lines)
     index = 0
     while index < len(lines):
         line = lines[index]
+        # A real heading can contain an inline formula. Only headings encountered
+        # outside an already recognized block are boundaries; block interiors
+        # are marked together below and are never interpreted as headings.
+        if headings_are_boundaries and _HEADING_LINE.match(line):
+            index += 1
+            continue
         fence = _FENCE_LINE.match(line)
         if fence:
             token = fence.group(1)
@@ -149,19 +158,10 @@ class SmartTextbookChunker:
             "content": [],
         }
 
-        fence = None
-        for line in content.split("\n"):
-            marker = _FENCE_LINE.match(line)
-            inside_fence = fence is not None
-            if marker:
-                token, suffix = marker.groups()
-                if fence is None:
-                    fence = token
-                elif token[0] == fence[0] and len(token) >= len(fence) and not suffix.strip():
-                    fence = None
-            title_match = (
-                re.match(r"^(#{1,4})\s+(.+)$", line) if not inside_fence and not marker else None
-            )
+        lines = content.split("\n")
+        atomic_flags = _atomic_line_flags(lines, headings_are_boundaries=True)
+        for line, inside_block in zip(lines, atomic_flags, strict=True):
+            title_match = _HEADING_LINE.match(line) if not inside_block else None
 
             if title_match:
                 current_content = current_section["content"]
