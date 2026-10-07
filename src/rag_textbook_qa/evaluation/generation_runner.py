@@ -51,7 +51,7 @@ Key = tuple[str, str, int]
 JUDGE_ATTEMPTS = 3
 # Bump whenever what the judge sees or how its output is scored changes, so a
 # directory judged under older rules refuses to resume under newer ones.
-JUDGE_VERSION = 3
+JUDGE_VERSION = 4
 TRANSIENT_ERRORS = frozenset(
     {"APITimeoutError", "APIConnectionError", "RateLimitError", "InternalServerError"}
 )

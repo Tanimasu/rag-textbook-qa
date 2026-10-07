@@ -429,22 +429,25 @@ def score_answer(
 ) -> dict[str, Any]:
     """Score fact claims on the substantive standard, keeping the strict view alongside.
 
-    A ``supported`` or ``minor`` label whose quote cannot be found in the context
-    becomes ``unverified`` and counts as a problem, so a judge cannot manufacture
-    support.
+    A ``supported`` or ``minor`` label requires every quote to match its declared
+    source. Missing or mismatched references become ``unverified`` and count as a
+    problem, so a judge cannot manufacture support by citing another passage.
     """
 
-    contents = [str(source["content"]) for source in sources]
+    contents = {source["citation_id"]: str(source["content"]) for source in sources}
     rows = []
     for claim in claims:
         if claim["type"] != "fact":
             continue
         verdict = verdicts[claim["id"]]
         status = verdict["label"]
-        if status in QUOTED_LABELS and not any(
-            quote_found(item["quote"], content)
-            for item in verdict["evidence"]
-            for content in contents
+        if status in QUOTED_LABELS and (
+            not verdict["evidence"] or not all(
+                type(item["source_id"]) is int
+                and item["source_id"] in contents
+                and quote_found(item["quote"], contents[item["source_id"]])
+                for item in verdict["evidence"]
+            )
         ):
             status = "unverified"
         rows.append(

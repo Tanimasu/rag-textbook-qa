@@ -256,6 +256,9 @@ rag-qa evaluate-generation --cases <cases.json> \
 没有完整评分的题目不参加配对比较。质量指标只描述完整回答，应同时查看未完成数量。
 首次评判器校验（2026-09-15）**未通过**预先登记的门槛，其结论暂不作为决策依据，
 见 [评判器校验记录](generation-judge-validation-20260915.md)。
+当前评判版本为 4：`supported` / `minor` 的每条摘录都必须能在其 `source_id` 指定资料中找到，
+未知编号、错引资料或混入无效摘录均记为 `unverified`。沿用原有文字匹配容差，不替代语义审核。
+旧版本冻结目录不能按新规则续跑；请使用新目录。历史结果保留，未自动重评分或重新调用模型。
 
 原来的 `python project/ragas_evaluation.py` 保留为兼容入口，延续同时运行 baseline 的旧行为。
 

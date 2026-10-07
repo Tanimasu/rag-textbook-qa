@@ -171,6 +171,24 @@ class PairLifecycleTests(unittest.TestCase):
 
 
 class ProtocolPersistenceTests(unittest.TestCase):
+    def test_prior_judge_version_cannot_resume_or_rewrite_existing_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("hot", "baseline", 0.7)]
+            run(output, arms)
+            protocol = output / "protocol.json"
+            payload = json.loads(protocol.read_text(encoding="utf-8"))
+            payload["settings"]["judge_version"] = 3
+            protocol.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            originals = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+            generator, judge = MagicMock(), MagicMock()
+            with self.assertRaisesRegex(ValueError, "冻结"):
+                run(output, arms, generator=generator, judge=judge)
+            generator.assert_not_called()
+            judge.assert_not_called()
+            for path, original in originals.items():
+                self.assertEqual(path.read_bytes(), original)
+
     def test_failed_protocol_write_leaves_no_frozen_partial_file(self):
         original_write = Path.write_text
 
@@ -454,7 +472,7 @@ class ExperimentTests(unittest.TestCase):
             self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
             self.assertEqual(report["summary_version"], 2)
             self.assertEqual(report["quality_sample_policy"], "completed_answers_only")
-            self.assertEqual(report["settings"]["judge_version"], 3)
+            self.assertEqual(report["settings"]["judge_version"], 4)
             self.assertIsNone(report["arms"]["hot"]["problem_claims"])
             self.assertTrue(all(value is None for value in report["comparisons"]["cool"].values()))
 

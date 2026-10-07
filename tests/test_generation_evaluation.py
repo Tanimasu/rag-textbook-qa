@@ -143,6 +143,25 @@ class JudgeOutputTests(unittest.TestCase):
 
 
 class ScoreTests(unittest.TestCase):
+    def test_every_quote_must_match_its_declared_source(self):
+        sources = [SOURCE, {"citation_id": 2, "content": "数据库索引用来定位存储记录。"}]
+        claim = {"id": 1, "type": "fact", "text": "进程是资源分配和调度的独立单位"}
+        quote = "资源分配和调度的一个独立单位"
+        for label in ("supported", "minor"):
+            for references in (
+                [{"source_id": 2, "quote": quote}],
+                [{"source_id": 99, "quote": quote}],
+                [{"source_id": True, "quote": quote}],
+                [{"source_id": 1, "quote": quote}, {"source_id": 2, "quote": quote}],
+            ):
+                with self.subTest(label=label, references=references):
+                    verdict = {1: {"label": label, "evidence": references, "reason": ""}}
+                    score = score_answer([claim], [], verdict, sources)
+                    self.assertEqual(score["claims"][0]["status"], "unverified")
+                    self.assertEqual(score["problem_claims"], 1)
+        correct = {1: {"label": "supported", "evidence": [{"source_id": 1, "quote": quote}], "reason": ""}}
+        self.assertEqual(score_answer([claim], [], correct, sources)["supported"], 1)
+
     def test_support_without_a_findable_quote_counts_as_a_problem(self):
         claims = [
             {"id": 1, "type": "fact", "text": "进程是资源分配和调度的独立单位"},
