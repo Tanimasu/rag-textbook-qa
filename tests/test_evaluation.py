@@ -22,6 +22,49 @@ from rag_textbook_qa.evaluation.ragas import (
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_invalid_question_batch_is_rejected_before_any_generation(self):
+        invalid_rows = (
+            {"question": " \n "},
+            {"question": "问题", "book_name": ["os"]},
+            {"question": "问题", "ground_truth": 42},
+        )
+        for invalid in invalid_rows:
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+                evaluator.output_dir = Path(directory)
+                engine = MagicMock()
+                engine.ask.return_value = {"success": True, "answer": "固定答案", "context": "固定证据"}
+                engine.llm.generate_answer.return_value = {"success": True, "answer": "固定基线"}
+                questions = [{"question": "有效的第一题"}, invalid]
+                for method in (evaluator.prepare_evaluation_data, evaluator.prepare_baseline_data):
+                    with (
+                        self.subTest(method=method.__name__),
+                        patch("rag_textbook_qa.evaluation.ragas._dataset_from_dict", side_effect=lambda data: data),
+                        contextlib.redirect_stdout(io.StringIO()),
+                        self.assertRaises((TypeError, ValueError)),
+                    ):
+                        method(engine, questions)
+                engine.ask.assert_not_called()
+                engine.llm.generate_answer.assert_not_called()
+
+    def test_invalid_question_file_and_run_fail_before_creating_evaluator(self):
+        questions = [{"question": "有效题"}, {"question": "问题", "ground_truth": ["错误类型"]}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "questions.json"
+            path.write_text(json.dumps(questions), encoding="utf-8")
+            with self.assertRaises((TypeError, ValueError)):
+                load_test_questions(path)
+            with patch("rag_textbook_qa.evaluation.ragas.RAGASEvaluator") as create:
+                with self.assertRaises((TypeError, ValueError)):
+                    run_evaluation(MagicMock(), questions, directory)
+                with self.assertRaisesRegex(ValueError, "top_k"):
+                    run_evaluation(MagicMock(), [{"question": "有效题"}], directory, top_k=0)
+                create.assert_not_called()
+            with patch("rag_textbook_qa.evaluation.ragas.create_llm_client") as create:
+                with self.assertRaises((TypeError, ValueError)):
+                    build_evaluation_plan(questions, output_dir=directory, environ={})
+                create.assert_not_called()
+
     def test_paired_comparison_excludes_failed_scores_and_has_no_empty_delta(self):
         import pandas as pd
 

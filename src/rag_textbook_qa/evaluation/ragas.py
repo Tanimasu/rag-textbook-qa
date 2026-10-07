@@ -116,6 +116,24 @@ def _ragas_embedding_model() -> str:
     )
 
 
+def _validate_test_questions(test_questions: Sequence[Mapping[str, Any]]) -> None:
+    """Validate the whole batch before creating clients or generating its first answer."""
+
+    if (not isinstance(test_questions, Sequence) or isinstance(test_questions, str | bytes)
+            or not test_questions):
+        raise ValueError("评估问题必须是非空数组")
+    for index, item in enumerate(test_questions, 1):
+        if not isinstance(item, Mapping) or not isinstance(item.get("question"), str):
+            raise TypeError(f"第 {index} 条评估问题缺少 question 字符串")
+        if not item["question"].strip():
+            raise ValueError(f"第 {index} 条评估问题不能为空")
+        book = item.get("book_name")
+        if book is not None and (not isinstance(book, str) or not book.strip()):
+            raise ValueError(f"第 {index} 条 book_name 必须是非空字符串或 null")
+        if "ground_truth" in item and not isinstance(item["ground_truth"], str):
+            raise TypeError(f"第 {index} 条 ground_truth 必须是字符串")
+
+
 def build_evaluation_plan(
     test_questions: Sequence[Mapping[str, Any]],
     *,
@@ -128,8 +146,7 @@ def build_evaluation_plan(
 ) -> dict[str, Any]:
     """Resolve a secret-free evaluation plan without loading models or using the network."""
 
-    if not test_questions:
-        raise ValueError("评估问题不能为空")
+    _validate_test_questions(test_questions)
     if top_k <= 0:
         raise ValueError("top_k 必须大于 0")
 
@@ -340,6 +357,7 @@ class RAGASEvaluator:
     ) -> Any:
         """Run the RAG engine over questions and return a RAGAS dataset."""
 
+        _validate_test_questions(test_questions)
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
         use_hyde = getattr(rag_engine, "enable_hyde", False) is True
@@ -624,6 +642,7 @@ class RAGASEvaluator:
     ) -> Any:
         """Build a no-retrieval baseline dataset with the RAG engine's LLM."""
 
+        _validate_test_questions(test_questions)
         print("=" * 60)
         print("准备 Baseline 数据（无 RAG，直接 LLM）")
         print("=" * 60)
@@ -686,9 +705,7 @@ def load_test_questions(path: str | Path) -> list[dict[str, Any]]:
     questions = json.loads(questions_path.read_text(encoding="utf-8"))
     if not isinstance(questions, list) or not questions:
         raise ValueError(f"评估问题必须是非空 JSON 数组: {questions_path}")
-    for index, item in enumerate(questions, 1):
-        if not isinstance(item, dict) or not isinstance(item.get("question"), str):
-            raise TypeError(f"第 {index} 条评估问题缺少 question 字符串")
+    _validate_test_questions(questions)
     return questions
 
 
@@ -766,6 +783,9 @@ def run_evaluation(
 ) -> Any | None:
     """Run the existing RAGAS workflow and persist its result CSV files."""
 
+    _validate_test_questions(test_questions)
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
     destination = Path(output_dir)
     evaluator = RAGASEvaluator(output_dir=destination)
     rag_dataset = evaluator.prepare_evaluation_data(
