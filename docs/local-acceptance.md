@@ -64,3 +64,25 @@ python scripts/score_crossbook_review.py \
 原始模板与排名清单必须由操作者可信保存：哈希用于记录与核对输入，不提供数字签名或审核者身份认证。
 
 本次实际验收结果与限制见 [2026-10-07 记录](optimization-20261007.md)。
+
+## 真实远程检索与传输恢复
+
+配置既有 Worker 地址、token 和模型后运行：
+
+```bash
+python scripts/benchmark_remote.py --output artifacts/evaluations/remote-acceptance/http-frozen.json
+```
+
+脚本读取环境变量和 `project/.env`，环境变量优先。只调用配置的 embedding / reranker Worker，
+不调用 LLM，强制关闭本地回退。使用索引副本，完成 dev 小样本 REST / SSE 计时和冻结 15 题
+的四策略检索验收；连接凭据不进入报告。冻结结果用于验收，不用于调参数。
+首次模型加载可能较慢，Worker 应已备妥所需模型缓存；脚本本身不安装或下载本地模型。
+
+单独复核传输中断与恢复，不需要远程设备或任何模型：
+
+```bash
+python scripts/check_remote_transport.py --output artifacts/evaluations/remote-acceptance/transport.json
+```
+
+这里的 HTTP Worker 是本机模拟器，验证截断响应的整批回退、错误分类和恢复。
+真实 CUDA 与模拟故障的结果分别记录在 [远程验收记录](iteration-20261007-remote.md)。
