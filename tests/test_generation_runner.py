@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from filelock import FileLock
 
@@ -11,6 +11,7 @@ from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, Generatio
 from rag_textbook_qa.evaluation.generation_runner import (
     JsonlLog,
     generation_request,
+    llm_pair_from_env,
     openai_generator,
     run_generation_experiment,
     sample_keys,
@@ -116,6 +117,28 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(with_retries(flaky, sleep=lambda seconds: None), ("ok", 3))
         with self.assertRaises(KeyError):
             with_retries(lambda: {}["missing"], sleep=lambda seconds: None)
+
+
+class PairLifecycleTests(unittest.TestCase):
+    def test_partial_pair_setup_closes_every_client_already_created(self):
+        for failed_at in ("judge", "options"):
+            with self.subTest(failed_at=failed_at):
+                generator, judge = MagicMock(), MagicMock()
+                generator.default_model, judge.default_model = "generator", "judge"
+                with (
+                    patch("rag_textbook_qa.llm.client.create_llm_client", side_effect=[
+                        generator, RuntimeError("judge failed") if failed_at == "judge" else judge,
+                    ]),
+                    patch("rag_textbook_qa.evaluation.ragas.judge_model_kwargs",
+                          side_effect=RuntimeError("options failed")),
+                    self.assertRaises(RuntimeError),
+                ):
+                    llm_pair_from_env()
+                generator.close.assert_called_once_with()
+                if failed_at == "options":
+                    judge.close.assert_called_once_with()
+                else:
+                    judge.close.assert_not_called()
 
 
 class ExperimentTests(unittest.TestCase):

@@ -17,6 +17,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -154,21 +155,27 @@ def llm_pair_from_env() -> tuple[Any, Any, dict[str, Any]]:
     from rag_textbook_qa.evaluation.ragas import judge_model_kwargs
     from rag_textbook_qa.llm.client import create_llm_client
 
-    generator = create_llm_client(
-        api_key=os.getenv("RAG_API_KEY") or None,
-        base_url=os.getenv("RAG_API_BASE") or None,
-        model=os.getenv("RAG_MODEL") or None,
-        verbose=False,
-    )
-    judge = create_llm_client(
-        api_key=os.getenv("RAGAS_API_KEY") or None,
-        base_url=os.getenv("RAGAS_API_BASE") or None,
-        model=os.getenv("RAGAS_MODEL") or None,
-        verbose=False,
-    )
-    if judge.default_model == generator.default_model:
-        raise ValueError("评判模型与生成模型相同，会带来自我偏好偏差；请设置 RAGAS_MODEL")
-    return generator, judge, judge_model_kwargs()
+    with ExitStack() as cleanup:
+        generator = create_llm_client(
+            api_key=os.getenv("RAG_API_KEY") or None,
+            base_url=os.getenv("RAG_API_BASE") or None,
+            model=os.getenv("RAG_MODEL") or None,
+            verbose=False,
+        )
+        cleanup.callback(generator.close)
+        judge = create_llm_client(
+            api_key=os.getenv("RAGAS_API_KEY") or None,
+            base_url=os.getenv("RAGAS_API_BASE") or None,
+            model=os.getenv("RAGAS_MODEL") or None,
+            verbose=False,
+        )
+        cleanup.callback(judge.close)
+        if judge.default_model == generator.default_model:
+            raise ValueError("评判模型与生成模型相同，会带来自我偏好偏差；请设置 RAGAS_MODEL")
+        extra = judge_model_kwargs()
+        # A complete pair transfers ownership to the experiment caller.
+        cleanup.pop_all()
+        return generator, judge, extra
 
 
 def _key(record: Mapping[str, Any]) -> Key:

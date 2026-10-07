@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -685,32 +686,35 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     arms = [parse_arm(spec) for spec in args.arm]
     cases = load_generation_cases(args.cases)
     generator_llm, judge_llm, extra = llm_pair_from_env()
-    protocol = {
-        "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
-        "generator": {
-            "host": urlsplit(generator_llm.base_url).hostname,
-            "model": generator_llm.default_model,
-            "max_tokens": args.max_tokens,
-        },
-        "judge": {
-            "host": urlsplit(judge_llm.base_url).hostname,
-            "model": judge_llm.default_model,
-            "extra": extra,
-        },
-    }
-    report = run_generation_experiment(
-        cases,
-        arms,
-        output_dir=args.output_dir,
-        generator=openai_generator(
-            generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens
-        ),
-        judge=openai_judge(judge_llm.client, judge_llm.default_model, extra=extra),
-        samples=args.samples,
-        seed=args.seed,
-        concurrency=args.concurrency,
-        protocol=protocol,
-    )
+    with ExitStack() as cleanup:
+        cleanup.callback(generator_llm.close)
+        cleanup.callback(judge_llm.close)
+        protocol = {
+            "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
+            "generator": {
+                "host": urlsplit(generator_llm.base_url).hostname,
+                "model": generator_llm.default_model,
+                "max_tokens": args.max_tokens,
+            },
+            "judge": {
+                "host": urlsplit(judge_llm.base_url).hostname,
+                "model": judge_llm.default_model,
+                "extra": extra,
+            },
+        }
+        report = run_generation_experiment(
+            cases,
+            arms,
+            output_dir=args.output_dir,
+            generator=openai_generator(
+                generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens
+            ),
+            judge=openai_judge(judge_llm.client, judge_llm.default_model, extra=extra),
+            samples=args.samples,
+            seed=args.seed,
+            concurrency=args.concurrency,
+            protocol=protocol,
+        )
 
     def shown(value: float | None) -> str:
         return "—" if value is None else f"{value:.3f}"

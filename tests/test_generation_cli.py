@@ -34,7 +34,15 @@ def fake_client(model: str) -> MagicMock:
 
 class GenerationCliTests(unittest.TestCase):
     def run_cli(self, environment: dict[str, str], *, report: dict | None = None,
-                stdout: io.StringIO | None = None) -> tuple[MagicMock, Path]:
+                stdout: io.StringIO | None = None,
+                runner_error: Exception | None = None) -> tuple[MagicMock, Path]:
+        self.clients = []
+
+        def client_factory(**kwargs):
+            llm = fake_client(kwargs["model"] or "gen-model")
+            self.clients.append(llm)
+            return llm
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cases_path = workspace(root)
@@ -48,11 +56,12 @@ class GenerationCliTests(unittest.TestCase):
                 patch.dict(os.environ, environment, clear=True),
                 patch(
                     "rag_textbook_qa.llm.client.create_llm_client",
-                    side_effect=lambda **kwargs: fake_client(kwargs["model"] or "gen-model"),
+                    side_effect=client_factory,
                 ),
                 patch(
                     "rag_textbook_qa.evaluation.generation_runner.run_generation_experiment",
                     return_value=report,
+                    side_effect=runner_error,
                 ) as run,
                 contextlib.redirect_stdout(stdout if stdout is not None else io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
@@ -77,10 +86,24 @@ class GenerationCliTests(unittest.TestCase):
         self.assertEqual(protocol["judge"]["model"], "judge-model")
         self.assertEqual(protocol["generator"]["host"], "api.example.com")
         self.assertNotIn(SECRET, json.dumps(protocol))
+        for client in self.clients:
+            client.close.assert_called_once_with()
 
     def test_refuses_to_let_the_generator_judge_itself(self):
         with self.assertRaises(SystemExit):
             self.run_cli({"LLM_API_KEY": SECRET, "LLM_MODEL": "gen-model"})
+        for client in self.clients:
+            client.close.assert_called_once_with()
+
+    def test_failed_experiment_closes_both_clients(self):
+        with self.assertRaises(SystemExit):
+            self.run_cli(
+                {"LLM_API_KEY": SECRET, "LLM_MODEL": "gen-model", "RAGAS_MODEL": "judge-model"},
+                runner_error=RuntimeError("fixture failure"),
+            )
+        self.assertEqual(len(self.clients), 2)
+        for client in self.clients:
+            client.close.assert_called_once_with()
 
     def test_reports_incomplete_answers_and_the_quality_denominator(self):
         stdout = io.StringIO()
