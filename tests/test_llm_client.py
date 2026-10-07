@@ -177,6 +177,27 @@ class LLMClientTests(unittest.TestCase):
                         self.assertFalse(client.generate_answer("question", retry=1)["success"])
                 self.assertEqual(len(requests), expected_requests)
 
+    def test_permanent_http_failures_do_not_retry_but_transient_errors_do(self):
+        for status, expected_requests in ((401, 1), (422, 1), (429, 3), (503, 3)):
+            with self.subTest(status=status):
+                requests = []
+
+                def reject(request, requests=requests, status=status):
+                    requests.append(request)
+                    return httpx.Response(status, json={"error": {"message": "fixture failure"}})
+
+                with httpx.Client(transport=httpx.MockTransport(reject)) as transport, OpenAI(
+                    api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                    http_client=transport, max_retries=0,
+                ) as sdk, patch("rag_textbook_qa.llm.client.time.sleep") as sleep:
+                    client = LLMClient(
+                        api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                        sdk_client=sdk, verbose=False,
+                    )
+                    self.assertFalse(client.generate_answer("question")["success"])
+                    self.assertEqual(len(requests), expected_requests)
+                    self.assertEqual(sleep.call_count, expected_requests - 1)
+
     def test_stream_skips_empty_deltas_without_network(self):
         chunks = [
             SimpleNamespace(choices=[]),

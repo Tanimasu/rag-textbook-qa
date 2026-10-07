@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 DEFAULT_LLM_BASE_URL = "https://api.ohmygpt.com/v1"
 DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite-preview"
@@ -221,6 +221,12 @@ class LLMClient:
                 last_error = exc
                 if self.verbose:
                     print(f"调用失败: {str(exc)[:100]}")
+                if (isinstance(exc, APIStatusError)
+                        and exc.status_code not in {408, 409, 429}
+                        and exc.status_code < 500):
+                    # Invalid credentials, requests and model names need a caller
+                    # change. Repeating them only delays the same failure.
+                    break
                 if attempt < retry:
                     time.sleep(1)
 
