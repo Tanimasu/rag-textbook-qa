@@ -52,6 +52,7 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 ```
 
 反馈用于后续人工归类和离线评测，不会在在线回答中自动运行 RAGAS，也不会自动改变检索参数。
+导出目标不能是反馈数据库本身、其 SQLite 辅助文件或这些文件的链接；`--force` 也会拒绝。
 候选文件中的 `relevant_sections`、`ground_truth` 和审核备注默认留空；只有人工对照教材完成标注后，
 才应另行迁移到正式评测集，避免随手差评污染实验数据。“速度太慢”会标记为性能检查候选，
 不应当迁移成回答质量题。

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,36 @@ class AnswerRegistryTests(unittest.TestCase):
 
 
 class FeedbackStoreTests(unittest.TestCase):
+    def test_exports_refuse_database_and_sqlite_sidecars_even_with_force(self):
+        for method in ("export_jsonl", "export_candidates"):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                with self.subTest(method=method, suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                    store = FeedbackStore(Path(directory) / "feedback.sqlite3")
+                    destination = Path(str(store.path) + suffix)
+                    if suffix:
+                        destination.write_bytes(b"sidecar must survive")
+                    original = destination.read_bytes()
+                    with (
+                        patch.object(store, "records", return_value=[]) as records,
+                        self.assertRaisesRegex(ValueError, "反馈数据库"),
+                    ):
+                        getattr(store, method)(destination, overwrite=True)
+                    records.assert_not_called()
+                    self.assertEqual(destination.read_bytes(), original)
+
+    def test_exports_refuse_hard_link_to_database(self):
+        for method in ("export_jsonl", "export_candidates"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = FeedbackStore(root / "feedback.sqlite3")
+                alias = root / "alias.json"
+                os.link(store.path, alias)
+                original = store.path.read_bytes()
+                with self.assertRaisesRegex(ValueError, "反馈数据库"):
+                    getattr(store, method)(alias, overwrite=True)
+                self.assertEqual(store.path.read_bytes(), original)
+                self.assertEqual(store.records(), [])
+
     def test_every_short_lived_database_connection_is_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             store = FeedbackStore(Path(directory) / "feedback.sqlite3")

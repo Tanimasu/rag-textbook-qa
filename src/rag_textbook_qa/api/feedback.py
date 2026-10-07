@@ -218,8 +218,22 @@ class FeedbackStore:
             records.append(record)
         return records
 
-    def export_jsonl(self, output: str | Path, *, overwrite: bool = False) -> int:
+    def _export_destination(self, output: str | Path) -> Path:
         destination = Path(output).expanduser().resolve()
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            protected = Path(str(self.path) + suffix)
+            if destination == protected:
+                raise ValueError("导出不能覆盖反馈数据库或其 SQLite 辅助文件")
+            try:
+                alias = destination.samefile(protected)
+            except FileNotFoundError:
+                continue
+            if alias:
+                raise ValueError("导出不能覆盖反馈数据库或其 SQLite 辅助文件")
+        return destination
+
+    def export_jsonl(self, output: str | Path, *, overwrite: bool = False) -> int:
+        destination = self._export_destination(output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if overwrite else "x"
         records = self.records()
@@ -229,7 +243,7 @@ class FeedbackStore:
         return len(records)
 
     def export_candidates(self, output: str | Path, *, overwrite: bool = False) -> int:
-        destination = Path(output).expanduser().resolve()
+        destination = self._export_destination(output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if overwrite else "x"
         candidates = build_feedback_candidates(self.records())
