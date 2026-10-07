@@ -24,7 +24,21 @@ from rag_textbook_qa.providers.remote import (
 
 def run() -> dict:
     identity = ModelIdentity(task="reranker", model="fixture-model")
-    state = {"mode": "cut_second_batch", "batches": [], "health_checks": 0}
+    state = {"mode": "cut_second_batch", "batches": [], "health_checks": 0,
+             "redirect_destination_requests": 0, "redirect_destination_received_auth": False}
+
+    class DestinationHandler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            state["redirect_destination_requests"] += 1
+            state["redirect_destination_received_auth"] |= self.headers.get("Authorization") is not None
+            body = json.dumps({"models": {"reranker": identity.as_dict()}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -42,6 +56,12 @@ def run() -> dict:
 
         def do_GET(self):
             state["health_checks"] += 1
+            if state["mode"] == "redirect":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{destination.server_address[1]}/health")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if state["mode"] in {"auth", "model"}:
                 self.respond(401 if state["mode"] == "auth" else 409, {"detail": "fixture rejection"}, truncate=True)
             else:
@@ -62,6 +82,10 @@ def run() -> dict:
             self.respond(200, {"fingerprint": identity.fingerprint, "scores": [0.1] * len(documents)},
                          truncate=state["mode"] == "cut_second_batch" and len(documents) < 128)
 
+    destination = ThreadingHTTPServer(("127.0.0.1", 0), DestinationHandler)
+    destination.daemon_threads = True
+    destination_thread = threading.Thread(target=destination.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    destination_thread.start()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -97,17 +121,38 @@ def run() -> dict:
             else:
                 raise AssertionError(f"{mode} did not fail closed")
             assert fallback.rerank.call_count == 1
+        state["mode"] = "redirect"
+        authenticated = RemoteWorkerClient(client.base_url, token="fixture-token", timeout=2)
+        provider = FallbackRerankerProvider(RemoteRerankerProvider(authenticated, identity.model), fallback)
+        try:
+            provider.rerank("question", documents)
+        except ProviderProtocolError:
+            pass
+        else:
+            raise AssertionError(
+                f"redirect followed: destination_requests={state['redirect_destination_requests']}, "
+                f"auth_forwarded={state['redirect_destination_received_auth']}"
+            )
+        assert state["redirect_destination_requests"] == 0
+        assert not state["redirect_destination_received_auth"]
+        assert fallback.rerank.call_count == 1
     finally:
         server.shutdown()
         server.server_close()
         thread.join(5)
+        destination.shutdown()
+        destination.server_close()
+        destination_thread.join(5)
         if thread.is_alive():
             raise RuntimeError("Loopback Worker did not stop")
+        if destination_thread.is_alive():
+            raise RuntimeError("Redirect destination did not stop")
     return {"complete": True, "backend": "local fake HTTP Worker; no models", "checks": {
         "truncated_second_batch_recomputes_full_input": True, "healthy_remote_recovers": True,
         "recovered_worker_health_and_device_are_refreshed": True,
         "truncated_401_does_not_fallback": True, "truncated_409_does_not_fallback": True,
         "malformed_provider_payload_does_not_fallback": True,
+        "redirect_does_not_forward_auth_or_trigger_fallback": True,
     }}
 
 

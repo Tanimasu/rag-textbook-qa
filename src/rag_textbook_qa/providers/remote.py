@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from http.client import IncompleteRead
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
@@ -51,6 +51,13 @@ def _worker_batches(values: list[str]) -> list[list[str]]:
     return batches
 
 
+class _NoWorkerRedirects(HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, message, headers, new_url):
+        # A Worker is an explicitly configured authenticated endpoint. urllib's
+        # default redirect handler can forward its bearer token to another host.
+        return None
+
+
 class RemoteWorkerClient:
     """Small JSON client with explicit error categories for safe fallback."""
 
@@ -60,6 +67,7 @@ class RemoteWorkerClient:
         self.base_url = base_url.rstrip("/")
         self.token = validate_worker_token(token)
         self.timeout = timeout
+        self._opener = build_opener(_NoWorkerRedirects())
 
     def request(
         self,
@@ -77,7 +85,7 @@ class RemoteWorkerClient:
             headers["Content-Type"] = "application/json"
         request = Request(f"{self.base_url}{path}", data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout) as response:
                 raw = response.read()
         except HTTPError as exc:
             detail = _http_error_detail(exc)

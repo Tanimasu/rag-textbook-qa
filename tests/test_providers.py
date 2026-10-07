@@ -149,14 +149,14 @@ class ProviderTests(unittest.TestCase):
             io.BytesIO(b'{"detail":"bad token"}'),
         )
         with (
-            patch("rag_textbook_qa.providers.remote.urlopen", side_effect=unauthorized),
+            patch.object(client._opener, "open", side_effect=unauthorized),
             self.assertRaises(AuthenticationError),
         ):
             client.request("/health")
 
         with (
-            patch(
-                "rag_textbook_qa.providers.remote.urlopen",
+            patch.object(
+                client._opener, "open",
                 side_effect=URLError("offline"),
             ),
             self.assertRaises(TransientProviderError),
@@ -177,8 +177,8 @@ class ProviderTests(unittest.TestCase):
                              RemoteDisconnected("closed"), ConnectionResetError("reset")):
             response = MagicMock()
             response.__enter__.return_value.read.side_effect = interruption
-            with self.subTest(interruption=type(interruption).__name__), patch(
-                "rag_textbook_qa.providers.remote.urlopen", return_value=response,
+            with self.subTest(interruption=type(interruption).__name__), patch.object(
+                client._opener, "open", return_value=response,
             ):
                 self.assertEqual(provider.embed_queries(["question"]), [[1.0, 2.0]])
                 event = provider.telemetry.since(0)[-1]
@@ -195,7 +195,7 @@ class ProviderTests(unittest.TestCase):
         error.read = MagicMock(side_effect=IncompleteRead(b'{"detail":', 10))
         error.close = MagicMock()
         with (
-            patch("rag_textbook_qa.providers.remote.urlopen", side_effect=error),
+            patch.object(client._opener, "open", side_effect=error),
             self.assertRaises(AuthenticationError),
         ):
             provider.embed_queries(["question"])
