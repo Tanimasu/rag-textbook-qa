@@ -14,6 +14,37 @@ COMPATIBILITY_SCRIPT = REPOSITORY_ROOT / "project" / "clean_markdown.py"
 
 
 class SmartMarkdownCleanerTests(unittest.TestCase):
+    def test_title_normalization_preserves_fenced_directives(self):
+        cleaner = SmartMarkdownCleaner()
+        blocks = [
+            "```c\n#include <stdio.h>\n#define LIMIT 10\n#if LIMIT\n#endif\n```",
+            "   ~~~~c\n#define LIMIT 10\n~~~\n# retained\n    ~~~~\n~~~~ trailing\n~~~~~",
+            "````c\n```\n# retained\n~~~~\n````",
+            "```c\n#define LIMIT 10\n# unclosed",
+        ]
+        for block in blocks:
+            with self.subTest(block=block):
+                self.assertEqual(cleaner.normalize_titles(block), block)
+
+        content = "```c\n#define LIMIT 10\n```\n# 1.2 正文标题\n"
+        self.assertEqual(
+            cleaner.normalize_titles(content),
+            "```c\n#define LIMIT 10\n```\n## 1.2 正文标题\n",
+        )
+
+    def test_clean_markdown_preserves_fenced_preprocessor_directives(self):
+        source = "# 第1章 测试章节\n\n```c\n#include <stdio.h>\n#define LIMIT 10\n#if LIMIT\n#endif\n```\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            input_path = root / "input.md"
+            output_path = root / "output.md"
+            input_path.write_text(source, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = clean_markdown(input_path, output_path)
+            for directive in ("#include <stdio.h>", "#define LIMIT 10", "#if LIMIT", "#endif"):
+                self.assertIn(directive, result.splitlines())
+            self.assertEqual(input_path.read_text(encoding="utf-8"), source)
+
     def test_title_levels_preserve_legacy_rules(self):
         cleaner = SmartMarkdownCleaner()
 

@@ -135,8 +135,24 @@ class SmartMarkdownCleaner:
         """规范化标题层级。"""
         lines = content.split("\n")
         result = []
+        fence_token: str | None = None
 
         for line in lines:
+            fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if fence_token is not None:
+                result.append(line)
+                if (
+                    fence
+                    and fence.group(1)[0] == fence_token[0]
+                    and len(fence.group(1)) >= len(fence_token)
+                    and not fence.group(2).strip()
+                ):
+                    fence_token = None
+                continue
+            if fence:
+                fence_token = fence.group(1)
+                result.append(line)
+                continue
             if line.strip().startswith("#"):
                 title_text = re.sub(r"^#+\s*", "", line.strip())
                 level, clean_text = self.detect_title_level(title_text)
