@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from test_api import BOOKS, FakeEngine
 
 from rag_textbook_qa.api.app import _answer_once, _AnswerStreamResponse, _stream, create_api_app
@@ -60,6 +61,33 @@ class AdmissionTests(unittest.TestCase):
 
 
 class RequestQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_book_validation_keeps_the_event_loop_available_on_both_routes(self):
+        loop = asyncio.get_running_loop()
+        for endpoint in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(endpoint=endpoint), tempfile.TemporaryDirectory() as directory:
+                engine = FakeEngine(enable_llm=False)
+                released = threading.Event()
+                catalog_yielded = []
+
+                def catalog(released=released, catalog_yielded=catalog_yielded):
+                    # Publication retries and Chroma reads are synchronous. The
+                    # event loop must still run while this catalog call waits.
+                    loop.call_soon_threadsafe(released.set)
+                    catalog_yielded.append(released.wait(1))
+                    return [{"book_name": "os", "count": 2}]
+
+                engine.list_indexed_books = catalog
+                guard = AccessGuard(GuardSettings())
+                app = create_api_app(
+                    engine, guard, BOOKS,
+                    feedback_store=FeedbackStore(Path(directory) / "feedback.sqlite3"),
+                )
+                async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+                    response = await client.post(endpoint, json={"query": "问题", "book_id": "os"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(catalog_yielded, [True], "Catalog validation blocked the event loop")
+                self.assertEqual(guard.status()["requests_in_flight"], 0)
+
     async def test_queued_stream_disconnect_releases_capacity_without_a_thread(self):
         guard = AccessGuard(GuardSettings(max_pending_requests=2))
         active = guard.admit_request()

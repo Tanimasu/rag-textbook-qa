@@ -182,6 +182,38 @@ def run() -> dict[str, Any]:
                 raise RuntimeError(f"Unexpected burst admission results: {statuses}")
             report["eight_client_burst_statuses"] = statuses
         wait_until(lambda: health()["requests_in_flight"] == 0, "Queue did not drain")
+
+        # Book validation must not block the event loop during synchronous index
+        # reads. Keep one catalog read waiting while a second request is rejected.
+        validation_statuses = {}
+        for endpoint in ("/v1/ask", "/v1/ask/stream"):
+            catalog_entered, catalog_release = threading.Event(), threading.Event()
+            cleanup.callback(catalog_release.set)
+
+            def catalog(entered=catalog_entered, release=catalog_release) -> list[dict[str, Any]]:
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("Test did not release the catalog read")
+                return [{"book_name": "os", "count": 1}]
+
+            engine.list_indexed_books = catalog
+            with ThreadPoolExecutor(max_workers=1) as clients:
+                pending = clients.submit(
+                    requests.post, base + endpoint,
+                    json={"query": "catalog-check", "book_id": "os"}, timeout=10,
+                )
+                try:
+                    if not catalog_entered.wait(2):
+                        raise RuntimeError("Book validation did not read the catalog")
+                    response = requests.post(base + "/v1/ask", json={"query": " "}, timeout=2)
+                    if response.status_code != 422:
+                        raise RuntimeError("Other requests stalled during book validation")
+                    validation_statuses[endpoint] = response.status_code
+                finally:
+                    catalog_release.set()
+                if pending.result(timeout=5).status_code != 200:
+                    raise RuntimeError("Request failed after catalog validation resumed")
+        report["validation_while_catalog_busy_http_statuses"] = validation_statuses
         report["final_state"] = health()
         report["peak_concurrent_producers"] = engine.peak_active
         if engine.peak_active != 1 or report["final_state"]["generations_remaining_today"] != 200:

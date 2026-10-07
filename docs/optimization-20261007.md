@@ -16,6 +16,21 @@ Windows、Linux、macOS × 两种 Python，Chromium 和发布包八个任务全�
 [PR CI](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37600422227)、
 [push CI](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37600416448)。
 
+## 教材校验期间的服务响应
+
+进一步复现了指定教材提问时的事件循环阻塞：REST / SSE 的异步处理函数直接读取同步目录，
+其中 Chroma 原生调用和索引发布重试的等待会阻止其他协程运行。
+新增回归检查在两条路线修复前均失败；目录读取移到 FastAPI 已有线程池后通过。
+访问校验仍先执行，教材不存在仍在返回 SSE 响应前报 404，回答继续经过原有有界队列。
+
+本机 Python 3.11 / 3.12 各 419 项测试通过，Ruff 通过。
+真实回环 HTTP 检查刻意暂停目录读取，同时发送另一条空问题请求：
+两条路线均能立即返回 422，解除目录等待后原请求均返回 200。
+原有容量 3、8 请求中 3 个成功 / 5 个 503、排队断连释放、活跃取消持槽及线程峰值 1 均通过，
+最终待处理数为 0、生成额度仍为 200。该检查使用受控无模型引擎，不能作为模型延迟结果。
+完整结果为本地忽略文件 `artifacts/evaluations/serving-queue-20261007-catalog.json`；
+`scripts/check_serving_queue.py` 已包含此场景供跨平台 CI 复核。
+
 ## 全库候选预算的实际耗时
 
 使用原索引副本、已缓存的本地 BGE embedding / reranker，每本教材选第一道 dev 题，

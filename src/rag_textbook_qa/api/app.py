@@ -41,6 +41,7 @@ from rag_textbook_qa.providers.config import is_loopback_host
 
 try:
     from fastapi import FastAPI, HTTPException, Request
+    from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - only without the api extra
@@ -401,15 +402,17 @@ def create_api_app(
         except AccessDenied as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
+    async def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
         authorize(request)
         query = payload.query.strip()
         if not query:
             raise HTTPException(status_code=422, detail="问题不能为空")
-        if payload.book_id is not None and payload.book_id not in {
-            book["book_id"] for book in current_books()
-        }:
-            raise HTTPException(status_code=404, detail="没有这本教材的索引")
+        if payload.book_id is not None:
+            # Catalog reads include native Chroma calls and publication retry
+            # sleeps; neither may hold up streaming or disconnect handling.
+            books = await run_in_threadpool(current_books)
+            if payload.book_id not in {book["book_id"] for book in books}:
+                raise HTTPException(status_code=404, detail="没有这本教材的索引")
         return query, payload.book_id, payload.top_k
 
     def answer(
@@ -486,7 +489,7 @@ def create_api_app(
 
     @app.post("/v1/ask", summary="提问，一次性返回回答与引用")
     async def ask(payload: AskRequest, request: Request) -> dict[str, Any]:
-        query, book_id, top_k = admit(payload, request)
+        query, book_id, top_k = await admit(payload, request)
         try:
             admission = guard.admit_request()
             return await _answer_once(
@@ -504,7 +507,7 @@ def create_api_app(
 
     @app.post("/v1/ask/stream", summary="提问，以服务器推送事件（SSE）流式返回")
     async def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
-        query, book_id, top_k = admit(payload, request)
+        query, book_id, top_k = await admit(payload, request)
         try:
             admission = guard.admit_request()
         except Busy as exc:
