@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
-from openai import OpenAI
+from openai import InternalServerError, OpenAI
 
 from rag_textbook_qa.llm import (
     GenerationCancelled,
@@ -143,6 +143,39 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(len(sdk.completions.calls), 2)
         self.assertFalse(sdk.completions.calls[-1]["stream"])
         sleep.assert_called_once_with(1)
+
+    def test_default_sdk_does_not_multiply_application_retries(self):
+        for streaming, expected_requests in ((False, 2), (True, 1)):
+            with self.subTest(streaming=streaming):
+                requests = []
+
+                def reject(request, requests=requests):
+                    requests.append(request)
+                    return httpx.Response(503, json={"error": {"message": "fixture unavailable"}})
+
+                def sdk_factory(reject=reject, **kwargs):
+                    sdk = OpenAI(
+                        **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reject))
+                    )
+                    self.addCleanup(sdk.close)
+                    # Keep the regression deterministic and fast even before the
+                    # fix, when the SDK still performs its own hidden retries.
+                    sdk._calculate_retry_timeout = lambda *args: 0
+                    return sdk
+
+                with (
+                    patch("rag_textbook_qa.llm.client.OpenAI", side_effect=sdk_factory),
+                    patch("rag_textbook_qa.llm.client.time.sleep"),
+                ):
+                    client = LLMClient(
+                        api_key="fixture-key", base_url="http://fixture.invalid/v1", verbose=False
+                    )
+                    if streaming:
+                        with self.assertRaises(InternalServerError):
+                            list(client.stream_answer("question", raise_on_error=True))
+                    else:
+                        self.assertFalse(client.generate_answer("question", retry=1)["success"])
+                self.assertEqual(len(requests), expected_requests)
 
     def test_stream_skips_empty_deltas_without_network(self):
         chunks = [

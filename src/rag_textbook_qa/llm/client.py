@@ -97,7 +97,9 @@ class LLMClient:
         self.client = (
             sdk_client
             if sdk_client is not None
-            else OpenAI(api_key=api_key, base_url=self.base_url)
+            # generate_answer owns its retry budget. SDK retries would multiply
+            # it and also retry streaming requests without the caller's intent.
+            else OpenAI(api_key=api_key, base_url=self.base_url, max_retries=0)
         )
 
         if self.verbose:

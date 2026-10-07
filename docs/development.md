@@ -35,6 +35,7 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 - `src/`、`tests/` 与 `scripts/` 的 Ruff 静态检查
 - 完整的无模型、无外部 API 单元与集成测试
 - 真实 HTTP 连接验证队列饱和、排队断连及取消线程的执行槽释放
+- 回环 Worker 截断响应的整批回退与恢复，以及真实 SDK 的生成终止标记处理
 - Chromium 中运行真实聊天页，验证提交、流式回答、引用、重试、停止和反馈
 - Python 源码编译检查
 - source distribution 与 wheel 构建
@@ -47,6 +48,8 @@ uv sync --locked --extra ui --extra worker --extra api
 uv run --no-sync python -m ruff check src tests scripts
 uv run --no-sync python -m unittest discover -s tests -v
 uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/local/queue-http.json
+uv run --no-sync python scripts/check_remote_transport.py --output artifacts/evaluations/local/remote-transport.json
+uv run --no-sync python scripts/check_generation_transport.py --output artifacts/evaluations/local/generation-transport.json
 uv run --no-sync python -m compileall -q src tests project
 ```
 
