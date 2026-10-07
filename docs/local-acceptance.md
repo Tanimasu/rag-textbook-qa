@@ -78,6 +78,16 @@ python scripts/benchmark_remote.py --output artifacts/evaluations/remote-accepta
 的四策略检索验收；连接凭据不进入报告。冻结结果用于验收，不用于调参数。
 首次模型加载可能较慢，Worker 应已备妥所需模型缓存；脚本本身不安装或下载本地模型。
 
+重复观察 HTTP 路径时，可跳过冻结题集：
+
+```bash
+python scripts/benchmark_remote.py --http-only --repeats 20 \
+  --output artifacts/evaluations/remote-acceptance/http-continuous.json
+```
+
+每轮五道 dev 题、单教材 / 全库各一次；上述命令共 200 次计时请求，另检查 SSE。
+报告采样客户端进程 RSS 和文件描述符（不可用时为 null），不测远程 GPU 内存，也不作为泄漏证明。
+
 单独复核传输中断与恢复，不需要远程设备或任何模型：
 
 ```bash

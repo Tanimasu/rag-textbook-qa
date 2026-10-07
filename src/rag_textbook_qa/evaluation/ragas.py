@@ -70,7 +70,7 @@ def average_samples(runs: Sequence[Sequence[float | None]]) -> list[float | None
         usable = [
             float(value)
             for value in row
-            if value is not None and not math.isnan(float(value))
+            if value is not None and math.isfinite(float(value))
         ]
         averaged.append(sum(usable) / len(usable) if usable else None)
     return averaged
@@ -576,9 +576,12 @@ class RAGASEvaluator:
             )
 
             numeric_columns = dataframe.select_dtypes(include="number").columns
+            dataframe[numeric_columns] = dataframe[numeric_columns].replace(
+                [float("inf"), float("-inf")], float("nan")
+            )
             nan_mask = dataframe[numeric_columns].isna()
             if nan_mask.any().any():
-                print("⚠️  以下问题的部分指标评估失败（NaN），已从均值计算中排除：")
+                print("⚠️  以下问题的部分指标评估失败（缺失或非有限值），已从均值计算中排除：")
                 question_column = next(
                     (
                         column

@@ -238,6 +238,8 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(averaged[1], 0.4)
         self.assertIsNone(averaged[2])
         self.assertEqual(average_samples([]), [])
+        finite = average_samples([[float("inf"), float("-inf")], [0.6, None]])
+        self.assertEqual(finite, [0.6, None])
         with self.assertRaisesRegex(ValueError, "行数不一致"):
             average_samples([[0.5], [0.5, 0.5]])
 
@@ -435,6 +437,21 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertIsNotNone(dataframe)
         self.assertIn("没有可汇总的有效指标分数", output.getvalue())
+
+    def test_print_results_treats_infinite_scores_as_missing_without_losing_valid_scores(self):
+        import pandas as pd
+
+        evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+        result = MagicMock()
+        original = pd.DataFrame({"faithfulness": [float("inf"), float("-inf"), 0.6]})
+        result.to_pandas.return_value = original
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            dataframe = evaluator.print_results(result)
+        self.assertEqual(list(dataframe["faithfulness"].isna()), [True, True, False])
+        self.assertAlmostEqual(dataframe["faithfulness"].mean(), 0.6)
+        self.assertIn("0.6000", output.getvalue())
+        self.assertEqual(list(original["faithfulness"].isna()), [False, False, False])
 
 
 if __name__ == "__main__":
