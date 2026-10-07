@@ -62,7 +62,22 @@ def checked_result(body: dict[str, Any], device: str) -> dict[str, Any]:
                          "excerpt_sha256": digest(row["excerpt"])} for row in body["sources"]]}
 
 
-def run(output: Path, repeats: int = 2) -> dict[str, Any]:
+def process_resources(stage: str) -> dict[str, Any]:
+    try:
+        rss = float(subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())], text=True,
+            stderr=subprocess.DEVNULL,
+        )) / 1024
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        rss = None
+    try:
+        descriptors = len(list(Path("/dev/fd").iterdir()))
+    except OSError:
+        descriptors = None
+    return {"stage": stage, "rss_mib": rss, "open_descriptors": descriptors}
+
+
+def run(output: Path, repeats: int = 2, *, include_frozen: bool = True) -> dict[str, Any]:
     if output.exists() or repeats < 1:
         raise ValueError("输出文件必须未使用过，repeats 必须大于 0")
     paths = Settings.load().paths
@@ -90,8 +105,12 @@ def run(output: Path, repeats: int = 2) -> dict[str, Any]:
         )},
         "dataset_sha256": digest(dataset.read_bytes()), "frozen_dataset_sha256": digest(frozen.read_bytes()),
         "llm_enabled": False, "query_fallback_enabled": False, "repeats": repeats,
-        "question_selection": "first dev question per book; frozen 15 are acceptance only, not tuning",
+        "frozen_acceptance_enabled": include_frozen,
+        "question_selection": "first dev question per book; frozen acceptance only, not tuning"
+        if include_frozen else "first dev question per book; frozen acceptance skipped",
         "http_samples": [], "p95_scope": "nearest rank, descriptive small sample, not a production SLO",
+        "process_resource_samples": [process_resources("before_engine")],
+        "resource_scope": "client process snapshots; excludes remote Worker and GPU memory; not a leak test",
     }
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -126,6 +145,7 @@ def run(output: Path, repeats: int = 2) -> dict[str, Any]:
             for book in (selected[0].book_name, None):
                 engine.ask(selected[0].question, book_name=book, use_llm=False, use_hyde=False)
             report["warmup_seconds"] = time.monotonic() - started
+            report["process_resource_samples"].append(process_resources("after_warmup"))
             guard = AccessGuard(GuardSettings(requests_per_window=1000))
             app = create_api_app(engine, guard, [], feedback_store=FeedbackStore(directory / "feedback.sqlite3"))
             sock = socket.socket()
@@ -164,6 +184,7 @@ def run(output: Path, repeats: int = 2) -> dict[str, Any]:
                         report["http_samples"].append(row)
                         save()
                         print(f"remote {repeat + 1}/{repeats} {question.book_name} {scope}: {elapsed:.3f}s", flush=True)
+                report["process_resource_samples"].append(process_resources(f"after_repeat_{repeat + 1}"))
             with session.post(base + "/v1/ask/stream", json={"query": selected[0].question,
                               "book_id": selected[0].book_name}, stream=True, timeout=60) as response:
                 response.raise_for_status()
@@ -176,7 +197,7 @@ def run(output: Path, repeats: int = 2) -> dict[str, Any]:
             report["frozen_acceptance"] = run_retrieval_strategies(
                 engine, load_retrieval_questions(frozen), ("bm25", "embedding", "hybrid", "hybrid-rerank"),
                 top_k=5, context_budget=4000,
-            )
+            ) if include_frozen else None
             report["final_state"] = session.get(base + "/health", timeout=5).json()
             if (report["final_state"]["generations_remaining_today"] != 200
                     or report["final_state"]["requests_in_flight"] != 0):
@@ -188,6 +209,7 @@ def run(output: Path, repeats: int = 2) -> dict[str, Any]:
                                              "p95_seconds": durations[math.ceil(len(durations) * 0.95) - 1]}
             if index_revision(paths.vector_db) != report["index_revision"]:
                 raise RuntimeError("运行期间原索引发生变化")
+        report["process_resource_samples"].append(process_resources("after_engine_close"))
         report["complete"] = True
     except Exception as exc:
         report["error_category"] = type(exc).__name__
@@ -201,9 +223,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--http-only", action="store_true", help="只检查 HTTP 开发题，不重复冻结题集评测")
     args = parser.parse_args()
     try:
-        report = run(args.output, args.repeats)
+        report = run(args.output, args.repeats, include_frozen=not args.http_only)
     except Exception as exc:  # noqa: BLE001 - never print connection details or credentials
         parser.exit(1, f"远程验收失败: {type(exc).__name__}\n")
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2), flush=True)
