@@ -38,6 +38,8 @@ from rag_textbook_qa.evaluation.generation import (
     score_answer,
     summarize,
     validate_extraction,
+    validate_generation_arms,
+    validate_generation_cases,
     validate_verification,
     verification_prompt,
 )
@@ -228,6 +230,8 @@ def sample_keys(
 
     if samples < 1:
         raise ValueError("每个方案至少采样 1 次")
+    validate_generation_cases(cases)
+    validate_generation_arms(arms)
     keys: list[Key] = []
     for case in cases:
         for arm in arms:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import difflib
 import itertools
 import json
+import math
 import random
 import re
 import statistics
@@ -79,33 +80,107 @@ def parse_arm(spec: str) -> Arm:
     if not match:
         raise ValueError(f"方案应写成 名称=上下文@温度 或 名称=上下文@stored：{spec}")
     name, variant, value = match.groups()
-    return Arm(name, variant, None if value == "stored" else float(value))
+    arm = Arm(name, variant, None if value == "stored" else float(value))
+    validate_generation_arms([arm])
+    return arm
+
+
+def _sequence(value: Any, field: str, *, nonempty: bool = False) -> Sequence:
+    if (not isinstance(value, Sequence) or isinstance(value, (str, bytes))
+            or (nonempty and not value)):
+        raise ValueError(f"{field} 必须是{'非空' if nonempty else ''}数组")
+    return value
+
+
+def _text(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} 必须是非空文本")
+
+
+def validate_generation_arms(arms: Sequence[Arm]) -> None:
+    _sequence(arms, "评测方案", nonempty=True)
+    names = set()
+    for arm in arms:
+        if not isinstance(arm, Arm):
+            raise TypeError("评测方案必须是 Arm")
+        _text(arm.name, "方案名称")
+        _text(arm.variant, "上下文名称")
+        if arm.name in names:
+            raise ValueError("方案名称重复")
+        names.add(arm.name)
+        if arm.temperature is not None and (
+            type(arm.temperature) not in (int, float)
+            or not math.isfinite(arm.temperature) or arm.temperature < 0
+        ):
+            raise ValueError("方案温度必须是有限非负数或 stored")
+
+
+def validate_generation_cases(cases: Sequence[GenerationCase]) -> None:
+    """Validate the complete frozen input before any generated or stored sample."""
+    _sequence(cases, "题集", nonempty=True)
+    identifiers = set()
+    for case in cases:
+        if not isinstance(case, GenerationCase):
+            raise TypeError("题目必须是 GenerationCase")
+        _text(case.case_id, "题目编号")
+        _text(case.question, "问题")
+        if case.case_id in identifiers:
+            raise ValueError("题目编号重复")
+        identifiers.add(case.case_id)
+        for requirement in _sequence(case.requirements, "覆盖要求"):
+            _text(requirement, "覆盖要求")
+        if not isinstance(case.variants, Mapping) or not case.variants:
+            raise ValueError("题目必须提供上下文方案")
+        for name, variant in case.variants.items():
+            _text(name, "上下文名称")
+            if not isinstance(variant, ContextVariant):
+                raise TypeError("上下文必须是 ContextVariant")
+            _text(variant.context, "上下文正文")
+            source_ids = set()
+            for source in _sequence(variant.sources, "资料", nonempty=True):
+                if not isinstance(source, Mapping):
+                    raise TypeError("资料必须是对象")
+                identifier, content = source.get("citation_id"), source.get("content")
+                if type(identifier) is not int or identifier < 1 or identifier in source_ids:
+                    raise ValueError("资料编号必须是唯一正整数")
+                source_ids.add(identifier)
+                _text(content, "资料正文")
+                if content not in variant.context:
+                    raise ValueError(f"{case.case_id}/{name}：资料内容必须出自实际上下文")
+            for answer in _sequence(variant.answers, "已存答案"):
+                # Empty stored outputs remain valid records of incomplete runs.
+                if not isinstance(answer, str):
+                    raise TypeError("已存答案必须是文本数组")
 
 
 def load_generation_cases(path: str | Path) -> list[GenerationCase]:
     """Load frozen cases, refusing sources that are not part of their context."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise TypeError("题集必须是包含 cases 的对象")
     cases = []
-    for raw in payload["cases"]:
+    for raw in _sequence(payload.get("cases"), "cases", nonempty=True):
+        if not isinstance(raw, Mapping):
+            raise TypeError("题目必须是对象")
+        raw_variants = raw.get("variants")
+        if not isinstance(raw_variants, Mapping):
+            raise TypeError("上下文方案必须是对象")
         variants = {}
-        for key, item in raw["variants"].items():
-            sources = tuple(item["sources"])
-            ids = [source["citation_id"] for source in sources]
-            if not sources or len(set(ids)) != len(ids):
-                raise ValueError(f"{raw['id']}/{key}：资料为空或编号重复")
-            if any(str(source["content"]) not in item["context"] for source in sources):
-                raise ValueError(f"{raw['id']}/{key}：资料内容必须出自实际上下文")
+        for key, item in raw_variants.items():
+            if not isinstance(item, Mapping):
+                raise TypeError("上下文必须是对象")
+            sources = tuple(_sequence(item.get("sources"), "资料", nonempty=True))
             variants[key] = ContextVariant(
-                item["context"], sources, tuple(item.get("answers", ()))
+                item.get("context"), sources, tuple(_sequence(item.get("answers", ()), "已存答案"))
             )
         cases.append(
             GenerationCase(
-                str(raw["id"]), raw["question"], tuple(raw.get("requirements", ())), variants
+                raw.get("id"), raw.get("question"),
+                tuple(_sequence(raw.get("requirements", ()), "覆盖要求")), variants
             )
         )
-    if len({case.case_id for case in cases}) != len(cases):
-        raise ValueError("题目编号重复")
+    validate_generation_cases(cases)
     return cases
 
 

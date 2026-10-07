@@ -33,6 +33,23 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
+    def test_invalid_frozen_answers_are_rejected_before_creating_clients(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = workspace(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["cases"][0]["variants"]["baseline"]["answers"] = "保存过的回答"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with (
+                patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env") as pair,
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                      "--arm", "kept=baseline@stored", "--output-dir", str(root / "output")])
+            pair.assert_not_called()
+            self.assertFalse((root / "output").exists())
+
     def run_cli(self, environment: dict[str, str], *, report: dict | None = None,
                 stdout: io.StringIO | None = None,
                 runner_error: Exception | None = None) -> tuple[MagicMock, Path]:

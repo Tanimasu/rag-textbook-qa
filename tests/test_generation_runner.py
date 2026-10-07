@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -75,6 +76,33 @@ def run(output: Path, arms: list[Arm], **overrides) -> dict:
 
 
 class ClientTests(unittest.TestCase):
+    def test_invalid_direct_cases_stop_before_generator_judge_or_protocol_write(self):
+        invalid_cases = [[], [CASE, CASE], [replace(CASE, question=" ")],
+                         [replace(CASE, variants={"baseline": replace(CASE.variants["baseline"], answers="答案")})]]
+        for cases in invalid_cases:
+            with self.subTest(cases=cases), tempfile.TemporaryDirectory() as directory:
+                generator, judge = MagicMock(), MagicMock()
+                output = Path(directory)
+                with self.assertRaises(ValueError):
+                    run_generation_experiment(cases, [Arm("hot", "baseline", 0.7)],
+                        output_dir=output, generator=generator, judge=judge, samples=1,
+                        seed=0, concurrency=1, protocol={})
+                generator.assert_not_called()
+                judge.assert_not_called()
+                self.assertFalse((output / "protocol.json").exists())
+
+    def test_invalid_arms_stop_before_model_calls(self):
+        invalid_arms = [[], [Arm("x", "baseline", 0.7)] * 2,
+                        [Arm("x", "baseline", float("inf"))],
+                        [Arm("x", "baseline", -1)], [Arm(" ", "baseline", 0.7)]]
+        for arms in invalid_arms:
+            with self.subTest(arms=arms), tempfile.TemporaryDirectory() as directory:
+                generator, judge = MagicMock(), MagicMock()
+                with self.assertRaises(ValueError):
+                    run(Path(directory), arms, generator=generator, judge=judge)
+                generator.assert_not_called()
+                judge.assert_not_called()
+
     def test_generation_request_matches_the_product_call(self):
         sdk = MagicMock()
         message = SimpleNamespace(content="答")

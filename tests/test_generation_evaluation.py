@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -33,6 +34,34 @@ def write_cases(directory: str, cases: list[dict]) -> Path:
 
 
 class ArmAndCaseTests(unittest.TestCase):
+    def test_frozen_case_fields_are_validated_without_coercing_text_or_arrays(self):
+        valid = {"id": "01", "question": "问题", "requirements": ["要求"],
+                 "variants": {"baseline": {"context": SOURCE["content"],
+                                            "sources": [SOURCE], "answers": ["答案"]}}}
+        changes = [
+            (("id",), True), (("id",), " "), (("question",), 12),
+            (("question",), " "), (("requirements",), "要求"),
+            (("requirements",), [False]), (("variants",), {}),
+            (("variants", "baseline", "context"), ""),
+            (("variants", "baseline", "sources"), []),
+            (("variants", "baseline", "sources"), [{"citation_id": True, "content": SOURCE["content"]}]),
+            (("variants", "baseline", "sources"), [{"citation_id": 1, "content": ""}]),
+            (("variants", "baseline", "answers"), "保存过的回答"),
+            (("variants", "baseline", "answers"), [3]),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for path, value in changes:
+                with self.subTest(field=path, value=value):
+                    case = copy.deepcopy(valid)
+                    target = case
+                    for key in path[:-1]:
+                        target = target[key]
+                    target[path[-1]] = value
+                    with self.assertRaises((TypeError, ValueError)):
+                        load_generation_cases(write_cases(directory, [case]))
+            with self.assertRaises(ValueError):
+                load_generation_cases(write_cases(directory, []))
+
     def test_parses_generated_and_stored_arms(self):
         self.assertEqual(parse_arm("t07=baseline@0.7"), Arm("t07", "baseline", 0.7))
         self.assertEqual(parse_arm("reviewed=baseline@stored"), Arm("reviewed", "baseline", None))

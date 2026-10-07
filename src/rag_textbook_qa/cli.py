@@ -675,6 +675,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         openai_generator,
         openai_judge,
         run_generation_experiment,
+        sample_keys,
     )
 
     for option, value in (
@@ -686,6 +687,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
             raise ValueError(f"{option} 必须大于 0")
     arms = [parse_arm(spec) for spec in args.arm]
     cases = load_generation_cases(args.cases)
+    sample_keys(cases, arms, args.samples, args.seed)
     generator_llm, judge_llm, extra = llm_pair_from_env()
     with ExitStack() as cleanup:
         cleanup.callback(generator_llm.close)
