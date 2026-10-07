@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Sequence
+from http.client import IncompleteRead
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,6 +19,7 @@ from rag_textbook_qa.providers.base import (
     ModelIdentity,
     ModelMismatchError,
     ProviderCall,
+    ProviderError,
     ProviderProtocolError,
     ProviderTelemetry,
     TransientProviderError,
@@ -52,6 +55,8 @@ class RemoteWorkerClient:
     """Small JSON client with explicit error categories for safe fallback."""
 
     def __init__(self, base_url: str, *, token: str | None, timeout: float) -> None:
+        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ProviderError("远程 Worker timeout 必须是有限正数")
         self.base_url = base_url.rstrip("/")
         self.token = validate_worker_token(token)
         self.timeout = timeout
@@ -87,8 +92,10 @@ class RemoteWorkerClient:
             raise ProviderProtocolError(
                 f"远程 Worker 拒绝请求（HTTP {exc.code}）: {detail}"
             ) from exc
-        except (TimeoutError, URLError) as exc:
-            raise TransientProviderError(f"无法连接远程 Worker: {exc}") from exc
+        except (TimeoutError, URLError, ConnectionError, IncompleteRead) as exc:
+            # A successful status line does not guarantee that the response body
+            # arrived. Discard partial output and let query fallback recompute it.
+            raise TransientProviderError("远程 Worker 连接失败或响应未完整接收") from exc
 
         try:
             decoded = json.loads(raw.decode("utf-8"))
@@ -101,12 +108,15 @@ class RemoteWorkerClient:
 
 def _http_error_detail(error: HTTPError) -> str:
     try:
-        raw = error.read().decode("utf-8")
+        with error:
+            raw = error.read().decode("utf-8")
         payload = json.loads(raw)
         if isinstance(payload, dict):
             return str(payload.get("detail", payload))
         return str(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError, IncompleteRead):
+        # Authentication/model errors retain their status classification even if
+        # the explanatory body was cut short; they must never trigger fallback.
         return error.reason or "未知错误"
 
 

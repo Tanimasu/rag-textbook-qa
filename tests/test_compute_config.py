@@ -4,6 +4,11 @@ from rag_textbook_qa.providers import ComputeSettings, ProviderError
 
 
 class ComputeSettingsTests(unittest.TestCase):
+    def test_remote_timeout_rejects_non_finite_values(self):
+        for value in ("nan", "inf", "-inf", "1e999", "0", "-1"):
+            with self.subTest(value=value), self.assertRaisesRegex(ProviderError, "REMOTE_TIMEOUT"):
+                ComputeSettings.from_env({"RAG_QA_REMOTE_TIMEOUT": value})
+
     def test_default_is_local_and_does_not_require_remote_configuration(self):
         settings = ComputeSettings.from_env({})
 

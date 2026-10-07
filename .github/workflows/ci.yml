@@ -66,6 +66,9 @@ jobs:
       - name: Verify queue saturation and cancellation over real HTTP
         run: uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/ci/queue-http.json
 
+      - name: Verify interrupted Worker responses over real HTTP
+        run: uv run --no-sync python scripts/check_remote_transport.py --output artifacts/evaluations/ci/remote-transport.json
+
       - name: Repeat Windows Chroma lifecycle regressions
         if: runner.os == 'Windows'
         run: uv run --no-sync python scripts/check_index_lifecycle.py --iterations 25 --output artifacts/evaluations/ci/index-lifecycle.json

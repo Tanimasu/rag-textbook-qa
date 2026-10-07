@@ -1,6 +1,7 @@
 import io
 import unittest
-from unittest.mock import patch
+from http.client import IncompleteRead, RemoteDisconnected
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
 from rag_textbook_qa.providers import (
@@ -135,6 +136,46 @@ class ProviderTests(unittest.TestCase):
     def test_http_client_rejects_non_ascii_token_before_building_request(self):
         with self.assertRaisesRegex(ProviderError, "ASCII"):
             RemoteWorkerClient("http://worker", token="中文-token", timeout=1)
+
+    def test_interrupted_response_is_transient_and_triggers_query_fallback(self):
+        client = RemoteWorkerClient("http://worker", token=None, timeout=1)
+        primary = RemoteEmbeddingProvider(client, "embedding-model")
+        primary._health_verified = True
+        fallback = StubEmbeddingProvider(primary.identity, [[1.0, 2.0]])
+        provider = FallbackEmbeddingProvider(primary, fallback)
+        for interruption in (IncompleteRead(b'{"embeddings":', 20),
+                             RemoteDisconnected("closed"), ConnectionResetError("reset")):
+            response = MagicMock()
+            response.__enter__.return_value.read.side_effect = interruption
+            with self.subTest(interruption=type(interruption).__name__), patch(
+                "rag_textbook_qa.providers.remote.urlopen", return_value=response,
+            ):
+                self.assertEqual(provider.embed_queries(["question"]), [[1.0, 2.0]])
+                event = provider.telemetry.since(0)[-1]
+                self.assertTrue(event.fallback_used)
+                self.assertEqual(event.error_category, "TransientProviderError")
+        self.assertEqual(fallback.calls, 3)
+
+    def test_truncated_auth_error_body_still_fails_closed_without_fallback(self):
+        client = RemoteWorkerClient("http://worker", token="secret", timeout=1)
+        primary = RemoteEmbeddingProvider(client, "embedding-model")
+        fallback = StubEmbeddingProvider(primary.identity, [[1.0, 2.0]])
+        provider = FallbackEmbeddingProvider(primary, fallback)
+        error = HTTPError("http://worker/health", 401, "Unauthorized", {}, None)
+        error.read = MagicMock(side_effect=IncompleteRead(b'{"detail":', 10))
+        error.close = MagicMock()
+        with (
+            patch("rag_textbook_qa.providers.remote.urlopen", side_effect=error),
+            self.assertRaises(AuthenticationError),
+        ):
+            provider.embed_queries(["question"])
+        self.assertEqual(fallback.calls, 0)
+        error.close.assert_called_once()
+
+    def test_client_timeout_must_be_finite_and_positive_before_connecting(self):
+        for timeout in (float("nan"), float("inf"), -1, 0):
+            with self.subTest(timeout=timeout), self.assertRaises(ProviderError):
+                RemoteWorkerClient("http://worker", token=None, timeout=timeout)
 
     def test_remote_embedding_checks_health_once_and_preserves_input_type(self):
         client = FakeRemoteClient()
