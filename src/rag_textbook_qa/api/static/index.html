@@ -569,11 +569,18 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       body.textContent = "正在组织答案…";
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
+      let buffer = "", skipLF = false;
+      readEvents: for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const part = decoder.decode(value, { stream: true });
+        if (part) {
+          // SSE accepts LF, CRLF and CR. A CR at a chunk boundary already ends
+          // the line; consume its optional LF without creating a second line.
+          const next = skipLF ? part.replace(/^\n/, "") : part;
+          skipLF = part.endsWith("\r");
+          buffer += next.replace(/\r\n?/g, "\n");
+        }
         let boundary;
         while ((boundary = buffer.indexOf("\n\n")) !== -1) {
           const event = parseEvent(buffer.slice(0, boundary));
@@ -583,18 +590,23 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
             text += event.data.text;
             schedulePaint();
           } else if (event.name === "result") {
-            settled = true;
             cancelPaint();
             finish(card, event.data);
             if (event.data.status === "failed") addRetry(card, query, bookId);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
-            settled = true;
             cancelPaint();
             body.classList.remove("cursor", "progress");
             body.innerHTML = text ? renderMarkdown(text) : "";
             addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
             addRetry(card, query, bookId);
+          }
+          if (event.name === "result" || event.name === "error") {
+            settled = true;
+            // The terminal event completes the application response. Do not let
+            // a lingering connection, later chunk or socket error alter it.
+            reader.cancel().catch(() => {});
+            break readEvents;
           }
         }
       }

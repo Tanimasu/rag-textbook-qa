@@ -48,6 +48,7 @@ class Reply:
     http_status: int = 200
     detail: str = ""
     retry_after: str | None = None
+    line_ending: str = "\n"
 
 
 class FakeBackend(ThreadingHTTPServer):
@@ -106,8 +107,10 @@ class FakeHandler(BaseHTTPRequestHandler):
         else:
             self.json_response({"detail": "not found"}, 404)
 
-    def write_event(self, name: str, payload: dict[str, Any]) -> None:
-        frame = f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+    def write_event(self, name: str, payload: dict[str, Any], line_ending: str) -> None:
+        frame = line_ending.join(
+            [f"event: {name}", f"data: {json.dumps(payload, ensure_ascii=False)}", "", ""]
+        ).encode()
         # Split in the middle of a Chinese UTF-8 character as well as an SSE frame.
         # TCP may coalesce writes; the test also holds the final event behind a gate.
         split = next((i + 1 for i, value in enumerate(frame) if value >= 0xE0), 8)
@@ -149,11 +152,11 @@ class FakeHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         try:
             for name, data in reply.initial:
-                self.write_event(name, data)
+                self.write_event(name, data, reply.line_ending)
             if reply.gate is not None and not reply.gate.wait(timeout=10):
                 return
             for name, data in reply.final:
-                self.write_event(name, data)
+                self.write_event(name, data, reply.line_ending)
         except (BrokenPipeError, ConnectionResetError):
             # Stopping generation aborts the browser's fetch and closes this socket.
             pass
@@ -272,6 +275,80 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(self.backend.asks[1]["access_code"], "browser-test-code")
         self.expect(self.page.locator("#book")).to_have_value("os")
         self.expect_ready()
+
+    def test_valid_crlf_and_cr_streams_render_complete_answers(self) -> None:
+        self.open_page()
+        for ending in ("\r\n", "\r"):
+            with self.subTest(line_ending=repr(ending)):
+                self.backend.enqueue(
+                    Reply(final=[("result", answer_result())], line_ending=ending)
+                )
+                self.submit()
+                card = self.page.locator(".answer").last
+                self.expect(card.locator("strong")).to_have_text("进程")
+                self.expect(card.locator(".notice.error")).to_have_count(0)
+                self.expect_ready()
+
+    def test_crlf_stream_split_into_single_bytes(self) -> None:
+        # A Response body preserves these byte boundaries, unlike TCP, which may
+        # coalesce writes. Exercise both CR/LF and Chinese UTF-8 splits in-browser.
+        frame = "event: result\r\ndata: " + json.dumps(answer_result(), ensure_ascii=False) + "\r\n\r\n"
+        self.page.add_init_script(
+            """(frame => {
+              const original = window.fetch.bind(window);
+              window.fetch = (url, options) => {
+                if (url !== '/v1/ask/stream') return original(url, options);
+                const bytes = new TextEncoder().encode(frame);
+                let offset = 0;
+                return Promise.resolve(new Response(new ReadableStream({
+                  pull(controller) {
+                    if (offset === bytes.length) controller.close();
+                    else controller.enqueue(bytes.slice(offset, ++offset));
+                  }
+                }), { headers: { 'Content-Type': 'text/event-stream' } }));
+              };
+            })(""" + json.dumps(frame) + ");"
+        )
+        self.open_page()
+        self.submit()
+        self.expect(self.page.locator(".answer strong")).to_have_text("进程")
+        self.expect_ready()
+
+    def test_terminal_result_finishes_before_connection_closes(self) -> None:
+        gate = threading.Event()
+        self.backend.enqueue(
+            Reply(
+                initial=[("chunk", {"text": "临时片段"}), ("result", answer_result())],
+                final=[("chunk", {"text": "结果后的无效片段"})],
+                gate=gate,
+            )
+        )
+        self.open_page()
+        self.submit()
+        card = self.page.locator(".answer")
+        self.expect(card.locator("strong")).to_have_text("进程")
+        self.expect_ready()
+        self.assertFalse(gate.is_set(), "The terminal result must not wait for socket EOF")
+        gate.set()
+        self.expect(card.locator(".body")).not_to_contain_text("临时片段")
+        self.expect(card.locator(".body")).not_to_contain_text("无效片段")
+        self.expect(card.locator(".sources")).to_have_count(1)
+        self.expect(card.get_by_role("button", name="重试本题")).to_have_count(0)
+
+    def test_terminal_error_finishes_before_connection_closes(self) -> None:
+        gate = threading.Event()
+        self.backend.enqueue(
+            Reply(
+                initial=[("error", {"status": "busy", "message": "服务繁忙，请稍后重试。"})],
+                gate=gate,
+            )
+        )
+        self.open_page()
+        self.submit()
+        self.expect(self.page.locator(".notice.warn")).to_have_text("服务繁忙，请稍后重试。")
+        self.expect_ready()
+        self.assertFalse(gate.is_set(), "A terminal error must release the form immediately")
+        self.expect(self.page.get_by_role("button", name="重试本题")).to_have_count(1)
 
     def test_stream_error_and_incomplete_connection_offer_retry(self) -> None:
         self.backend.enqueue(
