@@ -228,6 +228,17 @@ class GuardTests(unittest.TestCase):
 
 
 class PublicResultTests(unittest.TestCase):
+    def test_indexed_cuda_devices_keep_the_public_device_family(self):
+        raw = FakeEngine().ask(query="q", use_llm=True)
+        for device, expected in (
+            ("cuda:0", "cuda"), ("CUDA:12", "cuda"), (" mps ", "mps"),
+            ("cuda:private-worker", "unknown"), ("cuda:-1", "unknown"),
+        ):
+            with self.subTest(device=device):
+                raw["execution"]["embedding"]["device"] = device
+                stage = public_result(raw, retrieval_only=None)["compute"]["embedding"]
+                self.assertEqual(stage["device"], expected)
+
     def test_internals_and_provider_error_text_never_leave(self):
         raw = FakeEngine(success=False, error=SECRET).ask(query="q", use_llm=True)
         payload = public_result(raw, retrieval_only=None)

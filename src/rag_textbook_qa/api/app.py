@@ -137,7 +137,9 @@ def _public_compute_stage(stage: Any) -> dict[str, Any] | None:
     backend = str(stage.get("backend") or "unknown").lower()
     if backend not in {"local", "remote", "mixed"}:
         backend = "unknown"
-    device = str(stage.get("device") or "unknown").lower()
+    device = str(stage.get("device") or "unknown").strip().lower()
+    if re.fullmatch(r"cuda:[0-9]+", device):
+        device = "cuda"
     if device not in {"cpu", "cuda", "mps", "mixed"}:
         device = "unknown"
     platform = str(stage.get("platform") or "unknown")

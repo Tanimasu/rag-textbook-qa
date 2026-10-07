@@ -4,6 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+from openai import OpenAI
+
 from rag_textbook_qa.llm import (
     GenerationCancelled,
     LLMClient,
@@ -269,6 +272,58 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(list(client.stream_answer("问题", should_stop=lambda: False)), ["A", "B"])
         self.assertTrue(stream.closed)
+
+    def test_terminal_chunk_completes_without_reading_more_upstream_data(self):
+        for reason, succeeds in (("stop", True), ("length", False)):
+            with self.subTest(reason=reason):
+                stream = FakeStream([answer_chunk("完整片段", reason), answer_chunk("多余内容")])
+                client = LLMClient(
+                    api_key="key", base_url="https://llm.example/v1",
+                    sdk_client=FakeSDKClient([stream]), verbose=False,
+                )
+                received = []
+                if succeeds:
+                    received.extend(client.stream_answer("问题", raise_on_error=True))
+                else:
+                    with self.assertRaises(LLMGenerationIncompleteError):
+                        received.extend(client.stream_answer("问题", raise_on_error=True))
+                self.assertEqual(received, ["完整片段"])
+                self.assertEqual(stream.pulled, 1, "A terminal marker must finish before socket EOF")
+                self.assertTrue(stream.closed)
+
+    def test_real_sdk_closes_transport_at_stop_without_waiting_for_eof(self):
+        class UpstreamBody(httpx.SyncByteStream):
+            closed = False
+
+            def __iter__(self):
+                yield (
+                    b'data: {"id":"fixture","object":"chat.completion.chunk","created":0,'
+                    b'"model":"fixture","choices":[{"index":0,"delta":{"content":"answer"},'
+                    b'"finish_reason":"stop"}]}\r\n\r\n'
+                )
+                raise AssertionError("Client read upstream after a complete answer")
+
+            def close(self):
+                self.closed = True
+
+        body = UpstreamBody()
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=body)
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as transport, OpenAI(
+            api_key="fixture-key", base_url="http://fixture.invalid/v1", http_client=transport,
+            max_retries=0,
+        ) as sdk:
+            client = LLMClient(
+                api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                sdk_client=sdk, verbose=False,
+            )
+            self.assertEqual(list(client.stream_answer("question", raise_on_error=True)), ["answer"])
+            self.assertTrue(body.closed)
+            self.assertEqual(len(requests), 1)
 
     def test_stream_can_raise_errors_for_engine_handling(self):
         client = LLMClient(

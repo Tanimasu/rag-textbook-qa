@@ -86,3 +86,14 @@ python scripts/check_remote_transport.py --output artifacts/evaluations/remote-a
 
 这里的 HTTP Worker 是本机模拟器，验证截断响应的整批回退、错误分类和恢复。
 真实 CUDA 与模拟故障的结果分别记录在 [远程验收记录](iteration-20261007-remote.md)。
+
+## 生成流结束条件
+
+使用实际 SDK 请求本机模拟的完成接口，不需要模型或 API 凭据：
+
+```bash
+python scripts/check_generation_transport.py --output artifacts/evaluations/generation-transport.json
+```
+
+验证正常 / 截断终止标记无需等待上游关闭连接，以及缺少结束标记的响应被判为不完整。
+只测试传输和结束处理，不衡量生成质量。

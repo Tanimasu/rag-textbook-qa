@@ -69,6 +69,9 @@ jobs:
       - name: Verify interrupted Worker responses over real HTTP
         run: uv run --no-sync python scripts/check_remote_transport.py --output artifacts/evaluations/ci/remote-transport.json
 
+      - name: Verify generation terminal markers over real HTTP
+        run: uv run --no-sync python scripts/check_generation_transport.py --output artifacts/evaluations/ci/generation-transport.json
+
       - name: Repeat Windows Chroma lifecycle regressions
         if: runner.os == 'Windows'
         run: uv run --no-sync python scripts/check_index_lifecycle.py --iterations 25 --output artifacts/evaluations/ci/index-lifecycle.json

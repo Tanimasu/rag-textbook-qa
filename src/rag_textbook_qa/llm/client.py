@@ -265,6 +265,10 @@ class LLMClient:
                 content = getattr(delta, "content", None)
                 if content:
                     yield content
+                if chunk_finish_reason is not None:
+                    # One choice is requested. Its terminal marker completes the
+                    # answer even if the upstream leaves its HTTP stream open.
+                    break
             if finish_reason != "stop":
                 raise LLMGenerationIncompleteError(
                     _incomplete_generation_message(finish_reason)
