@@ -10,6 +10,14 @@ import streamlit as st
 from rag_textbook_qa.web.constants import RAGAS_METRIC_LABELS
 
 
+def _question_labels(results: Any) -> list[str]:
+    indices = (
+        results["question_index"] if "question_index" in results.columns
+        else range(1, len(results) + 1)
+    )
+    return [f"Q{int(index)}" for index in indices]
+
+
 def render_eval_tab(
     load_ragas_results: Callable[[], Any],
     run_ragas_evaluation: Callable[[], Any],
@@ -94,7 +102,7 @@ def _render_score_chart(results: Any, metric_cols: list[str], question_col: str 
         )
 
     chart_df = results.copy()
-    chart_df["题号"] = [f"Q{index + 1}" for index in range(len(chart_df))]
+    chart_df["题号"] = _question_labels(results)
     chart_df["平均分"] = chart_df[metric_cols].mean(axis=1).round(3)
     chart_df["问题"] = chart_df[question_col] if question_col else chart_df["题号"]
     if sort_mode != "原始顺序":
@@ -132,7 +140,8 @@ def _render_results_table(
 ) -> None:
     st.subheader("详细结果")
     display_df = results.copy()
-    display_df["题号"] = [f"Q{index + 1}" for index in range(len(display_df))]
+    display_df["题号"] = _question_labels(results)
+    display_df = display_df.drop(columns=["question_index"], errors="ignore")
     if question_col:
         display_df = display_df.rename(columns={question_col: "问题"})
 
@@ -166,7 +175,12 @@ def _render_results_table(
             display_df["问题"].astype(str).str.contains(search_text, case=False, na=False)
         ]
     display_df = display_df[display_df["平均分"] <= score_threshold]
-    display_df = display_df.sort_values(sort_column, ascending=sort_desc == "升序")
+    display_df = display_df.sort_values(
+        sort_column,
+        ascending=sort_desc == "升序",
+        key=lambda values: values.str.removeprefix("Q").astype(int)
+        if values.name == "题号" else values,
+    )
     for column in display_df.select_dtypes(include="number").columns:
         display_df[column] = display_df[column].round(3)
 

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
 class OrdinaryWebWorkflowTests(unittest.TestCase):
-    def app(self, engine=None, error=None):
+    def app(self, engine=None, error=None, results=None):
         from streamlit.testing.v1 import AppTest
 
         from rag_textbook_qa.web import services
@@ -21,13 +21,28 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
                 services, "load_available_books", return_value=[("操作系统", "os"), ("全部", None)]
             )
         )
-        self.enterContext(patch.object(services, "load_ragas_results", return_value=None))
+        self.enterContext(patch.object(services, "load_ragas_results", return_value=results))
         loader = self.enterContext(
             patch.object(services, "load_engine", return_value=engine, side_effect=error)
         )
         return AppTest.from_file(str(ROOT / "src/rag_textbook_qa/web/app.py")).run(
             timeout=20
         ), loader
+
+    def test_evaluation_view_preserves_original_question_ids_and_numeric_order(self):
+        import pandas as pd
+
+        for indices in (None, [2, 10]):
+            with self.subTest(indices=indices):
+                results = pd.DataFrame({"question": ["问题甲", "问题乙"], "faithfulness": [0.8, 0.6]})
+                if indices is not None:
+                    results["question_index"] = indices
+                app, _ = self.app(results=results)
+                self.assertFalse(app.exception)
+                expected = ["Q1", "Q2"] if indices is None else ["Q2", "Q10"]
+                self.assertEqual(list(app.dataframe[0].value["题号"]), expected)
+                self.assertEqual(list(app.dataframe[1].value["题号"]), list(reversed(expected)))
+                self.assertNotIn("question_index", app.dataframe[1].value.columns)
 
     def test_streaming_answer_sources_history_clear_and_defaults(self):
         engine = MagicMock()
