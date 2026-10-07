@@ -321,7 +321,7 @@ class RAGEngine:
         self._index_revision: str | None = None
         try:
             self.refresh_index_if_changed()
-        except Exception:
+        except BaseException:
             self.vectorizer.close()
             raise
 
@@ -378,6 +378,9 @@ class RAGEngine:
                     print(f"LLM 初始化失败: {exc}")
                     print("将只提供检索功能，不生成答案")
                 self.enable_llm = False
+            except BaseException:
+                self.vectorizer.close()
+                raise
 
         if self.verbose:
             print("RAG 引擎初始化完成\n")

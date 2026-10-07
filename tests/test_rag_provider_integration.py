@@ -281,6 +281,31 @@ class RagProviderIntegrationTests(unittest.TestCase):
             RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider())
         vectorizer.close.assert_called_once_with()
 
+    def test_interrupted_keyword_initialization_closes_the_open_index(self):
+        vectorizer = MagicMock()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider(), enable_reranker=False)
+        vectorizer.close.assert_called_once_with()
+
+    def test_unexpected_llm_initialization_failure_closes_the_open_index(self):
+        for error in (KeyboardInterrupt(), Exception("SDK setup failed")):
+            with self.subTest(error=type(error).__name__):
+                vectorizer = MagicMock()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+                    patch.object(RAGEngine, "refresh_index_if_changed"),
+                    patch("rag_textbook_qa.rag.engine.create_llm_client", side_effect=error),
+                    self.assertRaises(type(error)),
+                ):
+                    RAGEngine(embedding_provider=FakeEmbeddingProvider(), enable_reranker=False)
+                vectorizer.close.assert_called_once_with()
+
     def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
         with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
