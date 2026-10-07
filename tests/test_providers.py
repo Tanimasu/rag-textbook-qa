@@ -21,6 +21,7 @@ from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
     RemoteEmbeddingProvider,
+    RemoteRerankerProvider,
     RemoteWorkerClient,
 )
 
@@ -73,6 +74,35 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_remote_health_is_rechecked_after_an_interrupted_worker(self):
+        for provider_type in (RemoteEmbeddingProvider, RemoteRerankerProvider):
+            with self.subTest(provider=provider_type.__name__):
+                client = MagicMock()
+                provider = provider_type(client, "model")
+                payload = {"fingerprint": provider.identity.fingerprint,
+                           "embeddings": [[1.0, 0.0]], "scores": [0.9]}
+                def health(device, platform, provider=provider):
+                    return {"device": device, "platform": platform,
+                            "models": {provider.identity.task: provider.identity.as_dict()}}
+                client.request.side_effect = [
+                    health("cuda", "Windows"), payload,
+                    TransientProviderError("worker restarted"),
+                    health("cpu", "Linux"), payload,
+                ]
+                def invoke(provider=provider):
+                    if provider.identity.task == "embedding":
+                        return provider.embed_queries(["question"])
+                    return provider.rerank("question", ["document"])
+                invoke()
+                with self.assertRaises(TransientProviderError):
+                    invoke()
+                invoke()
+                calls = provider.telemetry.since(0)
+                self.assertEqual(calls[0].device, "cuda")
+                self.assertEqual(calls[-1].device, "cpu")
+                self.assertEqual(calls[-1].platform, "Linux")
+                self.assertEqual(sum(call.args[0] == "/health" for call in client.request.call_args_list), 2)
+
     def test_local_reranker_batches_without_reordering_documents(self):
         provider = create_reranker_provider(ComputeSettings(device="cpu", reranker_batch_size=8))
         scores = [0.2, 0.9, 0.1]

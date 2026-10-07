@@ -147,6 +147,8 @@ class _RemoteProvider:
             raise ModelMismatchError(
                 f"本地期望 {self.identity.model}，远程配置为 {remote.get('model', '未知')}"
             )
+        self.remote_device = "remote"
+        self.remote_platform = None
         device = health.get("device")
         if isinstance(device, str) and device.strip():
             self.remote_device = device.strip().lower()
@@ -210,6 +212,8 @@ class RemoteEmbeddingProvider(_RemoteProvider):
             result = validate_embeddings(embeddings, len(values))
         except Exception as exc:
             self._record_call(started, success=False, error_category=type(exc).__name__)
+            if isinstance(exc, TransientProviderError):
+                self._health_verified = False
             raise
         self._record_call(started, success=True)
         return result
@@ -245,6 +249,8 @@ class RemoteRerankerProvider(_RemoteProvider):
                 result.extend(validate_scores(response.get("scores"), len(batch)))
         except Exception as exc:
             self._record_call(started, success=False, error_category=type(exc).__name__)
+            if isinstance(exc, TransientProviderError):
+                self._health_verified = False
             raise
         self._record_call(started, success=True)
         return result

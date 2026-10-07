@@ -24,7 +24,7 @@ from rag_textbook_qa.providers.remote import (
 
 def run() -> dict:
     identity = ModelIdentity(task="reranker", model="fixture-model")
-    state = {"mode": "cut_second_batch", "batches": []}
+    state = {"mode": "cut_second_batch", "batches": [], "health_checks": 0}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -41,11 +41,15 @@ def run() -> dict:
             self.close_connection = True
 
         def do_GET(self):
+            state["health_checks"] += 1
             if state["mode"] in {"auth", "model"}:
                 self.respond(401 if state["mode"] == "auth" else 409, {"detail": "fixture rejection"}, truncate=True)
             else:
-                self.respond(200, {"status": "ok", "protocol_version": "1", "device": "cpu",
-                                   "platform": "Linux", "models": {"reranker": identity.as_dict()}})
+                restarting = state["mode"] == "cut_second_batch"
+                self.respond(200, {"status": "ok", "protocol_version": "1",
+                                   "device": "cuda" if restarting else "cpu",
+                                   "platform": "Windows" if restarting else "Linux",
+                                   "models": {"reranker": identity.as_dict()}})
 
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -78,6 +82,9 @@ def run() -> dict:
         state["mode"] = "healthy"
         assert provider.rerank("question", documents) == [0.1] * 150
         assert not provider.telemetry.since(0)[-1].fallback_used
+        assert provider.telemetry.since(0)[-1].device == "cpu"
+        assert provider.telemetry.since(0)[-1].platform == "Linux"
+        assert state["health_checks"] == 2
         assert fallback.rerank.call_count == 1
         for mode, expected in (("auth", AuthenticationError), ("model", ModelMismatchError),
                                ("malformed", ProviderProtocolError)):
@@ -98,6 +105,7 @@ def run() -> dict:
             raise RuntimeError("Loopback Worker did not stop")
     return {"complete": True, "backend": "local fake HTTP Worker; no models", "checks": {
         "truncated_second_batch_recomputes_full_input": True, "healthy_remote_recovers": True,
+        "recovered_worker_health_and_device_are_refreshed": True,
         "truncated_401_does_not_fallback": True, "truncated_409_does_not_fallback": True,
         "malformed_provider_payload_does_not_fallback": True,
     }}
