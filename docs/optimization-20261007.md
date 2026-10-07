@@ -28,8 +28,11 @@ Windows、Linux、macOS × 两种 Python，Chromium 和发布包八个任务全�
 两条路线均能立即返回 422，解除目录等待后原请求均返回 200。
 原有容量 3、8 请求中 3 个成功 / 5 个 503、排队断连释放、活跃取消持槽及线程峰值 1 均通过，
 最终待处理数为 0、生成额度仍为 200。该检查使用受控无模型引擎，不能作为模型延迟结果。
-完整结果为本地忽略文件 `artifacts/evaluations/serving-queue-20261007-catalog.json`；
+完整结果为本地忽略文件 `artifacts/evaluations/serving-queue-20261007/catalog.json`；
 `scripts/check_serving_queue.py` 已包含此场景供跨平台 CI 复核。
+修复提交 `6cbb719` 的 [PR CI](https://github.com/Tanimasu/rag-textbook-qa/actions/runs/37603174122)
+八个任务全部通过，六个系统 / Python 组合均通过上述真实 HTTP 场景，
+两种 Windows Python 均通过 25 轮索引生命周期检查。
 
 ## 全库候选预算的实际耗时
 
