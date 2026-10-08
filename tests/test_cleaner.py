@@ -148,6 +148,19 @@ if（ready），return；
                 clean_markdown(source, output, overwrite=True)
             self.assertEqual(source.read_text(encoding="utf-8"), original)
 
+    def test_direct_cleaner_rejects_the_source_and_its_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "book.md"
+            alias = Path(directory) / "alias.md"
+            original = "## 第1章 原始教材\n"
+            source.write_text(original, encoding="utf-8")
+            os.link(source, alias)
+            for destination in (source, alias):
+                with self.subTest(destination=destination):
+                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                        SmartMarkdownCleaner().clean(source, destination)
+                    self.assertEqual(source.read_text(encoding="utf-8"), original)
+
 
 if __name__ == "__main__":
     unittest.main()

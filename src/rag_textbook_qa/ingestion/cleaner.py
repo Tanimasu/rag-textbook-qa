@@ -210,6 +210,7 @@ class SmartMarkdownCleaner:
         """执行完整清洗流程并返回清洗后的 Markdown。"""
         input_path = Path(input_path)
         output_path = Path(output_path)
+        validate_output_paths([input_path], [output_path])
 
         print("=" * 70)
         print("🚀 智能 Markdown 清洗 V4")
