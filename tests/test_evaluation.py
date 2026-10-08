@@ -320,6 +320,8 @@ class EvaluationTests(unittest.TestCase):
             engine.ask.return_value = {
                 "success": True,
                 "answer": "进程是程序的一次执行过程。",
+                "llm_response": {"finish_reason": "stop", "model": "saved-generator"},
+                "prompt": "实际完整提示词",
                 "context": "[os - 第1章 - 进程]\n实际提供的上下文",
                 "context_sources": [
                     {"context_text": "[os - 第1章 - 进程]\n"},
@@ -336,6 +338,7 @@ class EvaluationTests(unittest.TestCase):
             }
             questions = [
                 {
+                    "id": "process-01",
                     "question": "什么是进程？",
                     "book_name": "os",
                     "ground_truth": "标准答案",
@@ -361,6 +364,13 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(len(dataset["contexts"][0]), 2)
         self.assertNotIn("教材上下文", dataset["contexts"][0][0])
         self.assertEqual(comparison[0]["ground_truth"], "标准答案")
+        self.assertEqual(comparison[0]["question_id"], "process-01")
+        self.assertEqual(comparison[0]["context"], engine.ask.return_value["context"])
+        self.assertEqual(comparison[0]["contexts"], dataset["contexts"][0])
+        self.assertEqual(comparison[0]["context_sources"], engine.ask.return_value["context_sources"])
+        self.assertEqual(comparison[0]["finish_reason"], "stop")
+        self.assertEqual(comparison[0]["generation_model"], "saved-generator")
+        self.assertEqual(comparison[0]["prompt"], "实际完整提示词")
         engine.ask.assert_called_once_with(
             query="什么是进程？",
             book_name="os",

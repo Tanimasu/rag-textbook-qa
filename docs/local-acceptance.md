@@ -2,6 +2,28 @@
 
 所有命令从仓库根目录运行。输出路径必须未使用过；原教材、索引和评测集保持原样。
 
+## 已存回答的离线复核
+
+先复用已保存的问答，不调用生成或评判 API：
+
+```bash
+python scripts/prepare_answer_review.py \
+  --questions data/evaluation/product_acceptance_v1.json \
+  --saved-answers artifacts/evaluations/product-acceptance-v1/ragas-20260918/ragas_qa_comparison.json \
+  --output-dir artifacts/evaluations/answer-quality-20261008/product-review \
+  --run-label '2026-09-18 历史回答，不代表当前版本'
+```
+
+输出 `review.json`、`review.md` 与 `manifest.json`。按问题正文精确对应已存回答，检查答案要点、
+教材编号、可用的原题号、证据文件 SHA-256 和行段。重复问题、不同答案要点或陈旧证据会阻止导出；
+缺失回答、未匹配回答、未记录上下文与结束状态会单独计数，所有质量判定保持空白。
+现有输出目录不可覆盖，导出失败不发布半份复核包。
+
+教材审核行段不是生成时的上下文，不能用它补认旧答案的引用编号。新 RAGAS 问答导出同时保存
+实际上下文、资料编号与正文、提示词、原题号、生成模型与结束状态；评分输入 schema 保持不变。
+保留导出的模板，另存复核副本。模型复核须标明来源，不能描述为独立人工金标准。
+冻结验收题只用于验收和问题归类，不用于调整检索参数或评判规则。
+
 ## 缓存模型 HTTP 验收
 
 使用装有 `local-models`、`api` 和 `requests` 的环境，并确保两个 BGE 模型已缓存。

@@ -419,13 +419,30 @@ class RAGASEvaluator:
                 contexts.append(source_blocks or [actual_context])
                 ground_truths.append(ground_truth)
                 self._rag_question_indices.append(index)
+                llm_response = result.get("llm_response") or {}
                 qa_records.append(
                     {
                         "question_index": index,
+                        "question_id": item.get("id"),
                         "book_name": item.get("book_name"),
                         "question": question,
                         "answer": answer,
                         "ground_truth": ground_truth,
+                        # Preserve what the generator actually saw, rather than
+                        # reconstructing citations from a later index revision.
+                        "context": actual_context,
+                        "contexts": source_blocks or [actual_context],
+                        "context_sources": [
+                            {key: source[key] for key in (
+                                "citation_id", "book_name", "chunk_id", "chapter",
+                                "section_h2", "section_h3", "section_h4", "content",
+                                "context_text", "truncated", "table_compacted",
+                            ) if key in source}
+                            for source in result.get("context_sources", [])
+                        ],
+                        "prompt": result.get("prompt"),
+                        "finish_reason": llm_response.get("finish_reason"),
+                        "generation_model": llm_response.get("model"),
                     }
                 )
                 preview = f"{answer[:300]}{'...' if len(answer) > 300 else ''}"
