@@ -156,7 +156,12 @@ def validate_generation_cases(cases: Sequence[GenerationCase]) -> None:
 def load_generation_cases(path: str | Path) -> list[GenerationCase]:
     """Load frozen cases, refusing sources that are not part of their context."""
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return generation_cases_from_payload(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def generation_cases_from_payload(payload: Any) -> list[GenerationCase]:
+    """Validate cases parsed from an already captured input snapshot."""
+
     if not isinstance(payload, Mapping):
         raise TypeError("题集必须是包含 cases 的对象")
     cases = []

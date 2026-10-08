@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -33,6 +34,34 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
+    def test_protocol_hash_describes_loaded_snapshot_if_file_changes_during_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = workspace(root)
+            original = path.read_bytes()
+            payload = json.loads(original)
+
+            def create_pair():
+                payload["cases"][0]["question"] = "客户端初始化期间换了一道题"
+                path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                return fake_client("generator"), fake_client("judge"), {}
+
+            report = {"planned": 0, "generated": 0, "completed": 0, "incomplete": 0,
+                      "truncated": 0, "empty_answers": 0, "judged": 0,
+                      "reference_arm": "hot", "arms": {}, "comparisons": {}}
+            with (
+                patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env",
+                      side_effect=create_pair),
+                patch("rag_textbook_qa.evaluation.generation_runner.run_generation_experiment",
+                      return_value=report) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                      "--arm", "hot=baseline@0.7", "--output-dir", str(root / "output")])
+            self.assertEqual(run.call_args.args[0][0].question, "什么是进程？")
+            self.assertEqual(run.call_args.kwargs["protocol"]["cases_sha256"],
+                             hashlib.sha256(original).hexdigest())
+
     def test_dry_run_counts_generated_and_stored_samples_without_clients_or_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

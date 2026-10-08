@@ -674,7 +674,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     import hashlib
     from urllib.parse import urlsplit
 
-    from rag_textbook_qa.evaluation.generation import load_generation_cases, parse_arm
+    from rag_textbook_qa.evaluation.generation import generation_cases_from_payload, parse_arm
     from rag_textbook_qa.evaluation.generation_runner import (
         generation_call_plan,
         llm_pair_from_env,
@@ -692,7 +692,9 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         if value <= 0:
             raise ValueError(f"{option} 必须大于 0")
     arms = [parse_arm(spec) for spec in args.arm]
-    cases = load_generation_cases(args.cases)
+    cases_bytes = args.cases.read_bytes()
+    cases = generation_cases_from_payload(json.loads(cases_bytes.decode("utf-8")))
+    cases_sha256 = hashlib.sha256(cases_bytes).hexdigest()
     sample_keys(cases, arms, args.samples, args.seed)
     if args.dry_run:
         from rag_textbook_qa.llm.client import LLMSettings
@@ -707,7 +709,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         print(json.dumps({
             "mode": "dry_run",
             "models": {"generator": generator_model, "judge": judge_model},
-            "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
+            "cases_sha256": cases_sha256,
             "max_tokens": args.max_tokens,
             **generation_call_plan(cases, arms, args.samples, args.seed),
             "model_calls": 0,
@@ -720,7 +722,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         cleanup.callback(generator_llm.close)
         cleanup.callback(judge_llm.close)
         protocol = {
-            "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
+            "cases_sha256": cases_sha256,
             "generator": {
                 "host": urlsplit(generator_llm.base_url).hostname,
                 "model": generator_llm.default_model,
