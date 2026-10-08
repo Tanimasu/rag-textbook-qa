@@ -261,14 +261,28 @@ def _section_number(text: str) -> tuple[str, ...] | None:
     return tuple(match[1].split(".")) if match else None
 
 
+def _matches_marker(result: dict[str, Any], marker: str) -> bool:
+    wanted = _section_number(marker)
+    normalized_marker = _normalized(marker)
+    if wanted is None:
+        return normalized_marker in _normalized(result_section(result))
+    headings = [str(result[field]) for field in ("section_h2", "section_h3", "section_h4")
+                if result.get(field)]
+    for index, heading in enumerate(headings):
+        number = _section_number(heading)
+        if (number is not None and number[:len(wanted)] == wanted
+                and _normalized(" > ".join(headings[index:])).startswith(normalized_marker)):
+            return True
+    return False
+
+
 def grade_result(result: dict[str, Any], markers: Sequence[str]) -> int:
     """Grade exact headings, same-depth siblings and explicit chapters.
 
     Local list numbers such as 1.OS are not chapter identifiers. Without a
     numbered annotation, only an exact heading match can establish relevance.
     """
-    path = _normalized(result_section(result))
-    if any(_normalized(marker) in path for marker in markers):
+    if any(_matches_marker(result, marker) for marker in markers):
         return EXACT_GRADE
     sections = [_section_number(str(result.get(field, "")))
                 for field in ("section_h2", "section_h3", "section_h4")]
@@ -358,11 +372,10 @@ def score_ranked_results(
         section = result_section(result)
         top_sections.append(section)
         grades.append(grade_result(result, list(expected.values())))
-        normalized_section = _normalized(section)
         current_matches = {
             marker
-            for normalized_marker, marker in expected.items()
-            if normalized_marker in normalized_section
+            for marker in expected.values()
+            if _matches_marker(result, marker)
         }
         if current_matches and first_relevant_rank is None:
             first_relevant_rank = rank

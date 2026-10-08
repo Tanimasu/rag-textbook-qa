@@ -67,6 +67,22 @@ class FakeRetrievalEngine:
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_section_number_markers_do_not_match_other_numbers_as_substrings(self):
+        for marker, heading, chapter, expected_grade in (
+            ("3.5", "13.5 调度", "第13章", 0),
+            ("3.5", "3.50 调度", "第3章", 2),
+            ("3.5.3", "3.5.30 调度", "第3章", 2),
+            ("3.5", "3.5.3 调度", "第3章", 3),
+            ("3.5 死锁", "13.5 死锁", "第13章", 0),
+            ("3.5 死锁", "3.5 死锁概述", "第3章", 3),
+        ):
+            with self.subTest(marker=marker, heading=heading):
+                row = {"chapter": chapter, "section_h3": heading}
+                self.assertEqual(grade_result(row, [marker]), expected_grade)
+                score = score_ranked_results([row], [marker], top_k=1)
+                self.assertEqual(score["recall_at_k"], float(expected_grade == 3))
+                self.assertEqual(score["reciprocal_rank"], float(expected_grade == 3))
+
     def test_ranked_deduplication_keeps_same_id_from_distinct_books(self):
         rows = [
             {"chunk_id": "same", "book_name": "os", "section_h2": "调度"},
@@ -75,6 +91,16 @@ class RetrievalEvaluationTests(unittest.TestCase):
         score = score_ranked_results(rows, ["调度", "事务"], top_k=2)
         self.assertEqual(score["recall_at_k"], 1.0)
         self.assertEqual(len(score["grades"]), 2)
+
+    def test_compound_section_marker_preserves_the_full_heading_hierarchy(self):
+        row = {"chapter": "第7章", "section_h2": "7.3　索引", "section_h3": "7.3.2 索引类型",
+               "section_h4": "1.根据索引特征进行分类"}
+        marker = "7.3.2 索引类型 > 1.根据索引特征进行分类"
+        self.assertEqual(grade_result(row, [marker]), 3)
+        self.assertEqual(score_ranked_results([row], [marker])["recall_at_k"], 1.0)
+        unrelated = {**row, "section_h3": "17.3.2 索引类型"}
+        self.assertNotEqual(grade_result(unrelated, [marker]), 3)
+        self.assertEqual(score_ranked_results([unrelated], [marker])["recall_at_k"], 0.0)
 
     def test_loads_validated_questions(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
