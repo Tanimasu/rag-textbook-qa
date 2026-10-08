@@ -14,6 +14,19 @@ Streamlit 每次评估保存到 `artifacts/evaluations/ragas-runs/` 下独立的
 运行中中断会撤销排队的生成 / 评判样本，已开始的样本允许完成并保存；续跑会跳过完成结果。
 中断不会强行终止正在执行的网络调用或样本内部的重试。
 
+付费运行前可用相同参数加 `--dry-run`，先校验冻结输入并查看模型与调用计划：
+
+```bash
+rag-qa evaluate-generation --cases 冻结题集.json \
+  --arm product=current@0.7 --samples 1 --concurrency 1 --max-tokens 2000 \
+  --output-dir artifacts/evaluations/新的生成实验 --dry-run
+```
+
+计划不创建客户端或结果目录，也不扣除续跑目录的已有结果。常规评判按每份拆分、核对各一次估算，
+无事实或生成失败时会减少；最多请求数另包含暂时错误重试和格式修复。
+请求次数与 `max_tokens` 不是计费 token 或费用上限，费用估算留空；仍需结合供应商价格、推理 token
+策略和实际输出预算确认。该预检不验证凭据、服务连接或旧输出目录是否可续跑。
+
 ## 已存回答的离线复核
 
 先复用已保存的问答，不调用生成或评判 API：

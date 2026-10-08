@@ -49,6 +49,7 @@ Judge = Callable[[str], str]
 Key = tuple[str, str, int]
 
 JUDGE_ATTEMPTS = 3
+PROVIDER_ATTEMPTS = 4
 # Bump whenever what the judge sees or how its output is scored changes, so a
 # directory judged under older rules refuses to resume under newer ones.
 JUDGE_VERSION = 4
@@ -60,7 +61,7 @@ TRANSIENT_ERRORS = frozenset(
 def with_retries(
     call: Callable[[], Any],
     *,
-    attempts: int = 4,
+    attempts: int = PROVIDER_ATTEMPTS,
     delay: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[Any, int]:
@@ -244,6 +245,29 @@ def sample_keys(
             keys.extend((case.case_id, arm.name, index) for index in range(count))
     random.Random(seed).shuffle(keys)
     return keys
+
+
+def generation_call_plan(
+    cases: Sequence[GenerationCase], arms: Sequence[Arm], samples: int, seed: int,
+) -> dict[str, Any]:
+    """Count a complete CLI plan without clients, outputs or paid requests.
+
+    Existing completed outputs are not deducted. Verification may be skipped
+    when extraction finds no facts; failed/incomplete samples are not judged.
+    """
+
+    keys = sample_keys(cases, arms, samples, seed)
+    generated_arms = {arm.name for arm in arms if arm.temperature is not None}
+    generated = sum(arm_name in generated_arms for _, arm_name, _ in keys)
+    return {
+        "planned_samples": len(keys),
+        "new_generation_samples": generated,
+        "stored_samples": len(keys) - generated,
+        "nominal_judge_calls_if_all_complete": 2 * len(keys),
+        "max_generation_http_attempts": PROVIDER_ATTEMPTS * generated,
+        "max_judge_http_attempts": 2 * JUDGE_ATTEMPTS * PROVIDER_ATTEMPTS * len(keys),
+        "resume_outputs_deducted": False,
+    }
 
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:

@@ -213,6 +213,9 @@ def build_parser() -> argparse.ArgumentParser:
     generation_evaluate.add_argument("--concurrency", type=int, default=3)
     generation_evaluate.add_argument("--seed", type=int, default=0)
     generation_evaluate.add_argument("--max-tokens", type=int, default=2000)
+    generation_evaluate.add_argument(
+        "--dry-run", action="store_true", help="校验题集并显示完整调用计划，不创建客户端或结果目录",
+    )
 
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
@@ -673,6 +676,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
 
     from rag_textbook_qa.evaluation.generation import load_generation_cases, parse_arm
     from rag_textbook_qa.evaluation.generation_runner import (
+        generation_call_plan,
         llm_pair_from_env,
         openai_generator,
         openai_judge,
@@ -690,6 +694,27 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     arms = [parse_arm(spec) for spec in args.arm]
     cases = load_generation_cases(args.cases)
     sample_keys(cases, arms, args.samples, args.seed)
+    if args.dry_run:
+        from rag_textbook_qa.llm.client import LLMSettings
+
+        shared_model = LLMSettings.from_env().model
+        generator_model = (os.getenv("RAG_MODEL") or shared_model).strip()
+        judge_model = (os.getenv("RAGAS_MODEL") or shared_model).strip()
+        if not generator_model or not judge_model:
+            raise ValueError("生成 / 评判模型不能为空")
+        if generator_model == judge_model:
+            raise ValueError("评判模型与生成模型相同；请设置 RAGAS_MODEL")
+        print(json.dumps({
+            "mode": "dry_run",
+            "models": {"generator": generator_model, "judge": judge_model},
+            "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
+            "max_tokens": args.max_tokens,
+            **generation_call_plan(cases, arms, args.samples, args.seed),
+            "model_calls": 0,
+            "cost_estimate": None,
+            "scope": "完整计划，未扣除续跑结果；请求次数不是计费 token 或费用上限。",
+        }, ensure_ascii=False, indent=2))
+        return 0
     generator_llm, judge_llm, extra = llm_pair_from_env()
     with ExitStack() as cleanup:
         cleanup.callback(generator_llm.close)

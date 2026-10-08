@@ -33,6 +33,40 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
+    def test_dry_run_counts_generated_and_stored_samples_without_clients_or_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = workspace(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["cases"][0]["variants"]["baseline"]["answers"] = ["存档一", "存档二"]
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            stdout = io.StringIO()
+            destination = root / "intended-run"
+            with (
+                patch.dict(os.environ, {"LLM_API_KEY": SECRET, "LLM_MODEL": "shared",
+                                        "RAG_MODEL": "generator", "RAGAS_MODEL": "judge"}, clear=True),
+                patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env") as pair,
+                patch("rag_textbook_qa.evaluation.generation_runner.run_generation_experiment") as run,
+                contextlib.redirect_stdout(stdout),
+            ):
+                main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                      "--arm", "hot=baseline@0.7", "--arm", "kept=baseline@stored",
+                      "--samples", "3", "--output-dir", str(destination), "--dry-run"])
+            plan = json.loads(stdout.getvalue())
+            self.assertEqual(plan["models"], {"generator": "generator", "judge": "judge"})
+            self.assertEqual(plan["planned_samples"], 5)
+            self.assertEqual(plan["new_generation_samples"], 3)
+            self.assertEqual(plan["stored_samples"], 2)
+            self.assertEqual(plan["nominal_judge_calls_if_all_complete"], 10)
+            self.assertEqual(plan["max_generation_http_attempts"], 12)
+            self.assertEqual(plan["max_judge_http_attempts"], 120)
+            self.assertEqual(plan["model_calls"], 0)
+            self.assertIsNone(plan["cost_estimate"])
+            self.assertNotIn(SECRET, stdout.getvalue())
+            pair.assert_not_called()
+            run.assert_not_called()
+            self.assertFalse(destination.exists())
+
     def test_invalid_frozen_answers_are_rejected_before_creating_clients(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
