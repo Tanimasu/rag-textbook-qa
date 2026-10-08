@@ -458,11 +458,37 @@ def _run_generation_experiment_locked(
         separators=(",", ":"),
     ).encode("utf-8")
     judge_prompts = (EXTRACTION_PROMPT + VERIFICATION_PROMPT).encode("utf-8")
+    # CLI file hashes are optional caller metadata. Bind the validated inputs
+    # here too: stored arms render no generation prompt, and requirements only
+    # reach the judge, so a prompt hash alone cannot protect resumed judgments.
+    frozen_cases = [
+        {
+            "case_id": case.case_id,
+            "question": case.question,
+            "requirements": list(case.requirements),
+            "variants": {
+                name: {
+                    "context": variant.context,
+                    "sources": [
+                        {"citation_id": source["citation_id"], "content": source["content"]}
+                        for source in variant.sources
+                    ],
+                    "answers": list(variant.answers),
+                }
+                for name, variant in case.variants.items()
+            },
+        }
+        for case in cases
+    ]
+    case_bytes = json.dumps(
+        frozen_cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
     settings = {
         **protocol,
         "arms": [asdict(arm) for arm in arms],
         "samples": samples,
         "seed": seed,
+        "frozen_cases_sha256": hashlib.sha256(case_bytes).hexdigest(),
         "generation_prompts_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
         "judge_prompts_sha256": hashlib.sha256(judge_prompts).hexdigest(),
         "judge_version": JUDGE_VERSION,

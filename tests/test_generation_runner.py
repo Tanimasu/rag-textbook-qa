@@ -171,6 +171,72 @@ class PairLifecycleTests(unittest.TestCase):
 
 
 class ProtocolPersistenceTests(unittest.TestCase):
+    def test_changed_requirements_cannot_reuse_generated_answer_judgments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("hot", "baseline", 0.7)]
+            run(output, arms)
+            generator, judge = MagicMock(), MagicMock()
+            with self.assertRaisesRegex(ValueError, "冻结"):
+                run_generation_experiment(
+                    [replace(CASE, requirements=("新的答案要点",))], arms, output_dir=output,
+                    generator=generator, judge=judge, samples=2, seed=0, concurrency=2,
+                    protocol={"generator": "fake"},
+                    prompt_builder=lambda question, context: question + context,
+                    log=lambda line: None,
+                )
+            generator.assert_not_called()
+            judge.assert_not_called()
+
+    def test_legacy_protocol_without_case_binding_cannot_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("kept", "baseline", None)]
+            run(output, arms)
+            path = output / "protocol.json"
+            protocol = json.loads(path.read_text(encoding="utf-8"))
+            del protocol["settings"]["frozen_cases_sha256"]
+            path.write_text(json.dumps(protocol, ensure_ascii=False), encoding="utf-8")
+            originals = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+            generator, judge = MagicMock(), MagicMock()
+            with self.assertRaisesRegex(ValueError, "冻结"):
+                run(output, arms, generator=generator, judge=judge)
+            generator.assert_not_called()
+            judge.assert_not_called()
+            for path, original in originals.items():
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_changed_frozen_inputs_cannot_reuse_stored_generations_or_judgments(self):
+        baseline = CASE.variants["baseline"]
+        changed_variants = (
+            replace(baseline, answers=("另一份存档回答",)),
+            replace(baseline, context=baseline.context + "\n补充资料。"),
+            replace(baseline, sources=({**SOURCE, "content": "资源分配和调度的一个独立单位"},)),
+        )
+        changed_cases = (
+            replace(CASE, question="进程的含义是什么？"),
+            replace(CASE, requirements=("回答必须解释调度",)),
+            *(replace(CASE, variants={"baseline": variant}) for variant in changed_variants),
+        )
+        for changed in changed_cases:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                arms = [Arm("kept", "baseline", None)]
+                run(output, arms)
+                originals = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+                generator, judge = MagicMock(), MagicMock()
+                with self.assertRaisesRegex(ValueError, "冻结"):
+                    run_generation_experiment(
+                        [changed], arms, output_dir=output, generator=generator, judge=judge,
+                        samples=2, seed=0, concurrency=2, protocol={"generator": "fake"},
+                        prompt_builder=lambda question, context: question + context,
+                        log=lambda line: None,
+                    )
+                generator.assert_not_called()
+                judge.assert_not_called()
+                for path, original in originals.items():
+                    self.assertEqual(path.read_bytes(), original)
+
     def test_prior_judge_version_cannot_resume_or_rewrite_existing_results(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
