@@ -24,6 +24,23 @@ python scripts/prepare_answer_review.py \
 保留导出的模板，另存复核副本。模型复核须标明来源，不能描述为独立人工金标准。
 冻结验收题只用于验收和问题归类，不用于调整检索参数或评判规则。
 
+## 已存评判的一致性复算
+
+已有陈述拆分、逐条复核标签与判定时，可以离线重算一致性：
+
+```bash
+python scripts/compare_judge_review.py \
+  --extracted artifacts/evaluations/generation-temperature-20260915/validation-v3/extracted.json \
+  --labels artifacts/evaluations/generation-temperature-20260915/validation-v3/labels.json \
+  --verified artifacts/evaluations/generation-temperature-20260915/validation-v3/verified.json \
+  --output artifacts/evaluations/answer-quality-20261008/judge-agreement.json
+```
+
+工具核对全部题号、事实陈述编号与正文；缺失、重复、额外判定和非整数 0/1 标签均被拒绝。
+输出混淆计数、Kappa、召回率、精确率、拆分遗漏和逐题分歧；无定义指标为 null。
+未调用模型，不产生新标签，不自动改变原验收门槛。结果只表示与提供标签的一致性，
+不认证审核者身份、独立性或盲标时序，也不能把历史 v3 结果称为当前 v4 验收。
+
 ## 缓存模型 HTTP 验收
 
 使用装有 `local-models`、`api` 和 `requests` 的环境，并确保两个 BGE 模型已缓存。

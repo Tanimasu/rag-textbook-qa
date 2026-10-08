@@ -180,9 +180,9 @@ def prepare_review(
     with tempfile.TemporaryDirectory(prefix=".answer-review-", dir=output.parent) as temporary:
         prepared = Path(temporary) / "export"
         prepared.mkdir()
-        (prepared / "review.json").write_text(rendered, encoding="utf-8")
-        (prepared / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        (prepared / "review.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
+        (prepared / "review.json").write_text(rendered, encoding="utf-8", newline="\n")
+        (prepared / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        (prepared / "review.md").write_text("\n".join(markdown) + "\n", encoding="utf-8", newline="\n")
         if output.exists():
             raise ValueError("输出目录已存在")
         prepared.rename(output)
