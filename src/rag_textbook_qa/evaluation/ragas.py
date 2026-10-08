@@ -528,10 +528,18 @@ class RAGASEvaluator:
         """Execute RAGAS metrics and return its evaluation result."""
 
         if metrics is None:
-            metrics = [self._faithfulness, self._context_precision]
+            references = dataset["ground_truth"] if "ground_truth" in dataset.column_names else []
+            complete_references = bool(references) and all(
+                isinstance(reference, str) and reference.strip() for reference in references
+            )
+            metrics = [self._faithfulness]
+            if complete_references:
+                metrics.append(self._context_precision)
+            else:
+                print("标准答案缺失或不完整：本批不计算需要标准答案的 Context Precision / Recall。")
             if self.embeddings:
                 metrics.append(self._answer_relevancy)
-            if "ground_truth" in dataset.column_names and any(dataset["ground_truth"]):
+            if complete_references:
                 metrics.append(self._context_recall)
 
         print("=" * 60)

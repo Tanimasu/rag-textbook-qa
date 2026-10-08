@@ -108,7 +108,8 @@ class RagasTransportTests(unittest.TestCase):
     def test_parallel_context_recall_uses_each_runs_judge(self):
         self.assert_parallel_clients("_context_recall")
 
-    def assert_failed_metric_attempts(self, status, expected, *, relevancy_samples=1):
+    def assert_failed_metric_attempts(self, status, expected, *, relevancy_samples=1,
+                                      default_metrics=False):
         self.enterContext(patch.dict(os.environ, {
             "RAGAS_DO_NOT_TRACK": "true", "LANGCHAIN_TRACING_V2": "false",
             "RAGAS_RELEVANCY_SAMPLES": str(relevancy_samples), "RAGAS_DISABLE_THINKING": "false",
@@ -156,7 +157,7 @@ class RagasTransportTests(unittest.TestCase):
                                              "answer": ["isolated answer"],
                                              "contexts": [["isolated evidence"]]})
                 metric = evaluator._faithfulness if relevancy_samples == 1 else evaluator._answer_relevancy
-                result = evaluator.evaluate(dataset, metrics=[metric])
+                result = evaluator.evaluate(dataset, metrics=None if default_metrics else [metric])
             self.assertTrue(result.to_pandas()[metric.name].isna().all())
             self.assertEqual(len(requests), expected)
             self.assertTrue(all(request["model"] == "isolated-model" for request in requests))
@@ -181,6 +182,9 @@ class RagasTransportTests(unittest.TestCase):
 
     def test_invalid_credentials_are_not_retried(self):
         self.assert_failed_metric_attempts(401, 1)
+
+    def test_default_metrics_accept_questions_without_reference(self):
+        self.assert_failed_metric_attempts(401, 2, default_metrics=True)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,33 @@ from rag_textbook_qa.evaluation.ragas import (
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_reference_metrics_require_a_complete_nonblank_reference_column(self):
+        for references, expected in (
+            (None, ["faithfulness", "answer_relevancy"]),
+            (["", ""], ["faithfulness", "answer_relevancy"]),
+            (["标准答案", " \n "], ["faithfulness", "answer_relevancy"]),
+            (["标准一", "标准二"],
+             ["faithfulness", "context_precision", "answer_relevancy", "context_recall"]),
+        ):
+            with self.subTest(references=references):
+                evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+                for attribute in ("_faithfulness", "_answer_relevancy",
+                                  "_context_precision", "_context_recall"):
+                    setattr(evaluator, attribute, MagicMock(name=attribute))
+                    getattr(evaluator, attribute).name = attribute.removeprefix("_")
+                evaluator.embeddings = object()
+                evaluator.llm = object()
+                evaluator._evaluate = MagicMock()
+                evaluator._run_config_type = MagicMock()
+                evaluator._stabilize_relevancy = MagicMock()
+                dataset = MagicMock()
+                dataset.column_names = [] if references is None else ["ground_truth"]
+                dataset.__getitem__.return_value = references
+                with contextlib.redirect_stdout(io.StringIO()):
+                    evaluator.evaluate(dataset)
+                selected = evaluator._evaluate.call_args.kwargs["metrics"]
+                self.assertEqual([metric.name for metric in selected], expected)
+
     def test_used_output_is_rejected_before_generation_or_evaluator_creation(self):
         questions = [{"question": "问题"}]
         with tempfile.TemporaryDirectory() as directory:
