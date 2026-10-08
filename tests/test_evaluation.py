@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import io
 import json
@@ -5,7 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from rag_textbook_qa.evaluation import (
     RAGASEvaluator,
@@ -22,6 +23,18 @@ from rag_textbook_qa.evaluation.ragas import (
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_run_evaluation_closes_clients_after_generation_or_scoring_failure(self):
+        for stage in ("prepare_evaluation_data", "evaluate"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                evaluator = MagicMock()
+                getattr(evaluator, stage).side_effect = RuntimeError("isolated failure")
+                with (
+                    patch("rag_textbook_qa.evaluation.ragas.RAGASEvaluator", return_value=evaluator),
+                    self.assertRaisesRegex(RuntimeError, "isolated failure"),
+                ):
+                    run_evaluation(MagicMock(), [{"question": "问题"}], directory)
+                evaluator.close.assert_called_once_with()
+
     def test_reference_metrics_require_a_complete_nonblank_reference_column(self):
         for references, expected in (
             (None, ["faithfulness", "answer_relevancy"]),
@@ -38,7 +51,8 @@ class EvaluationTests(unittest.TestCase):
                     getattr(evaluator, attribute).name = attribute.removeprefix("_")
                 evaluator.embeddings = object()
                 evaluator.llm = object()
-                evaluator._evaluate = MagicMock()
+                evaluator._evaluate = AsyncMock()
+                evaluator._run_async = MagicMock(side_effect=lambda operation: asyncio.run(operation()))
                 evaluator._run_config_type = MagicMock()
                 evaluator._stabilize_relevancy = MagicMock()
                 dataset = MagicMock()
@@ -174,6 +188,7 @@ class EvaluationTests(unittest.TestCase):
             evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
             evaluator.output_dir = Path(directory)
             evaluator._answer_relevancy = MagicMock(name="answer_relevancy")
+            evaluator.close = MagicMock()
             frames = [
                 pd.DataFrame({"answer_relevancy": [0.9, 0.8]}),
                 pd.DataFrame({"answer_relevancy": [0.1, 0.6]}),

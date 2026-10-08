@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
+
+import httpx
 
 from rag_textbook_qa.llm import create_llm_client
 from rag_textbook_qa.providers import ComputeSettings
@@ -297,7 +303,7 @@ class RAGASEvaluator:
     ) -> None:
         try:
             from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-            from ragas import RunConfig, evaluate
+            from ragas import RunConfig, aevaluate
             from ragas.metrics import (
                 answer_relevancy,
                 context_precision,
@@ -320,7 +326,7 @@ class RAGASEvaluator:
         )
 
         self.output_dir = Path(output_dir) if output_dir is not None else None
-        self._evaluate = evaluate
+        self._evaluate = aevaluate
         self._run_config_type = RunConfig
         # RAGAS binds clients to metrics for the duration of evaluate(). Shared
         # module singletons let concurrent evaluators use another run's judge.
@@ -330,14 +336,35 @@ class RAGASEvaluator:
         self._context_precision = copy.deepcopy(context_precision)
         self._context_recall = copy.deepcopy(context_recall)
 
-        print("初始化 RAGAS 评估器...")
-        print(f"  API: {resolved_base_url}")
-        print(f"  模型: {resolved_model}")
+        self._runtime_lock = threading.RLock()
+        self._executor: ThreadPoolExecutor | None = None
+        self._runner: asyncio.Runner | None = None
+        self._closed = False
+        self._http_client = httpx.Client()
+        self._http_async_client = httpx.AsyncClient()
+        try:
+            self._initialize_clients(
+                ChatOpenAI, OpenAIEmbeddings, resolved_api_key, resolved_base_url, resolved_model
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                self.close()
+            raise
 
-        self.llm = ChatOpenAI(
-            model=resolved_model,
-            openai_api_key=resolved_api_key,
-            openai_api_base=resolved_base_url,
+    def _initialize_clients(
+        self, chat_factory: Any, embeddings_factory: Any, api_key: str, base_url: str, model: str,
+    ) -> None:
+
+        print("初始化 RAGAS 评估器...")
+        print(f"  API: {base_url}")
+        print(f"  模型: {model}")
+
+        self.llm = chat_factory(
+            model=model,
+            openai_api_key=api_key,
+            openai_api_base=base_url,
+            http_client=self._http_client,
+            http_async_client=self._http_async_client,
             temperature=0.0,
             # A faithfulness job chains several judge calls and takes about a
             # minute per question; under worker contention a 60s per-request
@@ -350,10 +377,12 @@ class RAGASEvaluator:
 
         try:
             embedding_model = _ragas_embedding_model()
-            self.embeddings = OpenAIEmbeddings(
+            self.embeddings = embeddings_factory(
                 model=embedding_model,
-                openai_api_key=resolved_api_key,
-                openai_api_base=resolved_base_url,
+                openai_api_key=api_key,
+                openai_api_base=base_url,
+                http_client=self._http_client,
+                http_async_client=self._http_async_client,
                 request_timeout=60,
                 check_embedding_ctx_length=False,
             )
@@ -368,6 +397,74 @@ class RAGASEvaluator:
             print("  Embeddings 初始化成功（本地）")
 
         print("初始化完成\n")
+
+    def _run_in_worker(
+        self, operation: Callable[[], Awaitable[Any]], cancelled: threading.Event | None = None,
+    ) -> Any:
+        if self._runner is None:
+            runner = asyncio.Runner()
+            runner.get_loop()
+            self._runner = runner
+
+        async def invoke() -> Any:
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError
+            return await operation()
+
+        return self._runner.run(invoke())
+
+    def _run_async(self, operation: Callable[[], Awaitable[Any]]) -> Any:
+        # RAGAS's synchronous entry point creates and closes a loop on every
+        # call. HTTP keep-alive connections then belong to a closed loop. One
+        # owned worker/loop also supports callers with an already running loop.
+        with self._runtime_lock:
+            if self._closed:
+                raise RuntimeError("RAGAS 评估器已关闭")
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ragas-eval")
+            cancelled = threading.Event()
+            future = self._executor.submit(self._run_in_worker, operation, cancelled)
+            try:
+                return future.result()
+            except (KeyboardInterrupt, SystemExit):
+                cancelled.set()
+                future.cancel()
+                if self._runner is not None:
+                    def cancel_tasks() -> None:
+                        for task in asyncio.all_tasks():
+                            task.cancel()
+                    self._runner.get_loop().call_soon_threadsafe(cancel_tasks)
+                raise
+
+    def _close_in_worker(self) -> None:
+        try:
+            self._run_in_worker(self._http_async_client.aclose)
+        finally:
+            if self._runner is not None:
+                self._runner.close()
+
+    def close(self) -> None:
+        """Close HTTP pools and their event loop, including after failed runs."""
+
+        with self._runtime_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ragas-eval")
+            try:
+                self._executor.submit(self._close_in_worker).result()
+            finally:
+                try:
+                    self._http_client.close()
+                finally:
+                    self._executor.shutdown(wait=True)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     def prepare_evaluation_data(
         self,
@@ -545,7 +642,7 @@ class RAGASEvaluator:
         print("=" * 60)
         print(f"开始评估  数据集: {len(dataset)} 条  指标: {[metric.name for metric in metrics]}")
         print("=" * 60)
-        result = self._evaluate(
+        result = self._run_async(lambda: self._evaluate(
             dataset,
             metrics=metrics,
             llm=self.llm,
@@ -559,7 +656,7 @@ class RAGASEvaluator:
                 timeout=600,
                 max_workers=2,
             ),
-        )
+        ))
         print("评估完成\n")
         return self._stabilize_relevancy(dataset, metrics, result)
 
@@ -578,14 +675,14 @@ class RAGASEvaluator:
         runs = [list(frame[name])]
         for index in range(2, samples + 1):
             print(f"重复评分 {name} 第 {index}/{samples} 轮（单次采样噪声较大）")
-            repeat = self._evaluate(
+            repeat = self._run_async(lambda: self._evaluate(
                 dataset,
                 metrics=[self._answer_relevancy],
                 llm=self.llm,
                 embeddings=self.embeddings,
                 raise_exceptions=False,
                 run_config=self._run_config_type(max_retries=1, timeout=600, max_workers=2),
-            )
+            ))
             repeat_frame = repeat.to_pandas() if hasattr(repeat, "to_pandas") else None
             if repeat_frame is None or name not in repeat_frame.columns:
                 break
@@ -834,64 +931,67 @@ def run_evaluation(
         raise ValueError("top_k 必须大于 0")
     destination = validate_evaluation_output_dir(output_dir)
     evaluator = RAGASEvaluator(output_dir=destination)
-    rag_dataset = evaluator.prepare_evaluation_data(
-        rag_engine,
-        test_questions,
-        top_k=top_k,
-    )
-    rag_result = evaluator.evaluate(rag_dataset)
-    print("\n【RAG 系统评估结果】")
-    rag_dataframe = evaluator.print_results(rag_result)
-    _attach_question_indices(rag_dataframe, evaluator._rag_question_indices, test_questions)
-    if rag_dataframe is not None:
-        destination.mkdir(parents=True, exist_ok=True)
-        rag_output = destination / "ragas_evaluation_results.csv"
-        rag_dataframe.to_csv(rag_output, index=False, encoding="utf-8-sig", mode="x")
-        print(f"结果已保存到: {rag_output}")
+    try:
+        rag_dataset = evaluator.prepare_evaluation_data(
+            rag_engine,
+            test_questions,
+            top_k=top_k,
+        )
+        rag_result = evaluator.evaluate(rag_dataset)
+        print("\n【RAG 系统评估结果】")
+        rag_dataframe = evaluator.print_results(rag_result)
+        _attach_question_indices(rag_dataframe, evaluator._rag_question_indices, test_questions)
+        if rag_dataframe is not None:
+            destination.mkdir(parents=True, exist_ok=True)
+            rag_output = destination / "ragas_evaluation_results.csv"
+            rag_dataframe.to_csv(rag_output, index=False, encoding="utf-8-sig", mode="x")
+            print(f"结果已保存到: {rag_output}")
 
-    if not include_baseline:
+        if not include_baseline:
+            return rag_dataframe
+
+        baseline_dataset = evaluator.prepare_baseline_data(rag_engine, test_questions)
+        baseline_result = evaluator.evaluate(
+            baseline_dataset,
+            metrics=[evaluator._answer_relevancy],
+        )
+        print("\n【Baseline 评估结果（无 RAG）】")
+        baseline_dataframe = evaluator.print_results(baseline_result)
+        _attach_question_indices(
+            baseline_dataframe, evaluator._baseline_question_indices, test_questions
+        )
+        if baseline_dataframe is not None:
+            destination.mkdir(parents=True, exist_ok=True)
+            baseline_output = destination / "ragas_baseline_results.csv"
+            baseline_dataframe.to_csv(
+                baseline_output,
+                index=False,
+                encoding="utf-8-sig",
+                mode="x",
+            )
+            print(f"结果已保存到: {baseline_output}")
+
+        print("\n" + "=" * 60)
+        print("RAG vs Baseline 对比摘要")
+        print("=" * 60)
+        report = _paired_baseline_report(
+            rag_dataframe, baseline_dataframe, evaluator._rag_question_indices,
+            evaluator._baseline_question_indices, len(test_questions),
+        )
+        destination.mkdir(parents=True, exist_ok=True)
+        _write_new_json(destination / "ragas_baseline_comparison.json", report)
+        print(f"配对有效问题: {report['paired_questions']}/{report['total_questions']}")
+        if report["delta"] is None:
+            print("没有两边均有有效分数的同一问题，不能计算差值。")
+        else:
+            print(
+                f"  {report['metric']:20s}  RAG={report['rag_mean']:.4f}  "
+                f"Baseline={report['baseline_mean']:.4f}  delta={report['delta']:+.4f}"
+            )
+        print("=" * 60)
         return rag_dataframe
-
-    baseline_dataset = evaluator.prepare_baseline_data(rag_engine, test_questions)
-    baseline_result = evaluator.evaluate(
-        baseline_dataset,
-        metrics=[evaluator._answer_relevancy],
-    )
-    print("\n【Baseline 评估结果（无 RAG）】")
-    baseline_dataframe = evaluator.print_results(baseline_result)
-    _attach_question_indices(
-        baseline_dataframe, evaluator._baseline_question_indices, test_questions
-    )
-    if baseline_dataframe is not None:
-        destination.mkdir(parents=True, exist_ok=True)
-        baseline_output = destination / "ragas_baseline_results.csv"
-        baseline_dataframe.to_csv(
-            baseline_output,
-            index=False,
-            encoding="utf-8-sig",
-            mode="x",
-        )
-        print(f"结果已保存到: {baseline_output}")
-
-    print("\n" + "=" * 60)
-    print("RAG vs Baseline 对比摘要")
-    print("=" * 60)
-    report = _paired_baseline_report(
-        rag_dataframe, baseline_dataframe, evaluator._rag_question_indices,
-        evaluator._baseline_question_indices, len(test_questions),
-    )
-    destination.mkdir(parents=True, exist_ok=True)
-    _write_new_json(destination / "ragas_baseline_comparison.json", report)
-    print(f"配对有效问题: {report['paired_questions']}/{report['total_questions']}")
-    if report["delta"] is None:
-        print("没有两边均有有效分数的同一问题，不能计算差值。")
-    else:
-        print(
-            f"  {report['metric']:20s}  RAG={report['rag_mean']:.4f}  "
-            f"Baseline={report['baseline_mean']:.4f}  delta={report['delta']:+.4f}"
-        )
-    print("=" * 60)
-    return rag_dataframe
+    finally:
+        evaluator.close()
 
 
 def create_test_dataset() -> list[dict[str, str]]:
