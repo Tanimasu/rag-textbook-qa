@@ -160,5 +160,6 @@ jobs:
           uv pip install --python .venv/bin/python --reinstall --no-deps dist/*.whl
           uv run --no-sync python -c "import datasets, ragas; from datasets import Dataset; assert len(Dataset.from_dict({'question': ['ok']})) == 1"
           uv run --no-sync python -c "from rag_textbook_qa.evaluation import RAGASEvaluator; evaluator = RAGASEvaluator(api_key='ci-only', base_url='http://127.0.0.1:9/v1', model='test-model'); assert evaluator._answer_relevancy.strictness == 1; assert evaluator.embeddings.check_embedding_ctx_length is False"
+          uv run --no-sync python -m unittest discover -s tests -p test_ragas_transport.py -v
           uv run --no-sync rag-qa --help
           uv run --no-sync rag-qa doctor --json

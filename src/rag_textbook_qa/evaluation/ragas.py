@@ -542,7 +542,10 @@ class RAGASEvaluator:
             embeddings=self.embeddings,
             raise_exceptions=False,
             run_config=self._run_config_type(
-                max_retries=5,
+                # RAGAS counts attempts here. The SDK already retries transient
+                # failures three times; five outer attempts multiplied a 429
+                # into twenty HTTP requests for one logical judge call.
+                max_retries=1,
                 timeout=600,
                 max_workers=2,
             ),
@@ -571,7 +574,7 @@ class RAGASEvaluator:
                 llm=self.llm,
                 embeddings=self.embeddings,
                 raise_exceptions=False,
-                run_config=self._run_config_type(max_retries=5, timeout=600, max_workers=2),
+                run_config=self._run_config_type(max_retries=1, timeout=600, max_workers=2),
             )
             repeat_frame = repeat.to_pandas() if hasattr(repeat, "to_pandas") else None
             if repeat_frame is None or name not in repeat_frame.columns:

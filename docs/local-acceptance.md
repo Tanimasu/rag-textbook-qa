@@ -47,6 +47,18 @@ python scripts/compare_judge_review.py \
 未调用模型，不产生新标签，不自动改变原验收门槛。结果只表示与提供标签的一致性，
 不认证审核者身份、独立性或盲标时序，也不能把历史 v3 结果称为当前 v4 验收。
 
+## RAGAS 请求重试边界
+
+安装 `eval` 依赖后，可验证真实 RAGAS / OpenAI SDK 的请求次数，全程使用内存 HTTP 传输：
+
+```bash
+python -m unittest tests.test_ragas_transport -v
+```
+
+429 和 503 最多首次请求加三次 SDK 重试，401 仅一次；三轮相关性评分各保留相同边界。
+RAGAS 外层不再叠加五轮重试。解析修复与其他指标仍可能发起独立调用，这不是整批费用上限。
+未安装 `eval` 时这四项测试会跳过；CI 构建任务在已安装的锁定 eval 依赖和 wheel 上实际执行它们。
+
 ## 缓存模型 HTTP 验收
 
 使用装有 `local-models`、`api` 和 `requests` 的环境，并确保两个 BGE 模型已缓存。
