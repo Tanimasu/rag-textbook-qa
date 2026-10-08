@@ -81,6 +81,11 @@ def _environment_value(primary: str, fallback: str, default: str) -> str:
     return os.getenv(primary) or os.getenv(fallback) or default
 
 
+def _require_positive_integer(value: object, name: str) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} 必须大于 0 且为整数")
+
+
 def _telemetry_for_trace(provider: Any, trace_id: str) -> list[ProviderCall]:
     telemetry = getattr(provider, "telemetry", None)
     return telemetry.for_trace(trace_id) if isinstance(telemetry, ProviderTelemetry) else []
@@ -284,14 +289,13 @@ class RAGEngine:
         context_budget: int = DEFAULT_CONTEXT_BUDGET,
         enable_adjacent_context: bool = False,
     ) -> None:
+        _require_positive_integer(context_budget, "上下文预算")
         print("初始化 RAG 引擎...")
         self.verbose = verbose
         self.enable_hyde = enable_hyde
         self.fusion_weights = normalized_fusion_weights(fusion_weights)
         self.bm25_mode = bm25_mode or DEFAULT_BM25_MODE
         self.bm25_tokenizer: BM25Tokenizer | None = None
-        if context_budget <= 0:
-            raise ValueError("上下文预算必须大于 0")
         self.context_budget = context_budget
         self.enable_adjacent_context = enable_adjacent_context
         self._adjacent_corpora: dict[str, list[dict[str, Any]]] = {}
@@ -561,8 +565,7 @@ class RAGEngine:
         query: str,
         top_k: int = 3,
     ) -> list[dict[str, Any]]:
-        if top_k <= 0:
-            raise ValueError("top_k 必须大于 0")
+        _require_positive_integer(top_k, "top_k")
         self.refresh_index_if_changed()
         with self._index_lock:
             if book_name not in self.bm25_indexes:
@@ -645,8 +648,7 @@ class RAGEngine:
         *,
         _query_embedding: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
-        if top_k <= 0:
-            raise ValueError("top_k 必须大于 0")
+        _require_positive_integer(top_k, "top_k")
         collection_name = f"textbook_{book_name}"
         collection_names = {
             collection.name for collection in self.vectorizer.client.list_collections()
@@ -704,6 +706,7 @@ class RAGEngine:
         *,
         _query_embedding: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
+        _require_positive_integer(top_k, "top_k")
         return self._run_with_index_snapshot(
             lambda: self._search_single_book(
                 book_name, query, top_k, use_hyde, use_reranker,
@@ -715,8 +718,7 @@ class RAGEngine:
         self, book_name: str, query: str, top_k: int, use_hyde: bool | None,
         use_reranker: bool, *, _query_embedding: list[list[float]] | None,
     ) -> list[dict[str, Any]]:
-        if top_k <= 0:
-            raise ValueError("top_k 必须大于 0")
+        _require_positive_integer(top_k, "top_k")
         rerank_enabled = self.reranker is not None and use_reranker
         candidate_count = top_k * 3 if rerank_enabled else top_k
         retrieval_count = candidate_count * 3
@@ -742,6 +744,7 @@ class RAGEngine:
         *,
         use_reranker: bool = True,
     ) -> dict[str, list[dict[str, Any]]]:
+        _require_positive_integer(top_k_per_book, "top_k_per_book")
         return self._run_with_index_snapshot(
             lambda: self._search_all_books(query, top_k_per_book, use_hyde, use_reranker)
         )
@@ -749,8 +752,7 @@ class RAGEngine:
     def _search_all_books(
         self, query: str, top_k_per_book: int, use_hyde: bool | None, use_reranker: bool,
     ) -> dict[str, list[dict[str, Any]]]:
-        if top_k_per_book <= 0:
-            raise ValueError("top_k_per_book 必须大于 0")
+        _require_positive_integer(top_k_per_book, "top_k_per_book")
         all_results = {}
         collections = sorted(
             self.vectorizer.client.list_collections(),
@@ -1032,8 +1034,20 @@ class RAGEngine:
         should_stop: Callable[[], bool] | None = None,
         on_generation_start: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        if top_k <= 0:
-            raise ValueError("top_k 必须大于 0")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query 必须是非空字符串")
+        if book_name is not None and (not isinstance(book_name, str) or not book_name.strip()):
+            raise ValueError("book_name 必须是非空字符串或 None")
+        _require_positive_integer(top_k, "top_k")
+        _require_positive_integer(max_tokens, "max_tokens")
+        budget = self.context_budget if context_budget is None else context_budget
+        _require_positive_integer(budget, "上下文预算")
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not math.isfinite(temperature)
+        ):
+            raise ValueError("temperature 必须是有限数值")
         if self.verbose:
             print(f"\n{'=' * 70}\n查询: {query}\n{'=' * 70}\n")
 
@@ -1057,7 +1071,6 @@ class RAGEngine:
             context_candidates = self._context_candidates(
                 results, use_adjacent_context=adjacent_applied,
             )
-        budget = self.context_budget if context_budget is None else context_budget
         context, context_sources = select_context(
             context_candidates, budget, fair_share=plan["status"] == "active"
         )
