@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from typing import Any
 
 import pandas as pd
@@ -42,9 +43,14 @@ def load_engine() -> Any:
 
 
 def load_ragas_results() -> Any | None:
-    results_path = _settings().paths.evaluations / "ragas_evaluation_results.csv"
-    if not results_path.exists():
+    directory = _settings().paths.evaluations
+    candidates = list((directory / "ragas-runs").glob("ragas-*/ragas_evaluation_results.csv"))
+    legacy = directory / "ragas_evaluation_results.csv"
+    if legacy.is_file():
+        candidates.append(legacy)
+    if not candidates:
         return None
+    results_path = max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
     return pd.read_csv(results_path, encoding="utf-8-sig")
 
 
@@ -52,9 +58,11 @@ def run_ragas_evaluation() -> Any | None:
     from rag_textbook_qa.evaluation import load_test_questions, run_evaluation
 
     paths = _settings().paths
-    engine = load_engine()
     test_questions = load_test_questions(
         paths.evaluation_data / "test_questions.json"
     )
-    run_evaluation(engine, test_questions, paths.evaluations)
-    return load_ragas_results()
+    runs = paths.evaluations / "ragas-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    output_dir = tempfile.mkdtemp(prefix="ragas-", dir=runs)
+    engine = load_engine()
+    return run_evaluation(engine, test_questions, output_dir)

@@ -1,6 +1,8 @@
 """Exercise the ordinary UI flow without contacting a model or the Worker."""
 
 import importlib.util
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +13,49 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
 class OrdinaryWebWorkflowTests(unittest.TestCase):
+    def test_web_evaluations_keep_previous_runs_and_load_latest_completed_csv(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = MagicMock()
+            paths.evaluations = Path(directory) / "evaluations"
+            paths.evaluation_data = Path(directory) / "data"
+            paths.evaluations.mkdir()
+            legacy = paths.evaluations / "ragas_evaluation_results.csv"
+            original = b"question,faithfulness\nlegacy,0.1\n"
+            legacy.write_bytes(original)
+            os.utime(legacy, (1, 1))
+            destinations = []
+
+            def evaluate(engine, questions, output):
+                destination = Path(output)
+                self.assertFalse(list(destination.iterdir()))
+                destinations.append(destination)
+                frame = pd.DataFrame({"question": [f"run-{len(destinations)}"],
+                                      "faithfulness": [0.8]})
+                frame.to_csv(destination / "ragas_evaluation_results.csv", index=False, mode="x")
+                os.utime(destination / "ragas_evaluation_results.csv",
+                         (len(destinations) + 1, len(destinations) + 1))
+                return frame
+
+            with (
+                patch.object(services, "_settings", return_value=MagicMock(paths=paths)),
+                patch.object(services, "load_engine", return_value=MagicMock()),
+                patch("rag_textbook_qa.evaluation.load_test_questions", return_value=[{"question": "问题"}]),
+                patch("rag_textbook_qa.evaluation.run_evaluation", side_effect=evaluate),
+            ):
+                self.assertEqual(services.load_ragas_results()["question"].tolist(), ["legacy"])
+                for count in (1, 2):
+                    self.assertEqual(services.run_ragas_evaluation()["question"].tolist(), [f"run-{count}"])
+                # A newer unfinished run must not hide the latest saved results.
+                (paths.evaluations / "ragas-runs" / "ragas-unfinished").mkdir()
+                self.assertEqual(services.load_ragas_results()["question"].tolist(), ["run-2"])
+            self.assertNotEqual(destinations[0], destinations[1])
+            self.assertEqual(legacy.read_bytes(), original)
+            self.assertTrue(all((path / "ragas_evaluation_results.csv").exists() for path in destinations))
+
     def app(self, engine=None, error=None, results=None):
         from streamlit.testing.v1 import AppTest
 

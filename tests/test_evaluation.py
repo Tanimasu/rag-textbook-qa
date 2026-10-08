@@ -22,6 +22,51 @@ from rag_textbook_qa.evaluation.ragas import (
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_used_output_is_rejected_before_generation_or_evaluator_creation(self):
+        questions = [{"question": "问题"}]
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "previous-run"
+            destination.mkdir()
+            previous = destination / "ragas_qa_comparison.json"
+            original = b'[{"answer":"original"}]'
+            previous.write_bytes(original)
+            engine = MagicMock()
+            evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+            evaluator.output_dir = destination
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "输出目录"):
+                    evaluator.prepare_evaluation_data(engine, questions)
+                with patch("rag_textbook_qa.evaluation.ragas.RAGASEvaluator") as create:
+                    with self.assertRaisesRegex(ValueError, "输出目录"):
+                        run_evaluation(engine, questions, destination)
+                    create.assert_not_called()
+            engine.ask.assert_not_called()
+            self.assertEqual(previous.read_bytes(), original)
+            self.assertEqual(list(destination.iterdir()), [previous])
+
+    def test_output_created_during_generation_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory)
+            evaluator = RAGASEvaluator.__new__(RAGASEvaluator)
+            evaluator.output_dir = destination
+            collision = destination / "ragas_run_summary.json"
+            original = b'{"owner":"another-run"}'
+
+            def generate(**kwargs):
+                collision.write_bytes(original)
+                return {"success": True, "answer": "答案", "context": "实际证据"}
+
+            engine = MagicMock()
+            engine.ask.side_effect = generate
+            with (
+                patch("rag_textbook_qa.evaluation.ragas._dataset_from_dict", side_effect=lambda data: data),
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(FileExistsError),
+            ):
+                evaluator.prepare_evaluation_data(engine, [{"question": "问题"}])
+            self.assertEqual(collision.read_bytes(), original)
+            self.assertFalse((destination / "ragas_qa_comparison.json").exists())
+
     def test_invalid_question_batch_is_rejected_before_any_generation(self):
         invalid_rows = (
             {"question": " \n "},

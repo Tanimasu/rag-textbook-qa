@@ -552,6 +552,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         load_test_questions,
         render_evaluation_plan,
         run_evaluation,
+        validate_evaluation_output_dir,
     )
 
     questions_path = args.questions or (
@@ -573,6 +574,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         )
         print(render_evaluation_plan(plan))
         return 0
+    validate_evaluation_output_dir(args.output_dir or settings.paths.evaluations)
     from rag_textbook_qa.rag import RAGEngine
 
     with RAGEngine(

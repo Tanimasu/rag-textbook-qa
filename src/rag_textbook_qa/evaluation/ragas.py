@@ -108,6 +108,25 @@ def _default_output_dir() -> Path:
     return Settings.load().paths.evaluations
 
 
+def validate_evaluation_output_dir(output_dir: str | Path) -> Path:
+    """Reject reused output before loading models or paying for new answers."""
+
+    destination = Path(output_dir)
+    if destination.exists() and (
+        not destination.is_dir() or any(destination.iterdir())
+    ):
+        raise ValueError("评估输出目录必须不存在或为空；请用 --output-dir 指定新的实验目录")
+    return destination
+
+
+def _write_new_json(path: Path, value: Any) -> None:
+    # The preflight is not a lock: another process can create an output while
+    # generation is running. Exclusive creation preserves that process's data.
+    serialized = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    with path.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(serialized)
+
+
 def _ragas_embedding_model() -> str:
     return (
         os.getenv("RAGAS_EMBEDDING_MODEL")
@@ -360,6 +379,7 @@ class RAGASEvaluator:
         _validate_test_questions(test_questions)
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
+        output_dir = validate_evaluation_output_dir(self.output_dir or _default_output_dir())
         use_hyde = getattr(rag_engine, "enable_hyde", False) is True
         use_adjacent_context = (
             getattr(rag_engine, "enable_adjacent_context", False) is True
@@ -466,7 +486,6 @@ class RAGASEvaluator:
                 )
                 print(f"  异常: {type(exc).__name__}")
 
-        output_dir = self.output_dir or _default_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
         summary = {
             "total_questions": len(test_questions),
@@ -484,16 +503,10 @@ class RAGASEvaluator:
             },
             "failures": failures,
         }
-        (output_dir / "ragas_run_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_new_json(output_dir / "ragas_run_summary.json", summary)
         print(f"问题处理成功率: {len(questions)}/{len(test_questions)}；质量均分仅覆盖成功问题")
         comparison_path = output_dir / "ragas_qa_comparison.json"
-        comparison_path.write_text(
-            json.dumps(qa_records, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_new_json(comparison_path, qa_records)
         print(f"问答对比已保存到: {comparison_path}")
         print(f"\n数据准备完成：{len(questions)} 条\n")
 
@@ -806,7 +819,7 @@ def run_evaluation(
     _validate_test_questions(test_questions)
     if top_k <= 0:
         raise ValueError("top_k 必须大于 0")
-    destination = Path(output_dir)
+    destination = validate_evaluation_output_dir(output_dir)
     evaluator = RAGASEvaluator(output_dir=destination)
     rag_dataset = evaluator.prepare_evaluation_data(
         rag_engine,
@@ -820,7 +833,7 @@ def run_evaluation(
     if rag_dataframe is not None:
         destination.mkdir(parents=True, exist_ok=True)
         rag_output = destination / "ragas_evaluation_results.csv"
-        rag_dataframe.to_csv(rag_output, index=False, encoding="utf-8-sig")
+        rag_dataframe.to_csv(rag_output, index=False, encoding="utf-8-sig", mode="x")
         print(f"结果已保存到: {rag_output}")
 
     if not include_baseline:
@@ -843,6 +856,7 @@ def run_evaluation(
             baseline_output,
             index=False,
             encoding="utf-8-sig",
+            mode="x",
         )
         print(f"结果已保存到: {baseline_output}")
 
@@ -854,10 +868,7 @@ def run_evaluation(
         evaluator._baseline_question_indices, len(test_questions),
     )
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "ragas_baseline_comparison.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    _write_new_json(destination / "ragas_baseline_comparison.json", report)
     print(f"配对有效问题: {report['paired_questions']}/{report['total_questions']}")
     if report["delta"] is None:
         print("没有两边均有有效分数的同一问题，不能计算差值。")
