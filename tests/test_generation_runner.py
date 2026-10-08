@@ -1,6 +1,8 @@
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -279,6 +281,87 @@ class ProtocolPersistenceTests(unittest.TestCase):
 
 
 class ExperimentTests(unittest.TestCase):
+    def test_interrupt_cancels_queued_judgments_and_resume_keeps_finished_score(self):
+        started, release = threading.Event(), threading.Event()
+        original_shutdown = ThreadPoolExecutor.shutdown
+        stages = []
+        calls = []
+
+        def judge(prompt):
+            calls.append(prompt)
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError("fixture release timed out")
+            return fake_judge(prompt)
+
+        def interrupt_judging(futures):
+            stages.append(1)
+            if len(stages) == 1:
+                return as_completed(futures)
+            self.assertTrue(started.wait(2))
+            raise KeyboardInterrupt
+
+        def release_during_shutdown(pool, **kwargs):
+            if started.is_set():
+                release.set()
+            return original_shutdown(pool, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm(f"kept-{i}", "baseline", None) for i in range(20)]
+            generator = MagicMock()
+            with (
+                patch("rag_textbook_qa.evaluation.generation_runner.as_completed", interrupt_judging),
+                patch.object(ThreadPoolExecutor, "shutdown", release_during_shutdown),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                run(output, arms, generator=generator, judge=judge, concurrency=1)
+            self.assertEqual(len(calls), 2)  # extract + verify for the one in-flight sample
+            self.assertEqual(len(JsonlLog(output / "judgments.jsonl").records), 1)
+            report = run(output, arms, generator=generator, judge=judge, concurrency=1)
+            self.assertEqual(len(calls), 40)
+            self.assertEqual((report["generated"], report["judged"]), (20, 20))
+            generator.assert_not_called()
+
+    def test_interrupt_cancels_queued_samples_and_resume_keeps_finished_output(self):
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        original_shutdown = ThreadPoolExecutor.shutdown
+
+        def generate(prompt, temperature):
+            calls.append(prompt)
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError("fixture release timed out")
+            return fake_answer("回答")
+
+        def interrupted(futures):
+            self.assertTrue(started.wait(2))
+            raise KeyboardInterrupt
+
+        def release_during_shutdown(pool, **kwargs):
+            # The request finishes only after shutdown begins, without sleeps
+            # or a scheduling race between the interrupt and the test timer.
+            release.set()
+            return original_shutdown(pool, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("hot", "baseline", 0.7)]
+            judge = MagicMock(side_effect=fake_judge)
+            with (
+                patch("rag_textbook_qa.evaluation.generation_runner.as_completed", interrupted),
+                patch.object(ThreadPoolExecutor, "shutdown", release_during_shutdown),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                run(output, arms, generator=generate, judge=judge, samples=20, concurrency=1)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(JsonlLog(output / "generations.jsonl").records), 1)
+            judge.assert_not_called()
+            report = run(output, arms, generator=generate, judge=judge, samples=20, concurrency=1)
+            self.assertEqual(len(calls), 20)
+            self.assertEqual((report["generated"], report["judged"]), (20, 20))
+
     def test_failed_report_update_preserves_the_previous_complete_report(self):
         original_write = Path.write_text
 

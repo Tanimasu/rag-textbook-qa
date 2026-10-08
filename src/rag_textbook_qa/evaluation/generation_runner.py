@@ -344,8 +344,15 @@ def _run_stage(
 ) -> None:
     if not pending:
         return
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(work, key): key for key in pending}
+    cancelled = threading.Event()
+
+    def work_if_active(key: Key) -> None:
+        if not cancelled.is_set():
+            work(key)
+
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    try:
+        futures = {pool.submit(work_if_active, key): key for key in pending}
         for done, future in enumerate(as_completed(futures), 1):
             key = futures[future]
             try:
@@ -367,6 +374,14 @@ def _run_stage(
                 )
                 status = type(exc).__name__
             log(f"[{stage}] {done}/{len(pending)} {key[0]} {key[1]} #{key[2]} {status}")
+    except BaseException:
+        # Interrupting iteration used to enter the executor's default shutdown,
+        # which ran every queued paid sample. Let in-flight work save its output,
+        # but stop new samples before waiting for those workers to finish.
+        cancelled.set()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _usage(records: Sequence[Mapping[str, Any]], arms: Sequence[Arm]) -> dict[str, Any]:
