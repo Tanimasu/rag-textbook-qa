@@ -322,11 +322,13 @@ class RAGASEvaluator:
         self.output_dir = Path(output_dir) if output_dir is not None else None
         self._evaluate = evaluate
         self._run_config_type = RunConfig
-        self._faithfulness = faithfulness
+        # RAGAS binds clients to metrics for the duration of evaluate(). Shared
+        # module singletons let concurrent evaluators use another run's judge.
+        self._faithfulness = copy.deepcopy(faithfulness)
         self._answer_relevancy = copy.deepcopy(answer_relevancy)
         self._answer_relevancy.strictness = 1
-        self._context_precision = context_precision
-        self._context_recall = context_recall
+        self._context_precision = copy.deepcopy(context_precision)
+        self._context_recall = copy.deepcopy(context_recall)
 
         print("初始化 RAGAS 评估器...")
         print(f"  API: {resolved_base_url}")

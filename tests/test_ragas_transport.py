@@ -6,7 +6,9 @@ import importlib.util
 import io
 import json
 import os
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 EVAL_AVAILABLE = all(importlib.util.find_spec(name) is not None for name in (
@@ -16,6 +18,96 @@ EVAL_AVAILABLE = all(importlib.util.find_spec(name) is not None for name in (
 
 @unittest.skipUnless(EVAL_AVAILABLE, "RAGAS eval extra is not installed")
 class RagasTransportTests(unittest.TestCase):
+    def assert_parallel_clients(self, metric_attribute):
+        self.enterContext(patch.dict(os.environ, {
+            "RAGAS_DO_NOT_TRACK": "true", "LANGCHAIN_TRACING_V2": "false",
+            "RAGAS_RELEVANCY_SAMPLES": "1", "RAGAS_DISABLE_THINKING": "false",
+        }))
+        import httpx
+        import langchain_openai
+        from datasets import Dataset
+
+        from rag_textbook_qa.evaluation.ragas import RAGASEvaluator
+
+        first_started = threading.Event()
+        second_reached = threading.Event()
+        requests = []
+        clients = []
+        evaluators = []
+        original = langchain_openai.ChatOpenAI
+
+        def unavailable(request):
+            requests.append((threading.current_thread().name, request.url.host,
+                             json.loads(request.content)["model"]))
+            if threading.current_thread().name.endswith("_0"):
+                first_started.set()
+                if not second_reached.wait(10):
+                    raise AssertionError("second evaluation did not reach its judge")
+            else:
+                second_reached.set()
+            return httpx.Response(401, json={"error": {
+                "message": "isolated credentials", "type": "test_error", "code": "test_error",
+            }})
+
+        def isolated_chat(**kwargs):
+            sync_http = httpx.Client(transport=httpx.MockTransport(unavailable))
+            async_http = httpx.AsyncClient(transport=httpx.MockTransport(unavailable))
+            clients.append((sync_http, async_http))
+            return original(**kwargs, http_async_client=async_http, http_client=sync_http)
+
+        def evaluate(evaluator):
+            # RAGAS owns a loop in each Streamlit/request thread. Close only our
+            # thread's loop after use, keeping this regression free of loop leaks.
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                dataset = Dataset.from_dict({"question": ["isolated question"],
+                                             "answer": ["isolated answer"],
+                                             "contexts": [["isolated evidence"]],
+                                             "ground_truth": ["isolated reference"]})
+                return evaluator.evaluate(dataset, metrics=[getattr(evaluator, metric_attribute)])
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+
+        try:
+            with (
+                patch.object(langchain_openai, "ChatOpenAI", side_effect=isolated_chat),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                for name in ("first", "second"):
+                    evaluators.append(RAGASEvaluator(api_key=f"isolated-{name}-key",
+                                                     base_url=f"https://{name}.invalid/v1",
+                                                     model=f"{name}-model"))
+                with ThreadPoolExecutor(max_workers=2, thread_name_prefix="isolated") as pool:
+                    first = pool.submit(evaluate, evaluators[0])
+                    self.assertTrue(first_started.wait(10))
+                    second = pool.submit(evaluate, evaluators[1])
+                    results = [first.result(timeout=15), second.result(timeout=15)]
+            metric_name = getattr(evaluators[0], metric_attribute).name
+            self.assertTrue(all(result.to_pandas()[metric_name].isna().all() for result in results))
+            self.assertEqual(sorted(requests), [
+                ("isolated_0", "first.invalid", "first-model"),
+                ("isolated_1", "second.invalid", "second-model"),
+            ])
+        finally:
+            second_reached.set()
+            for evaluator in evaluators:
+                evaluator.embeddings.client._client.close()
+                asyncio.run(evaluator.embeddings.async_client._client.close())
+            for sync_http, async_http in clients:
+                sync_http.close()
+                asyncio.run(async_http.aclose())
+
+    def test_parallel_faithfulness_uses_each_runs_judge(self):
+        self.assert_parallel_clients("_faithfulness")
+
+    def test_parallel_context_precision_uses_each_runs_judge(self):
+        self.assert_parallel_clients("_context_precision")
+
+    def test_parallel_context_recall_uses_each_runs_judge(self):
+        self.assert_parallel_clients("_context_recall")
+
     def assert_failed_metric_attempts(self, status, expected, *, relevancy_samples=1):
         self.enterContext(patch.dict(os.environ, {
             "RAGAS_DO_NOT_TRACK": "true", "LANGCHAIN_TRACING_V2": "false",
