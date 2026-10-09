@@ -143,6 +143,36 @@ class LLMClient:
             "time": 0,
         }
 
+    @classmethod
+    def _completion_result(cls, response: Any, *, model: str, elapsed: float) -> dict[str, Any]:
+        """A received response is checked once, without starting a paid retry."""
+        choices = getattr(response, "choices", None)
+        choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+        message = getattr(choice, "message", None)
+        content = getattr(message, "content", None)
+        answer = content if isinstance(content, str) else ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        error = None
+        if choice is None or message is None:
+            error = "模型响应缺少有效回答，无法生成答案"
+        elif content is not None and not isinstance(content, str):
+            error = "模型响应内容格式异常，无法生成答案"
+        elif finish_reason != "stop":
+            error = _incomplete_generation_message(finish_reason)
+        elif not answer.strip():
+            error = "模型响应为空，无法生成回答"
+        result = {
+            "success": error is None,
+            "answer": answer,
+            "model": model,
+            "tokens": cls._usage(response),
+            "time": elapsed,
+            "finish_reason": finish_reason,
+        }
+        if error is not None:
+            result["error"] = error
+        return result
+
     def plan_queries(self, prompt: str) -> str:
         """One bounded planning request, without SDK or application retries."""
         # Verified provider/model capability; do not send vendor options elsewhere.
@@ -158,7 +188,10 @@ class LLMClient:
             stream=False,
             **options,
         )
-        return response.choices[0].message.content or ""
+        result = self._completion_result(response, model=self.default_model, elapsed=0)
+        if not result["success"]:
+            raise LLMGenerationIncompleteError(result["error"])
+        return result["answer"]
 
     def audit_citations(self, prompt: str) -> str:
         """Bounded evidence checking; no SDK/application retries or reasoning text storage."""
@@ -205,35 +238,12 @@ class LLMClient:
                     stream=False,
                 )
                 elapsed = round(time.monotonic() - started, 2)
-                choice = response.choices[0]
-                answer = choice.message.content or ""
-                usage = self._usage(response)
-                finish_reason = getattr(choice, "finish_reason", None)
-                if finish_reason != "stop" or not answer.strip():
-                    return {
-                        "success": False,
-                        "error": (
-                            _incomplete_generation_message(finish_reason)
-                            if finish_reason != "stop" else "模型响应为空，无法生成回答"
-                        ),
-                        "answer": answer,
-                        "model": selected_model,
-                        "tokens": usage,
-                        "time": elapsed,
-                        "finish_reason": finish_reason,
-                    }
-                if self.verbose:
-                    total = usage["total"]
+                result = self._completion_result(response, model=selected_model, elapsed=elapsed)
+                if self.verbose and result["success"]:
+                    total = result["tokens"]["total"]
                     usage_label = f"{total} tokens" if total is not None else "token 用量未知"
                     print(f"成功（{elapsed} 秒，{usage_label}）")
-                return {
-                    "success": True,
-                    "answer": answer,
-                    "model": selected_model,
-                    "tokens": usage,
-                    "time": elapsed,
-                    "finish_reason": finish_reason,
-                }
+                return result
             except Exception as exc:  # noqa: BLE001 - normalize third-party SDK errors
                 last_error = exc
                 if self.verbose:
@@ -332,13 +342,7 @@ class LLMClient:
                 max_tokens=max_tokens,
             )
             elapsed = round(time.monotonic() - started, 2)
-            return {
-                "success": True,
-                "answer": response.choices[0].message.content or "",
-                "model": selected_model,
-                "tokens": self._usage(response),
-                "time": elapsed,
-            }
+            return self._completion_result(response, model=selected_model, elapsed=elapsed)
         except Exception as exc:  # noqa: BLE001 - normalize third-party SDK errors
             if self.verbose:
                 print(f"对话失败: {str(exc)[:100]}")

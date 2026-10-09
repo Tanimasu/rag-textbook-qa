@@ -302,6 +302,49 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result["answer"], "未完成")
         self.assertIn("长度上限", result["error"])
 
+    def test_received_malformed_answers_are_checked_once_and_keep_known_usage(self):
+        cases = [([], "缺少有效回答"),
+                 ([SimpleNamespace(finish_reason="stop")], "缺少有效回答"),
+                 ([SimpleNamespace(message=SimpleNamespace(content={"text": "wrong type"}),
+                                   finish_reason="stop")], "内容格式异常")]
+        for method in ("generate_answer", "chat"):
+            for choices, expected in cases:
+                with self.subTest(method=method, choices=choices):
+                    response = completion_response()
+                    response.choices = choices
+                    sdk = FakeSDKClient([response])
+                    client = LLMClient("key", "https://fixture.invalid/v1",
+                                       sdk_client=sdk, verbose=False)
+                    with patch("rag_textbook_qa.llm.client.time.sleep") as sleep:
+                        result = (client.generate_answer("问题") if method == "generate_answer"
+                                  else client.chat([{"role": "user", "content": "问题"}]))
+                    self.assertFalse(result["success"])
+                    self.assertIn(expected, result["error"])
+                    self.assertEqual(result["tokens"], {"prompt": 3, "completion": 4, "total": 7})
+                    self.assertEqual(len(sdk.completions.calls), 1)
+                    sleep.assert_not_called()
+
+    def test_chat_rejects_empty_and_incomplete_responses_without_losing_partial_answer(self):
+        for content, reason in (("未完成的回答", "length"), ("部分内容", None),
+                                ("", "stop"), (None, "stop"), (" \n\t", "stop")):
+            with self.subTest(content=content, finish_reason=reason):
+                response = completion_response(content)
+                response.choices[0].finish_reason = reason
+                sdk = FakeSDKClient([response])
+                client = LLMClient("key", "https://fixture.invalid/v1",
+                                   sdk_client=sdk, verbose=False)
+                messages = [{"role": "user", "content": "第一题"},
+                            {"role": "assistant", "content": "已有回答"},
+                            {"role": "user", "content": "继续解释"}]
+                result = client.chat(messages, model="fixture-model", temperature=0.2, max_tokens=40)
+                self.assertFalse(result["success"])
+                self.assertEqual(result["answer"], content or "")
+                self.assertEqual(result["finish_reason"], reason)
+                self.assertEqual(result["tokens"]["total"], 7)
+                self.assertEqual(len(sdk.completions.calls), 1)
+                self.assertEqual(sdk.completions.calls[0], {"model": "fixture-model",
+                    "messages": messages, "temperature": 0.2, "max_tokens": 40})
+
     def test_stream_rejects_a_length_limited_terminal_chunk(self):
         chunks = [
             SimpleNamespace(
