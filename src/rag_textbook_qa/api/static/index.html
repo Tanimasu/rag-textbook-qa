@@ -155,6 +155,8 @@ footer details p { margin-top: 6px; text-align: left; }
 
   <div class="toolbar">
     <label>教材 <select id="book" required><option value="" selected disabled>请选择教材</option></select></label>
+    <span id="book-status" role="status" class="quota" hidden></span>
+    <button class="toolbar-button" id="reload-books" type="button" hidden>重新加载教材</button>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
     <button class="toolbar-button" id="clear" type="button" hidden>清空对话</button>
     <span class="quota" id="quota"></span>
@@ -193,6 +195,7 @@ footer details p { margin-top: 6px; text-align: left; }
   const thread = $("thread"), empty = $("empty"), form = $("form"), input = $("input");
   const send = $("send"), bookSelect = $("book"), codeField = $("code-field");
   const codeInput = $("code"), quota = $("quota"), cancel = $("cancel"), clear = $("clear");
+  const bookStatus = $("book-status"), reloadBooks = $("reload-books");
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
   let busy = false, activeController = null;
@@ -281,6 +284,7 @@ footer details p { margin-top: 6px; text-align: left; }
       if (busy) return;
       input.value = query;
       bookSelect.value = bookId;
+      sessionSet(BOOK_KEY, bookId);
       autosize();
       ask();
     });
@@ -544,7 +548,7 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function ask() {
     const query = input.value.trim();
-    if (!query || busy) return;
+    if (!query || busy || bookSelect.disabled) return;
     const bookId = bookSelect.value;
     if (!bookId) {
       bookSelect.setCustomValidity("请先选择一本教材");
@@ -696,22 +700,47 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   async function loadBooks() {
+    const previous = bookSelect.value || sessionGet(BOOK_KEY);
+    bookSelect.disabled = true;
+    send.disabled = true;
+    reloadBooks.disabled = true;
+    bookStatus.textContent = "正在加载教材…";
+    bookStatus.hidden = false;
     try {
-      const books = await (await fetch("/v1/books")).json();
-      if (!books.length) bookSelect.options[0].textContent = "暂无可用教材";
+      const response = await fetch("/v1/books");
+      if (!response.ok) throw new Error("books unavailable");
+      const books = await response.json();
+      if (!Array.isArray(books) || books.some(book => !book || typeof book.book_id !== "string"
+          || !book.book_id || typeof book.label !== "string")) throw new Error("invalid books");
+      const placeholder = element("option", "", books.length ? "请选择教材" : "暂无可用教材");
+      placeholder.value = "";
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      const options = [placeholder];
       for (const book of books) {
         const option = element("option", "", book.label);
         option.value = book.book_id;
-        bookSelect.append(option);
+        options.push(option);
       }
+      bookSelect.replaceChildren(...options);
       const available = new Set(books.map((book) => book.book_id));
-      const selected = sessionGet(BOOK_KEY);
-      if (available.has(selected)) bookSelect.value = selected;
+      if (available.has(previous)) bookSelect.value = previous;
       for (const example of document.querySelectorAll(".examples button")) {
         example.disabled = !available.has(example.dataset.book);
         if (example.disabled) example.title = "这本教材当前没有可用索引";
+        else example.removeAttribute("title");
       }
-    } catch { bookSelect.options[0].textContent = "教材加载失败"; }
+      bookSelect.disabled = !books.length;
+      send.disabled = busy || !books.length;
+      reloadBooks.hidden = !!books.length;
+      bookStatus.textContent = books.length ? "" : "暂无可用教材，请稍后重新加载。";
+      bookStatus.hidden = !!books.length;
+    } catch {
+      bookStatus.textContent = "教材暂时加载失败，请重试。";
+      reloadBooks.hidden = false;
+    } finally {
+      reloadBooks.disabled = false;
+    }
   }
 
   function autosize() {
@@ -757,6 +786,7 @@ footer details p { margin-top: 6px; text-align: left; }
     clear.hidden = true;
     input.focus();
   });
+  reloadBooks.addEventListener("click", loadBooks);
   loadBooks();
   refreshStatus();
 })();

@@ -165,12 +165,18 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         engine = MagicMock()
         content = "教材原文\n" + "前文" * 150 + "末尾的关键定义 <原样显示>"
         engine.ask.return_value = {"success": True, "answer": "答案【参考资料 7】",
-            "context_sources": [{"citation_id": 7, "book_name": "os", "content": content}]}
+            "context_sources": [{"citation_id": 7, "book_name": "computer_organization",
+                "content": content, "chapter": "第 4 章 存储系统", "section_h2": "4.5",
+                "section_h3": "4.5.8 写入策略", "section_h4": "1.写回法（Write-Back，WB）",
+                "truncated": True, "table_compacted": True}]}
         app, _ = self.app(engine)
         app.chat_input[0].set_value("问题").run(timeout=20)
         rendered = "\n".join(item.value for item in app.markdown)
         self.assertIn("参考资料 7", rendered)
         self.assertIn("末尾的关键定义 &lt;原样显示&gt;", rendered)
+        self.assertIn("4.5.8 写入策略 &gt; 1.写回法（Write-Back，WB）", rendered)
+        self.assertIn("片段已截断", rendered)
+        self.assertIn("表格按行整理", rendered)
         self.assertNotIn("分数 0.000", rendered)
         self.assertFalse(app.exception)
 

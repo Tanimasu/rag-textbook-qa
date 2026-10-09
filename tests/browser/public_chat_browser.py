@@ -62,6 +62,7 @@ class FakeBackend(ThreadingHTTPServer):
         self.access_code_required = False
         self.lock = threading.Lock()
         self.gates: list[threading.Event] = []
+        self.book_failures_remaining = 0
 
     def enqueue(self, reply: Reply) -> None:
         with self.lock:
@@ -91,6 +92,11 @@ class FakeHandler(BaseHTTPRequestHandler):
         if self.path == "/":
             self.respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/v1/books":
+            with self.server.lock:
+                if self.server.book_failures_remaining:
+                    self.server.book_failures_remaining -= 1
+                    self.json_response({"detail": "temporarily unavailable"}, 503)
+                    return
             self.json_response(
                 [
                     {"book_id": "os", "label": "操作系统"},
@@ -289,6 +295,23 @@ class PublicChatBrowserTests(unittest.TestCase):
         excerpt.press("End")
         self.expect(excerpt).not_to_have_js_property("scrollTop", 0)
         self.expect(excerpt).to_contain_text("原文结尾已核对")
+
+    def test_book_loading_failure_recovers_without_losing_question_draft(self) -> None:
+        self.backend.book_failures_remaining = 1
+        self.page.goto(self.base_url)
+        self.expect(self.page.locator("#book-status")).to_have_text("教材暂时加载失败，请重试。")
+        self.expect(self.page.locator("#send")).to_be_disabled()
+        self.page.locator("#input").fill("已经写好的问题")
+        self.page.locator("#input").press("Enter")
+        self.assertEqual(self.backend.asks, [])
+        self.page.get_by_role("button", name="重新加载教材", exact=True).click()
+        self.expect(self.page.locator("#book option")).to_have_count(3)
+        self.expect(self.page.locator("#book")).to_be_enabled()
+        self.expect(self.page.locator("#send")).to_be_enabled()
+        self.expect(self.page.locator("#input")).to_have_value("已经写好的问题")
+        self.expect(self.page.locator("#book-status")).to_be_hidden()
+        self.expect(self.page.locator("#reload-books")).to_be_hidden()
+        self.assertEqual(self.backend.asks, [])
 
     def test_http_refusal_retry_restores_original_query_and_book(self) -> None:
         self.backend.enqueue(Reply(http_status=401, detail="Unauthorized"))

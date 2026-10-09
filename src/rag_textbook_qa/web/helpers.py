@@ -17,9 +17,8 @@ def format_book_label(book_id: str) -> str:
 
 def format_section_label(source: dict[str, Any]) -> str:
     parts = [
-        str(source.get("chapter", "")).strip(),
-        str(source.get("section_h2", "")).strip(),
-        str(source.get("section_h3", "")).strip(),
+        str(source.get(field) or "").strip()
+        for field in ("chapter", "section_h2", "section_h3", "section_h4")
     ]
     populated = [part for part in parts if part]
     return " > ".join(populated) if populated else "未标注章节"
@@ -50,6 +49,10 @@ def render_sources_expander(sources: list[dict[str, Any]]) -> None:
         for index, source in enumerate(sources, 1):
             book = html.escape(format_book_label(source.get("book_name", "") or "未知教材"))
             section = html.escape(format_section_label(source))
+            if source.get("truncated"):
+                section += " · 片段已截断"
+            if source.get("table_compacted"):
+                section += " · 表格按行整理"
             content = str(source.get("content", ""))
             citation_id = html.escape(str(source.get("citation_id", index)))
             snippet = html.escape(content)
