@@ -956,7 +956,8 @@ class RAGEngine:
                     "success": True,
                     "answer": streamed_answer,
                     "model": model,
-                    "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    # The text stream does not expose usage to this caller.
+                    "tokens": {"prompt": None, "completion": None, "total": None},
                     "time": round(time.monotonic() - started, 2),
                     "finish_reason": None,
                     "streamed": True,
@@ -972,7 +973,7 @@ class RAGEngine:
                     "error": str(exc),
                     "answer": None,
                     "model": model,
-                    "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    "tokens": {"prompt": None, "completion": None, "total": None},
                     "time": round(time.monotonic() - started, 2),
                     "streamed": True,
                 },
@@ -1145,9 +1146,12 @@ class RAGEngine:
                 generation_error = llm_response.get("error") or "LLM 生成失败"
             if self.verbose and llm_response["success"]:
                 print(f"\n{answer}\n")
+                tokens = llm_response.get("tokens") or {}
+                total_tokens = tokens.get("total")
+                usage_label = str(total_tokens) if total_tokens is not None else "未知"
                 print(
                     f"模型: {llm_response['model']} | "
-                    f"tokens: {llm_response['tokens']['total']} | "
+                    f"tokens: {usage_label} | "
                     f"耗时: {llm_response['time']} 秒 | 引用: {len(results)} 条"
                 )
             elif self.verbose:

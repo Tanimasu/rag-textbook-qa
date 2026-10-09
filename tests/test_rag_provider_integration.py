@@ -203,6 +203,8 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertIsNone(result["answer"])
         self.assertEqual(chunks, ["未完成的回答"])
         self.assertIn("长度上限", result["error"])
+        self.assertEqual(result["tokens"],
+                         {"prompt": None, "completion": None, "total": None})
 
     def test_a_reader_stop_escapes_generate_instead_of_posing_as_a_failure(self):
         # Hidden-reasoning chunks carry no answer text; the stop must still land.
@@ -523,8 +525,9 @@ class RagProviderIntegrationTests(unittest.TestCase):
     def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
         with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
+            output = io.StringIO()
             with (
-                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 db_path = build_test_vector_db(root)
@@ -536,7 +539,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
                     reranker_provider=FakeRerankerProvider(),
                     llm_client=llm,
                     enable_hyde=True,
-                    verbose=False,
+                    verbose=True,
                 ) as engine:
                     result = engine.ask(
                         "什么是进程？",
@@ -554,6 +557,9 @@ class RagProviderIntegrationTests(unittest.TestCase):
                 result["context"],
             )
             self.assertTrue(result["llm_response"]["streamed"])
+            self.assertEqual(result["llm_response"]["tokens"],
+                             {"prompt": None, "completion": None, "total": None})
+            self.assertIn("tokens: 未知", output.getvalue())
             self.assertEqual(len(llm.prompts), 1)
             self.assertGreaterEqual(result["execution"]["first_token_seconds"], 0)
             self.assertEqual(result["execution"]["embedding"]["backend"], "remote")

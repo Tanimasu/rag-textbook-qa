@@ -192,6 +192,49 @@ class LLMClientTests(unittest.TestCase):
                         self.assertFalse(client.generate_answer("question", retry=1)["success"])
                 self.assertEqual(len(requests), expected_requests)
 
+    def test_missing_or_invalid_usage_keeps_answer_without_paid_retries(self):
+        unknown = {"prompt": None, "completion": None, "total": None}
+        cases = [(None, unknown), (SimpleNamespace(), unknown),
+                 (SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                  {"prompt": 0, "completion": 0, "total": 0})]
+        for malformed in ("invalid", "7", -1, True, 7.5):
+            cases.append((SimpleNamespace(prompt_tokens=3, completion_tokens=4,
+                                          total_tokens=malformed),
+                          {"prompt": 3, "completion": 4, "total": None}))
+        for method in ("generate_answer", "chat"):
+            for usage, expected in cases:
+                with self.subTest(method=method, usage=usage):
+                    response = completion_response("完整答案")
+                    response.usage = usage
+                    sdk = FakeSDKClient([response])
+                    client = LLMClient("key", "https://fixture.invalid/v1",
+                                       sdk_client=sdk, verbose=True)
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output), patch(
+                        "rag_textbook_qa.llm.client.time.sleep"
+                    ) as sleep:
+                        result = (client.generate_answer("问题") if method == "generate_answer"
+                                  else client.chat([{"role": "user", "content": "问题"}]))
+                    self.assertTrue(result["success"])
+                    self.assertEqual(result["answer"], "完整答案")
+                    self.assertEqual(result["tokens"], expected)
+                    self.assertEqual(len(sdk.completions.calls), 1)
+                    sleep.assert_not_called()
+                    if method == "generate_answer" and expected["total"] is None:
+                        self.assertIn("token 用量未知", output.getvalue())
+
+    def test_failed_requests_preserve_unknown_usage(self):
+        for method in ("generate_answer", "chat"):
+            with self.subTest(method=method):
+                sdk = FakeSDKClient([RuntimeError("fixture connection lost")])
+                client = LLMClient("key", "https://fixture.invalid/v1",
+                                   sdk_client=sdk, verbose=False)
+                result = (client.generate_answer("问题", retry=0) if method == "generate_answer"
+                          else client.chat([{"role": "user", "content": "问题"}]))
+                self.assertFalse(result["success"])
+                self.assertEqual(result["tokens"],
+                                 {"prompt": None, "completion": None, "total": None})
+
     def test_permanent_http_failures_do_not_retry_but_transient_errors_do(self):
         for status, expected_requests in ((401, 1), (422, 1), (429, 3), (503, 3)):
             with self.subTest(status=status):

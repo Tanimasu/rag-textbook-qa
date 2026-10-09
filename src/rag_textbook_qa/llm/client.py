@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 from openai import APIStatusError, OpenAI
 
+from rag_textbook_qa.token_usage import completion_usage
+
 DEFAULT_LLM_BASE_URL = "https://api.ohmygpt.com/v1"
 DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite-preview"
 
@@ -125,13 +127,9 @@ class LLMClient:
         self.close()
 
     @staticmethod
-    def _usage(response: Any) -> dict[str, int]:
-        usage = getattr(response, "usage", None)
-        return {
-            "prompt": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion": int(getattr(usage, "completion_tokens", 0) or 0),
-            "total": int(getattr(usage, "total_tokens", 0) or 0),
-        }
+    def _usage(response: Any) -> dict[str, int | None]:
+        usage = completion_usage(response) or {}
+        return {key: usage.get(key) for key in ("prompt", "completion", "total")}
 
     @staticmethod
     def _failure(error: Exception, *, model: str, label: str) -> dict[str, Any]:
@@ -141,7 +139,7 @@ class LLMClient:
             "error": message,
             "answer": f"❌ {label}：{message}",
             "model": model,
-            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "tokens": {"prompt": None, "completion": None, "total": None},
             "time": 0,
         }
 
@@ -225,7 +223,9 @@ class LLMClient:
                         "finish_reason": finish_reason,
                     }
                 if self.verbose:
-                    print(f"成功（{elapsed} 秒，{usage['total']} tokens）")
+                    total = usage["total"]
+                    usage_label = f"{total} tokens" if total is not None else "token 用量未知"
+                    print(f"成功（{elapsed} 秒，{usage_label}）")
                 return {
                     "success": True,
                     "answer": answer,
