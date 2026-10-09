@@ -29,6 +29,7 @@ from filelock import FileLock, Timeout
 from rag_textbook_qa.evaluation.call_usage import (
     CallUsageRecordingError,
     UsageObserver,
+    completion_usage,
     observed_completion,
 )
 from rag_textbook_qa.evaluation.generation import (
@@ -113,16 +114,15 @@ def openai_generator(
             )
         )
         choice = response.choices[0]
-        usage = getattr(response, "usage", None)
+        usage = completion_usage(response)
         return {
             "answer": choice.message.content or "",
             "finish_reason": choice.finish_reason,
             # Only the length is kept; reasoning text is never stored.
             "reasoning_chars": len(getattr(choice.message, "reasoning_content", None) or ""),
-            "tokens": {
-                "prompt": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion": int(getattr(usage, "completion_tokens", 0) or 0),
-            },
+            "tokens": ({key: usage[key] for key in ("prompt", "completion")}
+                       if usage is not None else None),
+            "usage_record_version": 1,
             "seconds": round(time.monotonic() - started, 3),
             "attempts": attempts,
         }
@@ -433,9 +433,29 @@ def _usage(records: Sequence[Mapping[str, Any]], arms: Sequence[Arm]) -> dict[st
     usage = {}
     for arm in arms:
         rows = [r for r in records if r["arm"] == arm.name and arm.temperature is not None]
+        # The older adapter encoded missing provider usage as two zeroes. That
+        # history cannot prove a free request; preserve it and report ambiguity.
+        legacy_zero = [not r.get("usage_record_version")
+                       and r.get("tokens") == {"prompt": 0, "completion": 0} for r in rows]
+        counts: dict[str, list[int | None]] = {}
+        for key in ("prompt", "completion"):
+            counts[key] = []
+            for row, ambiguous in zip(rows, legacy_zero, strict=True):
+                tokens = row.get("tokens")
+                value = tokens.get(key) if isinstance(tokens, Mapping) else None
+                counts[key].append(value if type(value) is int and value >= 0
+                                   and not ambiguous else None)
         usage[arm.name] = {
-            "prompt_tokens": sum(r["tokens"]["prompt"] for r in rows),
-            "completion_tokens": sum(r["tokens"]["completion"] for r in rows),
+            **{f"{key}_tokens": (sum(values) if all(v is not None for v in values) else None)
+               for key, values in counts.items()},
+            **{f"known_{key}_tokens": sum(v for v in values if v is not None)
+               for key, values in counts.items()},
+            "responses": len(rows),
+            "unknown_usage_responses": sum(
+                prompt is None or completion is None
+                for prompt, completion in zip(counts["prompt"], counts["completion"], strict=True)
+            ),
+            "legacy_zero_usage_responses": sum(legacy_zero),
             "mean_seconds": statistics.fmean(r["seconds"] for r in rows) if rows else None,
             "mean_reasoning_chars": (
                 statistics.fmean(r["reasoning_chars"] for r in rows) if rows else None
@@ -612,6 +632,12 @@ def _run_generation_experiment_locked(
             for metric in ("completed", "incomplete", "empty_answers", "truncated")
         },
         "failures_logged": len(failures.lines),
+        "usage_version": 2,
+        "usage_scope": (
+            "Saved generation responses only; excludes failed/retried HTTP attempts, "
+            "judge calls and original generation of stored answers. "
+            "Use calls.jsonl for all observed attempts."
+        ),
         "usage": _usage(records, arms),
         **summary,
     }

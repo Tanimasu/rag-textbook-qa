@@ -565,6 +565,44 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual((report["planned"], report["judged"]), (1, 1))
         self.assertEqual((report["completed"], report["incomplete"]), (1, 0))
         self.assertEqual(report["usage"]["kept"]["prompt_tokens"], 0)
+        self.assertEqual(report["usage"]["kept"]["responses"], 0)
+        self.assertIn("original generation of stored answers", report["usage_scope"])
+
+    def test_unknown_usage_preserves_answers_and_known_subtotals_on_resume(self):
+        generator = MagicMock(side_effect=[
+            {**fake_answer("已知用量回答"), "tokens": {"prompt": 10, "completion": 4}},
+            {**fake_answer("用量缺失回答"), "tokens": None, "usage_record_version": 1},
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            arms = [Arm("hot", "baseline", .7)]
+            report = run(output, arms, generator=generator, concurrency=1)
+            original = (output / "generations.jsonl").read_bytes()
+            resumed = run(output, arms, generator=generator, concurrency=1)
+            self.assertEqual((output / "generations.jsonl").read_bytes(), original)
+        self.assertEqual(generator.call_count, 2)
+        self.assertEqual((report["completed"], report["judged"]), (2, 2))
+        usage = report["usage"]["hot"]
+        self.assertEqual((usage["responses"], usage["unknown_usage_responses"]), (2, 1))
+        self.assertEqual((usage["known_prompt_tokens"], usage["known_completion_tokens"]), (10, 4))
+        self.assertIsNone(usage["prompt_tokens"])
+        self.assertIsNone(usage["completion_tokens"])
+        self.assertEqual(resumed["usage"], report["usage"])
+
+    def test_legacy_zero_usage_is_ambiguous_but_provider_reported_zero_is_kept(self):
+        for version in (None, 1):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                answer = {**fake_answer("回答"), "tokens": {"prompt": 0, "completion": 0}}
+                if version is not None:
+                    answer["usage_record_version"] = version
+                generator = MagicMock(return_value=answer)
+                report = run(Path(directory), [Arm("hot", "baseline", .7)],
+                             generator=generator, samples=1)
+                usage = report["usage"]["hot"]
+                self.assertEqual(report["judged"], 1)
+                self.assertEqual(usage["legacy_zero_usage_responses"], int(version is None))
+                self.assertEqual(usage["unknown_usage_responses"], int(version is None))
+                self.assertEqual(usage["completion_tokens"], None if version is None else 0)
 
     def test_incomplete_generations_are_saved_without_judging_or_regenerating(self):
         for reason in ("length", "content_filter", "tool_calls", None, "missing"):

@@ -55,12 +55,29 @@ class CallUsageTests(unittest.TestCase):
         records = []
         with patch("rag_textbook_qa.evaluation.generation_runner.with_retries",
                    side_effect=lambda call: with_retries(call, sleep=lambda _: None)):
-            openai_generator(sdk, "model", max_tokens=20, on_call=records.append)("prompt", 0.7)
+            generated = openai_generator(sdk, "model", max_tokens=20, on_call=records.append)("prompt", 0.7)
         self.assertEqual([row["status"] for row in records], ["error", "response"])
         self.assertEqual(records[0]["http_status"], 429)
         self.assertIsNone(records[0]["tokens"])
         self.assertIsNone(records[1]["tokens"])
+        self.assertIsNone(generated["tokens"])
+        self.assertEqual(generated["usage_record_version"], 1)
         self.assertNotIn("private", json.dumps(records))
+
+    def test_partial_or_invalid_provider_counts_remain_unknown_in_both_outputs(self):
+        for prompt, completion in ((10, None), (True, -1), ("10", 4), (0, 0)):
+            with self.subTest(prompt=prompt, completion=completion):
+                sdk = MagicMock()
+                sdk.with_options.return_value.chat.completions.create.return_value = response(
+                    usage=SimpleNamespace(prompt_tokens=prompt, completion_tokens=completion)
+                )
+                records = []
+                generated = openai_generator(sdk, "model", max_tokens=20,
+                                             on_call=records.append)("prompt", .7)
+                expected = {"prompt": prompt if type(prompt) is int and prompt >= 0 else None,
+                            "completion": completion if type(completion) is int and completion >= 0 else None}
+                self.assertEqual(generated["tokens"], expected)
+                self.assertEqual({key:records[0]["tokens"][key] for key in expected}, expected)
 
     def test_truncated_json_is_not_judged_but_its_cost_is_recorded(self):
         sdk = MagicMock()

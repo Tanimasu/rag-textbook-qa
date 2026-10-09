@@ -46,6 +46,23 @@ def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def completion_usage(response: Any) -> dict[str, int | None] | None:
+    """Retain provider token counts without converting absent/invalid values to zero."""
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    completion = getattr(usage, "completion_tokens_details", None)
+    prompt = getattr(usage, "prompt_tokens_details", None)
+    return {
+        "prompt": _count(getattr(usage, "prompt_tokens", None)),
+        "completion": _count(getattr(usage, "completion_tokens", None)),
+        "total": _count(getattr(usage, "total_tokens", None)),
+        "reasoning": _count(getattr(completion, "reasoning_tokens", None)),
+        "cached_prompt": _count(getattr(prompt, "cached_tokens", None)),
+    }
+
+
 def observed_completion(
     client: Any, request: Mapping[str, Any], *, role: str,
     on_call: UsageObserver | None,
@@ -68,17 +85,7 @@ def observed_completion(
     }
     try:
         response = client.chat.completions.create(**request)
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            completion = getattr(usage, "completion_tokens_details", None)
-            prompt = getattr(usage, "prompt_tokens_details", None)
-            record["tokens"] = {
-                "prompt": _count(getattr(usage, "prompt_tokens", None)),
-                "completion": _count(getattr(usage, "completion_tokens", None)),
-                "total": _count(getattr(usage, "total_tokens", None)),
-                "reasoning": _count(getattr(completion, "reasoning_tokens", None)),
-                "cached_prompt": _count(getattr(prompt, "cached_tokens", None)),
-            }
+        record["tokens"] = completion_usage(response)
         record["status"] = "response"
         choices = getattr(response, "choices", ())
         record["finish_reason"] = getattr(choices[0], "finish_reason", None) if choices else None
