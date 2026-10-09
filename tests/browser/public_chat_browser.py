@@ -219,18 +219,25 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#input").fill(query)
         self.page.locator("#send").click()
 
-    def expect_ready(self) -> None:
+    def expect_ready(self, focus: str = "#input") -> None:
         self.expect(self.page.locator("#send")).to_be_enabled()
         self.expect(self.page.locator("#cancel")).to_be_hidden()
         self.expect(self.page.locator("#thread")).not_to_have_attribute("aria-busy", "true")
-        self.expect(self.page.locator("#input")).to_be_focused()
+        self.expect(self.page.locator(focus)).to_be_focused()
 
     def test_submit_stream_final_sources_and_clear(self) -> None:
         gate = threading.Event()
+        result = answer_result()
+        result["compute"] = {
+            "embedding": {"backend": "remote", "platform": "Windows", "device": "cuda",
+                          "fallback_used": False, "elapsed_seconds": .05},
+            "reranker": {"backend": "remote", "platform": "Windows", "device": "cuda",
+                         "fallback_used": False, "elapsed_seconds": .05},
+        }
         self.backend.enqueue(
             Reply(
                 initial=[("chunk", {"text": "流式片段：正在形成答案"})],
-                final=[("result", answer_result())],
+                final=[("result", result)],
                 gate=gate,
             )
         )
@@ -250,13 +257,38 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(body.locator("img")).to_have_count(0)
         self.expect(body).to_contain_text("<img src=x>")
         self.expect_ready()
+        runtime = self.page.locator("details.runtime")
+        self.expect(runtime).not_to_have_attribute("open", "")
+        self.expect(runtime.locator(".meta")).not_to_be_visible()
+        self.page.get_by_text("运行详情", exact=True).click()
+        self.expect(runtime.locator(".meta")).to_contain_text("远程 Worker（Windows）")
         self.expect(self.page.locator("details.sources")).not_to_have_attribute("open", "")
         body.get_by_role("button", name="资料 1").click()
         self.expect(self.page.locator("details.sources")).to_have_attribute("open", "")
+        self.expect(self.page.locator(".source")).to_be_focused()
         self.expect(self.page.locator(".source .excerpt")).to_be_visible()
         self.page.locator("#clear").click()
         self.expect(self.page.locator("#thread .msg")).to_have_count(0)
         self.expect(self.page.locator("#empty")).to_be_visible()
+
+    def test_citation_navigation_allows_keyboard_reading_of_long_original(self) -> None:
+        result = answer_result()
+        result["sources"][0]["excerpt"] = "\n".join(
+            [f"原文第 {number} 段：程序在数据集合上的一次执行。" for number in range(50)]
+            + ["原文结尾已核对"]
+        )
+        self.backend.enqueue(Reply(final=[("result", result)]))
+        self.open_page()
+        self.submit()
+        self.page.get_by_role("button", name="资料 1", exact=True).click()
+        self.expect(self.page.locator(".source")).to_be_focused()
+        self.page.locator(".source").press("Tab")
+        excerpt = self.page.get_by_role("region", name="资料 1 原文", exact=True)
+        self.expect(excerpt).to_be_focused()
+        self.assertTrue(excerpt.evaluate("node => node.scrollHeight > node.clientHeight"))
+        excerpt.press("End")
+        self.expect(excerpt).not_to_have_js_property("scrollTop", 0)
+        self.expect(excerpt).to_contain_text("原文结尾已核对")
 
     def test_http_refusal_retry_restores_original_query_and_book(self) -> None:
         self.backend.enqueue(Reply(http_status=401, detail="Unauthorized"))
@@ -265,7 +297,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.submit("程序和进程有什么区别？")
         self.expect(self.page.locator(".notice")).to_contain_text("需要正确的访问口令")
         self.expect(self.page.locator("#code-field")).to_be_visible()
-        self.expect_ready()
+        self.expect_ready("#code")
         self.page.locator("#code").fill("browser-test-code")
         self.page.locator("#book").select_option("database")
         self.page.locator("#input").fill("这是编辑后的其他问题")
@@ -275,6 +307,47 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(self.backend.asks[1]["access_code"], "browser-test-code")
         self.expect(self.page.locator("#book")).to_have_value("os")
         self.expect_ready()
+
+    def test_finishing_answer_preserves_focus_on_next_question_controls(self) -> None:
+        gate = threading.Event()
+        self.backend.enqueue(
+            Reply(initial=[("chunk", {"text": "正在回答"})],
+                  final=[("result", answer_result())], gate=gate)
+        )
+        self.open_page()
+        self.submit()
+        self.expect(self.page.locator(".answer .body")).to_have_text("正在回答")
+        self.page.locator("#book").select_option("database")
+        self.page.locator("#book").focus()
+        gate.set()
+        self.expect(self.page.locator(".answer strong")).to_have_text("进程")
+        self.expect_ready("#book")
+        self.assertEqual(self.backend.asks[0]["payload"]["book_id"], "os")
+
+    def test_old_retry_cannot_replace_draft_while_another_answer_is_running(self) -> None:
+        self.backend.enqueue(Reply(http_status=500, detail="暂时失败"))
+        gate = threading.Event()
+        self.backend.enqueue(
+            Reply(initial=[("chunk", {"text": "第二题正在回答"})],
+                  final=[("result", answer_result())], gate=gate)
+        )
+        self.open_page()
+        self.submit("第一次失败的问题")
+        retry = self.page.get_by_role("button", name="重试本题")
+        self.expect(retry).to_be_enabled()
+        self.submit("第二个问题")
+        self.expect(self.page.locator(".answer").last.locator(".body")).to_have_text(
+            "第二题正在回答"
+        )
+        self.page.locator("#book").select_option("database")
+        self.page.locator("#input").fill("正在准备第三个问题")
+        self.expect(retry).to_be_disabled()
+        gate.set()
+        self.expect(self.page.locator(".answer strong")).to_have_text("进程")
+        self.expect(retry).to_be_enabled()
+        self.expect(self.page.locator("#input")).to_have_value("正在准备第三个问题")
+        self.expect(self.page.locator("#book")).to_have_value("database")
+        self.assertEqual(len(self.backend.asks), 2)
 
     def test_valid_crlf_and_cr_streams_render_complete_answers(self) -> None:
         self.open_page()

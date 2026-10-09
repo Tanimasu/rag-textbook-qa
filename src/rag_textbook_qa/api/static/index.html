@@ -107,9 +107,12 @@ details.sources { margin-top: 10px; border-top: 1px solid var(--line); padding-t
 details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .source { margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); transition: box-shadow .2s, border-color .2s; }
 .source.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.source:focus-visible, .source .excerpt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .source .title { font-size: 13px; font-weight: 600; }
 .source .section { font-size: 12px; color: var(--muted); }
 .source .excerpt { font-size: 13px; margin-top: 4px; white-space: pre-wrap; max-height: 12em; overflow: auto; }
+.runtime { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.runtime summary { cursor: pointer; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 14px; }
 .composer form {
   display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line);
@@ -273,7 +276,9 @@ footer details p { margin-top: 6px; text-align: left; }
     const retry = element("button", "action", "重试本题");
     retry.type = "button";
     retry.dataset.retry = "true";
+    retry.disabled = busy;
     retry.addEventListener("click", () => {
+      if (busy) return;
       input.value = query;
       bookSelect.value = bookId;
       autosize();
@@ -310,10 +315,17 @@ footer details p { margin-top: 6px; text-align: left; }
     for (const source of sources) {
       const item = element("div", "source");
       item.dataset.citation = String(source.citation_id);
+      item.tabIndex = -1;
+      item.setAttribute("role", "region");
+      item.setAttribute("aria-label", `资料 ${source.citation_id} · ${source.book}`);
+      const excerpt = element("div", "excerpt", source.excerpt);
+      excerpt.tabIndex = 0;
+      excerpt.setAttribute("role", "region");
+      excerpt.setAttribute("aria-label", `资料 ${source.citation_id} 原文`);
       item.append(
         element("div", "title", `资料 ${source.citation_id} · ${source.book}`),
         element("div", "section", (source.section || "未标注章节") + (source.truncated ? " · 片段已截断" : "")),
-        element("div", "excerpt", source.excerpt),
+        excerpt,
       );
       details.append(item);
     }
@@ -394,6 +406,7 @@ footer details p { margin-top: 6px; text-align: left; }
     panel.hidden = true;
     const reason = element("select");
     reason.required = true;
+    reason.setAttribute("aria-label", "需要改进的原因");
     for (const [value, label] of [
       ["", "请选择需要改进的原因"],
       ["not_answered", "没有回答问题"],
@@ -409,6 +422,7 @@ footer details p { margin-top: 6px; text-align: left; }
       reason.append(option);
     }
     const comment = element("textarea");
+    comment.setAttribute("aria-label", "反馈补充说明");
     comment.maxLength = 500;
     comment.placeholder = "可以补充说明（选择“其他”时必填，最多 500 字）";
     const submitRow = element("div", "submit-row");
@@ -466,17 +480,26 @@ footer details p { margin-top: 6px; text-align: left; }
     const timing = result.timing || {};
     const compute = result.compute || {};
     const chips = [
-      ...(compute.embedding ? [["embedding", "Embedding"]] : []),
-      ...(compute.reranker ? [["reranker", "Reranker"]] : []),
       ["retrieval_seconds", "检索"], ["first_token_seconds", "首字"], ["total_seconds", "总计"],
-    ].map(([key, label]) => compute[key]
-      ? computeChip(label, compute[key])
-      : (typeof timing[key] === "number" ? `${label} ${timing[key].toFixed(2)} 秒` : null))
+    ].map(([key, label]) => typeof timing[key] === "number"
+      ? `${label} ${timing[key].toFixed(2)} 秒` : null)
       .filter(Boolean);
     if (chips.length) {
       const meta = element("div", "meta");
       for (const chip of chips) meta.append(element("span", "chip", chip));
       card.append(meta);
+    }
+    const stages = [["embedding", "Embedding"], ["reranker", "Reranker"]]
+      .filter(([key]) => compute[key]);
+    if (stages.length) {
+      const runtime = element("details", "runtime");
+      runtime.append(element("summary", "", "运行详情"));
+      const meta = element("div", "meta");
+      for (const [key, label] of stages) {
+        meta.append(element("span", "chip", computeChip(label, compute[key])));
+      }
+      runtime.append(meta);
+      card.append(runtime);
     }
     if (result.sources && result.sources.length) {
       card.append(renderSources(result.sources, result.status !== "answered"));
@@ -531,6 +554,7 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     bookSelect.setCustomValidity("");
     busy = true;
+    for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = true;
     send.disabled = true;
     clear.disabled = true;
     cancel.hidden = false;
@@ -644,9 +668,15 @@ footer details p { margin-top: 6px; text-align: left; }
       activeController = null;
       send.disabled = false;
       clear.disabled = false;
+      for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = false;
       cancel.hidden = true;
       thread.removeAttribute("aria-busy");
-      input.focus();
+      // Restore the composer after sending or stopping. If the reader has
+      // moved to another control (including a requested access code), keep it.
+      if ([document.body, input, send, cancel].includes(document.activeElement)
+          || document.activeElement?.matches("[data-retry]")) {
+        input.focus({ preventScroll: !autoFollow });
+      }
       refreshStatus();
     }
   }
@@ -705,6 +735,7 @@ footer details p { margin-top: 6px; text-align: left; }
     if (!target) return;
     details.open = true;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
     target.classList.add("flash");
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
