@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 from rag_textbook_qa.web.constants import RAGAS_METRIC_LABELS
@@ -24,28 +25,50 @@ def render_eval_tab(
 ) -> None:
     st.header("RAGAS 评估结果")
 
-    results = load_ragas_results()
+    load_failed = False
+    try:
+        results = load_ragas_results()
+    except Exception:  # noqa: BLE001 - A partial or unreadable CSV must not break chat.
+        results, load_failed = None, True
+        st.warning("评估结果暂时无法读取，文件可能尚未写完。可以重新读取，原记录会保留。")
+        if st.button("重新读取结果", key="reload_eval_results"):
+            st.rerun()
     col_btn, col_info = st.columns([1, 3])
     with col_btn:
         run_eval = st.button("运行评估", width="stretch")
     with col_info:
         if results is not None:
             st.caption(f"已有评估结果（{len(results)} 条），点击「运行评估」重新生成。")
+        elif load_failed:
+            st.caption("重新读取不调用模型；「运行评估」会发起一批新的评估。")
         else:
             st.caption("尚无评估结果，点击「运行评估」开始（需要几分钟）。")
 
     if run_eval:
-        with st.spinner("正在运行 RAGAS 评估，请耐心等待…"):
-            results = run_ragas_evaluation()
-        if results is not None:
-            st.success("评估完成！")
-        else:
-            st.error("评估完成但未生成结果文件，请检查控制台输出。")
+        try:
+            with st.spinner("正在运行 RAGAS 评估，请耐心等待…"):
+                new_results = run_ragas_evaluation()
+            if new_results is not None:
+                results = new_results
+                st.success("评估完成！")
+            else:
+                st.error("本次评估未生成结果文件；已有结果保留。")
+        except Exception:  # noqa: BLE001 - Keep the previous report available after a failed run.
+            st.error("本次评估未完成，已有结果保留。请检查模型服务后再试。")
 
     if results is None:
         return
 
     metric_cols = [column for column in RAGAS_METRIC_LABELS if column in results.columns]
+    results = results.copy()
+    invalid_scores = 0
+    for metric in metric_cols:
+        original = results[metric]
+        numeric = pd.to_numeric(original, errors="coerce")
+        invalid_scores += int((original.notna() & numeric.isna()).sum())
+        results[metric] = numeric
+    if invalid_scores:
+        st.warning("部分得分格式异常，按未评分展示；原始结果文件保留。")
     question_col = next(
         (column for column in results.columns if column in {"user_input", "question"}),
         None,
@@ -55,7 +78,9 @@ def render_eval_tab(
         st.subheader("汇总指标")
         columns = st.columns(len(metric_cols))
         for column, metric in zip(columns, metric_cols):
-            column.metric(RAGAS_METRIC_LABELS[metric], f"{results[metric].mean():.3f}")
+            values = results[metric].dropna()
+            column.metric(RAGAS_METRIC_LABELS[metric], f"{values.mean():.3f}" if len(values) else "—")
+            column.caption(f"{len(values)}/{len(results)} 题有得分")
 
         _render_score_chart(results, metric_cols, question_col)
 
@@ -92,7 +117,7 @@ def _render_score_chart(results: Any, metric_cols: list[str], question_col: str 
     with controls[3]:
         limit_options = [value for value in [10, 20, 30, 50] if value < len(results)]
         limit_options.append(len(results))
-        limit_options = sorted({max(5, value) for value in limit_options})
+        limit_options = sorted(set(limit_options))
         default_limit = min(20, len(results))
         display_limit = st.selectbox(
             "显示题数",
@@ -147,6 +172,9 @@ def _render_results_table(
 
     display_metric_cols = [RAGAS_METRIC_LABELS[column] for column in metric_cols]
     display_df["平均分"] = display_df[metric_cols].mean(axis=1).round(3)
+    display_df["有效指标"] = display_df[metric_cols].notna().sum(axis=1).map(
+        lambda count: f"{count}/{len(metric_cols)}"
+    )
     display_df = display_df.rename(columns=RAGAS_METRIC_LABELS)
 
     controls = st.columns([1.2, 1, 1, 1])
@@ -172,9 +200,9 @@ def _render_results_table(
 
     if "问题" in display_df.columns and search_text:
         display_df = display_df[
-            display_df["问题"].astype(str).str.contains(search_text, case=False, na=False)
+            display_df["问题"].astype(str).str.contains(search_text, case=False, na=False, regex=False)
         ]
-    display_df = display_df[display_df["平均分"] <= score_threshold]
+    display_df = display_df[display_df["平均分"].isna() | (display_df["平均分"] <= score_threshold)]
     display_df = display_df.sort_values(
         sort_column,
         ascending=sort_desc == "升序",
@@ -186,7 +214,7 @@ def _render_results_table(
 
     preferred_columns = [
         column
-        for column in ["题号", "问题", "平均分", *display_metric_cols]
+        for column in ["题号", "问题", "平均分", "有效指标", *display_metric_cols]
         if column in display_df.columns
     ]
     remaining_columns = [
@@ -194,6 +222,13 @@ def _render_results_table(
     ]
     display_df = display_df[preferred_columns + remaining_columns]
     st.caption(f"当前显示 {len(display_df)} 条结果。")
+    st.caption("未评分题目保留展示；平均分按本题可用指标计算，缺失得分不记为零。")
+    # Streamlit's numeric cells render null as "None" even with Styler na_rep.
+    # Format only the final table; filtering, ordering and stored scores stay numeric.
+    for column in ("平均分", *display_metric_cols):
+        display_df[column] = display_df[column].map(
+            lambda value: "未评分" if pd.isna(value) else f"{value:.3f}"
+        )
     st.dataframe(
         display_df,
         width="stretch",
@@ -201,6 +236,6 @@ def _render_results_table(
         column_config={
             "题号": st.column_config.TextColumn(width="small"),
             "问题": st.column_config.TextColumn(width="large"),
-            "平均分": st.column_config.NumberColumn(format="%.3f"),
+            "平均分": st.column_config.TextColumn(),
         },
     )

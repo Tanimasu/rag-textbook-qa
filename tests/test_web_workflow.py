@@ -56,7 +56,7 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
             self.assertEqual(legacy.read_bytes(), original)
             self.assertTrue(all((path / "ragas_evaluation_results.csv").exists() for path in destinations))
 
-    def app(self, engine=None, error=None, results=None):
+    def app(self, engine=None, error=None, results=None, result_reader=None):
         from streamlit.testing.v1 import AppTest
 
         from rag_textbook_qa.web import services
@@ -66,7 +66,8 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
                 services, "load_available_books", return_value=[("操作系统", "os"), ("全部", None)]
             )
         )
-        self.enterContext(patch.object(services, "load_ragas_results", return_value=results))
+        self.enterContext(patch.object(services, "load_ragas_results",
+                                      new=result_reader or MagicMock(return_value=results)))
         loader = self.enterContext(
             patch.object(services, "load_engine", return_value=engine, side_effect=error)
         )
@@ -88,6 +89,76 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
                 self.assertEqual(list(app.dataframe[0].value["题号"]), expected)
                 self.assertEqual(list(app.dataframe[1].value["题号"]), list(reversed(expected)))
                 self.assertNotIn("question_index", app.dataframe[1].value.columns)
+
+    def test_unscored_questions_remain_visible_and_search_uses_literal_text(self):
+        import pandas as pd
+
+        results = pd.DataFrame({"question": ["数组 a[0]", "未评分的问题"],
+                                "faithfulness": [0.8, None]})
+        app, _ = self.app(results=results)
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.dataframe[1].value), 2)
+        self.assertEqual(set(app.dataframe[1].value["有效指标"]), {"1/1", "0/1"})
+        self.assertTrue(any("1/2 题有得分" in item.value for item in app.caption))
+        search = next(w for w in app.text_input if w.label == "搜索问题")
+        search.set_value("[").run(timeout=20)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["数组 a[0]"])
+        next(w for w in app.text_input if w.label == "搜索问题").set_value("").run(timeout=20)
+        next(w for w in app.slider if w.label == "最高平均分").set_value(0.5).run(timeout=20)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["未评分的问题"])
+        self.assertEqual(app.dataframe[1].value["平均分"].tolist(), ["未评分"])
+        self.assertEqual(results["faithfulness"].tolist()[0], 0.8)
+        self.assertTrue(pd.isna(results["faithfulness"].iloc[1]))
+
+    def test_unreadable_results_can_be_reloaded_without_running_paid_evaluation(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        read = MagicMock(side_effect=pd.errors.EmptyDataError("fixture private path"))
+        with patch.object(services, "run_ragas_evaluation") as evaluate:
+            app, loader = self.app(result_reader=read)
+            self.assertFalse(app.exception)
+            self.assertEqual(len(app.chat_input), 1)
+            self.assertTrue(any("暂时无法读取" in item.value for item in app.warning))
+            read.side_effect = None
+            read.return_value = pd.DataFrame({"question": ["恢复的结果"], "faithfulness": [0.8]})
+            next(w for w in app.button if w.label == "重新读取结果").click().run(timeout=20)
+            self.assertFalse(app.exception)
+            self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["恢复的结果"])
+            evaluate.assert_not_called()
+            loader.assert_not_called()
+
+    def test_failed_evaluation_keeps_previous_report_without_automatic_retry(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        results = pd.DataFrame({"question": ["已有结果"], "faithfulness": [0.8]})
+        with patch.object(services, "run_ragas_evaluation", side_effect=RuntimeError("fixture secret")) as evaluate:
+            app, _ = self.app(results=results)
+            next(w for w in app.button if w.label == "运行评估").click().run(timeout=20)
+            self.assertFalse(app.exception)
+            self.assertTrue(any("未完成" in item.value for item in app.error))
+            self.assertFalse(any("secret" in item.value for item in app.error))
+            self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["已有结果"])
+            next(w for w in app.text_input if w.label == "搜索问题").set_value("已有").run(timeout=20)
+            evaluate.assert_called_once()
+
+    def test_invalid_metric_text_is_shown_as_unknown_without_mutating_original(self):
+        import pandas as pd
+
+        results = pd.DataFrame({"question": ["已评分", "格式异常"],
+                                "faithfulness": ["0.8", "invalid"]})
+        app, _ = self.app(results=results)
+        self.assertFalse(app.exception)
+        self.assertTrue(any("得分格式异常" in item.value for item in app.warning))
+        detail = app.dataframe[1].value
+        self.assertEqual(len(detail), 2)
+        self.assertEqual(detail.loc[detail["问题"] == "格式异常", "平均分"].tolist(), ["未评分"])
+        self.assertEqual(results["faithfulness"].tolist(), ["0.8", "invalid"])
 
     def test_streaming_answer_sources_history_clear_and_defaults(self):
         engine = MagicMock()
