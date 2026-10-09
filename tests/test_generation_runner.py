@@ -281,6 +281,17 @@ class ProtocolPersistenceTests(unittest.TestCase):
 
 
 class ExperimentTests(unittest.TestCase):
+    def test_accounting_failure_stops_queued_paid_samples_and_judging(self):
+        from rag_textbook_qa.evaluation.call_usage import CallUsageRecordingError
+
+        generator = MagicMock(side_effect=CallUsageRecordingError("cannot save usage"))
+        judge = MagicMock()
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(CallUsageRecordingError):
+            run(Path(directory), [Arm("hot", "baseline", 0.7)], samples=20,
+                concurrency=1, generator=generator, judge=judge)
+        generator.assert_called_once()
+        judge.assert_not_called()
+
     def test_interrupt_cancels_queued_judgments_and_resume_keeps_finished_score(self):
         started, release = threading.Event(), threading.Event()
         original_shutdown = ThreadPoolExecutor.shutdown
@@ -621,7 +632,7 @@ class ExperimentTests(unittest.TestCase):
             self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
             self.assertEqual(report["summary_version"], 2)
             self.assertEqual(report["quality_sample_policy"], "completed_answers_only")
-            self.assertEqual(report["settings"]["judge_version"], 4)
+            self.assertEqual(report["settings"]["judge_version"], 5)
             self.assertIsNone(report["arms"]["hot"]["problem_claims"])
             self.assertTrue(all(value is None for value in report["comparisons"]["cool"].values()))
 

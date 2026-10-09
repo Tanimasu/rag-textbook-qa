@@ -718,6 +718,9 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         }, ensure_ascii=False, indent=2))
         return 0
     generator_llm, judge_llm, extra = llm_pair_from_env()
+    from rag_textbook_qa.evaluation.call_usage import CallUsageLog
+
+    call_usage = CallUsageLog(args.output_dir / "calls.jsonl")
     with ExitStack() as cleanup:
         cleanup.callback(generator_llm.close)
         cleanup.callback(judge_llm.close)
@@ -739,9 +742,12 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
             arms,
             output_dir=args.output_dir,
             generator=openai_generator(
-                generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens
+                generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens,
+                on_call=call_usage,
             ),
-            judge=openai_judge(judge_llm.client, judge_llm.default_model, extra=extra),
+            judge=openai_judge(
+                judge_llm.client, judge_llm.default_model, extra=extra, on_call=call_usage,
+            ),
             samples=args.samples,
             seed=args.seed,
             concurrency=args.concurrency,

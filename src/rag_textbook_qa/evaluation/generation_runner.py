@@ -26,6 +26,11 @@ from typing import Any
 
 from filelock import FileLock, Timeout
 
+from rag_textbook_qa.evaluation.call_usage import (
+    CallUsageRecordingError,
+    UsageObserver,
+    observed_completion,
+)
 from rag_textbook_qa.evaluation.generation import (
     EXTRACTION_PROMPT,
     VERIFICATION_PROMPT,
@@ -52,7 +57,7 @@ JUDGE_ATTEMPTS = 3
 PROVIDER_ATTEMPTS = 4
 # Bump whenever what the judge sees or how its output is scored changes, so a
 # directory judged under older rules refuses to resume under newer ones.
-JUDGE_VERSION = 4
+JUDGE_VERSION = 5
 TRANSIENT_ERRORS = frozenset(
     {"APITimeoutError", "APIConnectionError", "RateLimitError", "InternalServerError"}
 )
@@ -94,15 +99,17 @@ def generation_request(
 
 
 def openai_generator(
-    sdk_client: Any, model: str, *, max_tokens: int, timeout: float = 180.0
+    sdk_client: Any, model: str, *, max_tokens: int, timeout: float = 180.0,
+    on_call: UsageObserver | None = None,
 ) -> Generator:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
     def generate(prompt: str, temperature: float) -> dict[str, Any]:
         started = time.monotonic()
         response, attempts = with_retries(
-            lambda: client.chat.completions.create(
-                **generation_request(model, prompt, temperature, max_tokens)
+            lambda: observed_completion(
+                client, generation_request(model, prompt, temperature, max_tokens),
+                role="generator", on_call=on_call,
             )
         )
         choice = response.choices[0]
@@ -130,20 +137,27 @@ def openai_judge(
     extra: Mapping[str, Any],
     max_tokens: int = 4096,
     timeout: float = 180.0,
+    on_call: UsageObserver | None = None,
 ) -> Judge:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
     def judge(prompt: str) -> str:
         response, _ = with_retries(
-            lambda: client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=max_tokens,
-                stream=False,
-                **extra,
+            lambda: observed_completion(
+                client, {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                    **extra,
+                }, role="judge", on_call=on_call,
             )
         )
+        if response.choices[0].finish_reason != "stop":
+            from rag_textbook_qa.llm.client import LLMGenerationIncompleteError
+
+            raise LLMGenerationIncompleteError("评判模型未正常结束，不能使用这份评判")
         return response.choices[0].message.content or ""
 
     return judge
@@ -372,7 +386,11 @@ def _run_stage(
 
     def work_if_active(key: Key) -> None:
         if not cancelled.is_set():
-            work(key)
+            try:
+                work(key)
+            except CallUsageRecordingError:
+                cancelled.set()
+                raise
 
     pool = ThreadPoolExecutor(max_workers=concurrency)
     try:
@@ -382,6 +400,9 @@ def _run_stage(
             try:
                 future.result()
                 status = "ok"
+            except CallUsageRecordingError:
+                cancelled.set()
+                raise
             except Exception as exc:  # noqa: BLE001 - one failed sample must not end the run
                 message = str(exc)
                 failures.append(
