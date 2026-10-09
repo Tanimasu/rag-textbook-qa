@@ -125,6 +125,7 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         self.assertEqual(app.session_state["messages"][1]["sources"][0]["content"], "实际输入片段")
         app.run(timeout=20)
         self.assertFalse(app.exception)
+        self.assertFalse(any('<div class="empty-state">' in item.value for item in app.markdown))
         engine.ask.assert_called_once()
         next(b for b in app.button if b.label == "清空对话").click().run(timeout=20)
         self.assertEqual(app.session_state["messages"], [])
@@ -136,6 +137,40 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         text = app.session_state["messages"][-1]["content"]
         self.assertIn("暂时无法", text)
         self.assertNotIn("secret", text)
+
+    def test_retry_preserves_original_book_and_settings_without_automatic_calls(self):
+        engine = MagicMock()
+        engine.ask.return_value = {"success": False, "answer": "服务暂时不可用", "context_sources": []}
+        app, _ = self.app(engine)
+        app.chat_input[0].set_value("什么是进程？").run(timeout=20)
+        self.assertTrue(any(b.label == "重试本题" for b in app.button))
+        app.run(timeout=20)
+        original = engine.ask.call_args.kwargs.copy()
+        self.assertEqual(engine.ask.call_count, 1)
+        # Changing the controls must not silently turn a retry into a different request.
+        app.radio[0].set_value("全部").run(timeout=20)
+        app.slider[0].set_value(8).run(timeout=20)
+        engine.ask.return_value = {"success": True, "answer": "重试后的回答", "context_sources": []}
+        next(b for b in app.button if b.label == "重试本题").click().run(timeout=20)
+        retried = engine.ask.call_args.kwargs
+        self.assertEqual({k: v for k, v in retried.items() if k != "on_answer_chunk"},
+                         {k: v for k, v in original.items() if k != "on_answer_chunk"})
+        self.assertEqual(engine.ask.call_count, 2)
+        self.assertEqual(app.session_state["messages"][-1]["content"], "重试后的回答")
+        self.assertFalse(app.exception)
+
+    def test_source_view_keeps_full_text_and_declared_citation_number(self):
+        engine = MagicMock()
+        content = "教材原文\n" + "前文" * 150 + "末尾的关键定义 <原样显示>"
+        engine.ask.return_value = {"success": True, "answer": "答案【参考资料 7】",
+            "context_sources": [{"citation_id": 7, "book_name": "os", "content": content}]}
+        app, _ = self.app(engine)
+        app.chat_input[0].set_value("问题").run(timeout=20)
+        rendered = "\n".join(item.value for item in app.markdown)
+        self.assertIn("参考资料 7", rendered)
+        self.assertIn("末尾的关键定义 &lt;原样显示&gt;", rendered)
+        self.assertNotIn("分数 0.000", rendered)
+        self.assertFalse(app.exception)
 
     def test_retrieval_failure_and_empty_results_render_without_crashing(self):
         from rag_textbook_qa.providers.base import AuthenticationError

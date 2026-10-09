@@ -132,12 +132,15 @@ def inject_custom_styles() -> None:
         }
 
         .answer-shell {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 24px;
-            box-shadow: 0 18px 44px rgba(34, 48, 74, 0.06);
-            padding: 1.35rem 1.5rem;
-            margin-bottom: 1rem;
+            padding: 0.25rem 0;
+            margin-bottom: 0.5rem;
+        }
+
+        .answer-title {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-weight: 600;
         }
 
         .answer-title {
@@ -237,6 +240,10 @@ def inject_custom_styles() -> None:
             color: #33415c;
             font-size: 0.92rem;
             line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 18rem;
+            overflow-y: auto;
         }
 
         .empty-state {
@@ -258,7 +265,15 @@ def inject_custom_styles() -> None:
 
         @media (max-width: 900px) {
             .status-grid {
-                grid-template-columns: 1fr;
+                gap: 0.4rem;
+            }
+
+            .status-card {
+                padding: 0.65rem 0.6rem;
+            }
+
+            .status-value {
+                font-size: 0.9rem;
             }
 
             .hero h1 {

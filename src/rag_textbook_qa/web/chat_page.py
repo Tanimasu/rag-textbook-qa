@@ -74,7 +74,8 @@ def render_chat_tab(
             unsafe_allow_html=True,
         )
 
-    for message in st.session_state.messages:
+    retry_request = None
+    for index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
                 render_answer_block(
@@ -85,13 +86,30 @@ def render_chat_tab(
                 render_decomposition(message.get("decomposition"))
                 render_grounding(message.get("grounding"))
                 render_context_expansion(message.get("context_expansion"))
+                if (
+                    message.get("success") is False and message.get("request")
+                    and st.button("重试本题", key=f"retry_question_{index}")
+                ):
+                    retry_request = message["request"].copy()
             else:
                 st.markdown(message["content"])
 
     user_question = st.chat_input("请输入您的问题…")
-    if not user_question:
+    if not user_question and retry_request is None:
         return
 
+    request = retry_request or {
+        "query": user_question,
+        "book_name": book_id,
+        "top_k": top_k,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "use_hyde": enable_hyde,
+        "use_adjacent_context": enable_adjacent_context,
+        "use_decomposition": enable_decomposition,
+        "verify_citations": verify_citations,
+    }
+    user_question = request["query"]
     st.session_state.messages.append({"role": "user", "content": user_question})
     with st.chat_message("user"):
         st.markdown(user_question)
@@ -109,15 +127,7 @@ def render_chat_tab(
             with st.spinner("正在检索教材并生成答案…"):
                 engine = load_engine()
                 result = engine.ask(
-                    query=user_question,
-                    book_name=book_id,
-                    top_k=top_k,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    use_hyde=enable_hyde,
-                    use_adjacent_context=enable_adjacent_context,
-                    use_decomposition=enable_decomposition,
-                    verify_citations=verify_citations,
+                    **request,
                     on_answer_chunk=render_chunk,
                 )
         except (ProviderError, OSError, RuntimeError, ValueError):
@@ -134,6 +144,10 @@ def render_chat_tab(
         render_decomposition(result.get("decomposition"))
         render_grounding(result.get("grounding"))
         render_context_expansion(result.get("context_expansion"))
+        if result.get("success") is False:
+            # Render immediately after failure. The next rerun handles the click
+            # through the saved message above, using this same stable widget key.
+            st.button("重试本题", key=f"retry_question_{len(st.session_state.messages)}")
 
     st.session_state.messages.append(
         {
@@ -144,5 +158,10 @@ def render_chat_tab(
             "decomposition": result.get("decomposition"),
             "grounding": result.get("grounding"),
             "context_expansion": result.get("context_expansion"),
+            "success": result.get("success"),
+            "request": request,
         }
     )
+    # Rebuild the saved history so the empty-state hint disappears and the
+    # composer follows the finished answer. A rerun itself never asks the engine.
+    st.rerun()

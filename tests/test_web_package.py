@@ -42,7 +42,7 @@ class WebPackageTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("on_answer_chunk=render_chunk", chat_source)
-        self.assertIn("use_hyde=enable_hyde", chat_source)
+        # Request forwarding (including retried requests) is exercised by AppTest.
         self.assertIn('"启用 HyDE 增强检索"', layout_source)
         self.assertIn("value=False", layout_source)
         self.assertIn('sidebar_state.get("enable_hyde", False)', app_source)

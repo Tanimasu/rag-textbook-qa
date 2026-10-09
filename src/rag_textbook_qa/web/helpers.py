@@ -46,19 +46,19 @@ def render_sources_expander(sources: list[dict[str, Any]]) -> None:
         return
 
     with st.expander(f"📚 参考来源（{len(sources)}）", expanded=False):
+        st.caption("逐条核对回答中的参考资料编号与教材原文。")
         for index, source in enumerate(sources, 1):
-            score = float(source.get("final_score", source.get("similarity", 0)))
-            method = html.escape(str(source.get("method", "hybrid")))
             book = html.escape(format_book_label(source.get("book_name", "") or "未知教材"))
             section = html.escape(format_section_label(source))
             content = str(source.get("content", ""))
-            snippet = html.escape(content[:220] + ("..." if len(content) > 220 else ""))
+            citation_id = html.escape(str(source.get("citation_id", index)))
+            snippet = html.escape(content)
 
             st.markdown(
                 f"""
                 <div class="source-card">
-                    <div class="source-title">{index}. {book}</div>
-                    <div class="source-meta">{section} · 分数 {score:.3f} · {method}</div>
+                    <div class="source-title">参考资料 {citation_id} · {book}</div>
+                    <div class="source-meta">{section}</div>
                     <div class="source-snippet">{snippet}</div>
                 </div>
                 """,
