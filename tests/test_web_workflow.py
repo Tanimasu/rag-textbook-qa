@@ -139,6 +139,24 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         self.assertIn("暂时无法", text)
         self.assertNotIn("secret", text)
 
+    def test_download_uses_original_question_and_actual_sources_without_model_reruns(self):
+        engine = MagicMock()
+        engine.ask.return_value = {"success": True, "answer": "答案【参考资料 7】",
+            "context_sources": [{"citation_id": 7, "book_name": "os", "content": "实际输入末尾"}],
+            "results": [{"content": "未发送候选"}]}
+        with patch("rag_textbook_qa.web.chat_page.st.download_button") as download:
+            app, _ = self.app(engine)
+            app.chat_input[0].set_value("原来的问题").run(timeout=20)
+            app.radio[0].set_value("全部").run(timeout=20)
+            app.run(timeout=20)
+        engine.ask.assert_called_once()
+        self.assertFalse(app.exception)
+        options = download.call_args.kwargs
+        self.assertIn("原来的问题", options["data"])
+        self.assertIn("实际输入末尾", options["data"])
+        self.assertNotIn("未发送候选", options["data"])
+        self.assertEqual(options["on_click"], "ignore")
+
     def test_retry_preserves_original_book_and_settings_without_automatic_calls(self):
         engine = MagicMock()
         engine.ask.return_value = {"success": False, "answer": "服务暂时不可用", "context_sources": []}

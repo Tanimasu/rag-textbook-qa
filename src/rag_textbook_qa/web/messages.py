@@ -2,8 +2,48 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any
+
+from rag_textbook_qa.catalog import BOOK_LABELS
+
+
+def source_section_label(source: Mapping[str, Any]) -> str:
+    parts = [str(source.get(field) or "").strip()
+             for field in ("chapter", "section_h2", "section_h3", "section_h4")]
+    return " > ".join(part for part in parts if part) or "未标注章节"
+
+
+def _literal_block(text: str) -> str:
+    # Textbook code can contain fences itself. Preserve it as literal evidence,
+    # without letting a shorter fence reinterpret the following source as Markdown.
+    longest = max((len(match[0]) for match in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def answer_export_markdown(
+    query: str, answer: str, sources: Sequence[Mapping[str, Any]],
+) -> str:
+    """Save the displayed answer and its actual excerpts, without internal metadata."""
+    lines = ["# 教材问答记录", "", "## 问题", "", _literal_block(query), "",
+             "## 回答", "", answer, "", "## 参考教材片段", "",
+             "以下为本次回答使用的片段；请按资料编号核对回答。", ""]
+    for index, source in enumerate(sources, 1):
+        book_id = str(source.get("book_name") or "未知教材")
+        book = BOOK_LABELS.get(book_id, book_id.replace("_", " ").title())
+        citation = source.get("citation_id", index)
+        lines.extend([f"### 参考资料 {citation} · {book}", "",
+                      source_section_label(source), ""])
+        if source.get("truncated"):
+            lines.extend(["片段已截断。", ""])
+        if source.get("table_compacted"):
+            lines.extend(["表格按行整理。", ""])
+        lines.extend([_literal_block(str(source.get("content") or "")), ""])
+    if not sources:
+        lines.extend(["本次记录未包含教材片段。", ""])
+    return "\n".join(lines)
 
 
 def answer_message(result: Mapping[str, Any]) -> str:

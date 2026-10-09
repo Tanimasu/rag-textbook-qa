@@ -1,9 +1,25 @@
 import unittest
 
-from rag_textbook_qa.web.messages import answer_message, compute_trace_items
+from rag_textbook_qa.web.messages import answer_export_markdown, answer_message, compute_trace_items
 
 
 class WebMessageTests(unittest.TestCase):
+    def test_export_preserves_actual_source_numbers_full_text_and_fence_boundaries(self):
+        excerpt = '正文前半\n```python\nprint("值")\n```\n末尾证据 <原样>'
+        exported = answer_export_markdown('为什么？', '答案【参考资料 7】', [
+            {"citation_id": 7, "book_name": "computer_organization", "content": excerpt,
+             "section_h3": "4.5.8 写入策略", "section_h4": "1.写回法",
+             "truncated": True, "table_compacted": True,
+             "private_metadata": "do-not-export", "rank": 11}
+        ])
+        self.assertIn('答案【参考资料 7】', exported)
+        self.assertIn('参考资料 7 · 计算机组成原理', exported)
+        self.assertIn('4.5.8 写入策略 > 1.写回法', exported)
+        self.assertIn('````text\n'+excerpt+'\n````', exported)
+        self.assertIn('片段已截断。', exported)
+        self.assertIn('表格按行整理。', exported)
+        self.assertNotIn('do-not-export', exported)
+
     def test_answer_is_preferred_when_generation_succeeds(self):
         self.assertEqual(
             answer_message({"answer": "教材答案", "error": None}),

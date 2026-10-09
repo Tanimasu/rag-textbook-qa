@@ -8,7 +8,7 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.catalog import BOOK_LABELS
-from rag_textbook_qa.web.messages import compute_trace_items
+from rag_textbook_qa.web.messages import compute_trace_items, source_section_label
 
 
 def format_book_label(book_id: str) -> str:
@@ -16,12 +16,7 @@ def format_book_label(book_id: str) -> str:
 
 
 def format_section_label(source: dict[str, Any]) -> str:
-    parts = [
-        str(source.get(field) or "").strip()
-        for field in ("chapter", "section_h2", "section_h3", "section_h4")
-    ]
-    populated = [part for part in parts if part]
-    return " > ".join(populated) if populated else "未标注章节"
+    return source_section_label(source)
 
 
 def render_source_preview(sources: list[dict[str, Any]]) -> None:

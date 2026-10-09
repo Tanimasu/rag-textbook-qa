@@ -13,7 +13,7 @@ from rag_textbook_qa.web.helpers import (
     render_answer_details,
     render_answer_header,
 )
-from rag_textbook_qa.web.messages import answer_message
+from rag_textbook_qa.web.messages import answer_export_markdown, answer_message
 
 
 def render_decomposition(plan: dict[str, Any] | None) -> None:
@@ -86,6 +86,19 @@ def render_chat_tab(
                 render_decomposition(message.get("decomposition"))
                 render_grounding(message.get("grounding"))
                 render_context_expansion(message.get("context_expansion"))
+                if message.get("success") is not False:
+                    query = message.get("request", {}).get("query")
+                    if not query and index and st.session_state.messages[index - 1]["role"] == "user":
+                        query = st.session_state.messages[index - 1]["content"]
+                    st.download_button(
+                        "保存问答（含来源）",
+                        data=answer_export_markdown(query or "（未保存问题）", message["content"],
+                                                    message.get("sources", [])),
+                        file_name=f"教材问答-{index + 1}.md",
+                        mime="text/markdown; charset=utf-8",
+                        key=f"download_question_{index}",
+                        on_click="ignore",
+                    )
                 if (
                     message.get("success") is False and message.get("request")
                     and st.button("重试本题", key=f"retry_question_{index}")
