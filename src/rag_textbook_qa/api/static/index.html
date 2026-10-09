@@ -376,7 +376,45 @@ footer details p { margin-top: 6px; text-align: left; }
     }
   }
 
-  function renderActions(card, result) {
+  function answerNotices(result) {
+    const notices = [];
+    if (result.message) notices.push([result.message, result.status === "failed" ? "error" : "warn"]);
+    const citation = result.citation_integrity || {};
+    if (citation.status === "missing") {
+      notices.push(["这份回答没有标出对应的资料编号，请结合下方教材原文核对。", "warn"]);
+    } else if (citation.status === "invalid") {
+      notices.push([`回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn"]);
+    }
+    if (result.conflicts && result.conflicts.length) {
+      notices.push([`检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn"]);
+    }
+    return notices;
+  }
+
+  function literalBlock(text) {
+    const value = String(text || "");
+    const runs = value.match(/`+/g) || [];
+    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    return `${fence}text\n${value}\n${fence}`;
+  }
+
+  function answerRecord(query, result) {
+    const lines = ["# 教材问答记录", "", "## 问题", "", literalBlock(query), "",
+      "## 回答", "", result.answer, "", "## 核对提示", "",
+      "资料编号用于定位原文，请结合教材片段核对回答。", ""];
+    for (const [message] of answerNotices(result)) lines.push(message, "");
+    lines.push("## 参考教材片段", "");
+    for (const source of result.sources || []) {
+      lines.push(`### 参考资料 ${source.citation_id} · ${source.book}`, "",
+        source.section || "未标注章节", "");
+      if (source.truncated) lines.push("片段已截断。", "");
+      lines.push(literalBlock(source.excerpt), "");
+    }
+    if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");
+    return lines.join("\n");
+  }
+
+  function renderActions(card, result, query) {
     const actions = element("div", "actions");
     if (result.answer) {
       const copy = element("button", "action", "复制答案");
@@ -391,6 +429,23 @@ footer details p { margin-top: 6px; text-align: left; }
         }
       });
       actions.append(copy);
+    }
+    if (result.status === "answered" && result.answer) {
+      const save = element("button", "action", "保存问答（含来源）");
+      save.type = "button";
+      save.addEventListener("click", () => {
+        const blob = new Blob([answerRecord(query, result)], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = element("a");
+        link.href = url;
+        link.download = "教材问答.md";
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+      actions.append(save);
     }
     if (!result.answer_id) {
       if (actions.children.length) card.append(actions);
@@ -467,20 +522,11 @@ footer details p { margin-top: 6px; text-align: left; }
     return `${label} · ${location} · ${device} · ${stage.elapsed_seconds.toFixed(3)} 秒`;
   }
 
-  function finish(card, result) {
+  function finish(card, result, query) {
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
-    if (result.message) addNotice(card, result.message, result.status === "failed" ? "error" : "warn");
-    const citation = result.citation_integrity || {};
-    if (citation.status === "missing") {
-      addNotice(card, "这份回答没有标出对应的资料编号，请结合下方教材原文核对。", "warn");
-    } else if (citation.status === "invalid") {
-      addNotice(card, `回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn");
-    }
-    if (result.conflicts && result.conflicts.length) {
-      addNotice(card, `检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn");
-    }
+    for (const [message, kind] of answerNotices(result)) addNotice(card, message, kind);
     const timing = result.timing || {};
     const compute = result.compute || {};
     const chips = [
@@ -508,7 +554,7 @@ footer details p { margin-top: 6px; text-align: left; }
     if (result.sources && result.sources.length) {
       card.append(renderSources(result.sources, result.status !== "answered"));
     }
-    renderActions(card, result);
+    renderActions(card, result, query);
   }
 
   function parseEvent(frame) {
@@ -634,7 +680,7 @@ footer details p { margin-top: 6px; text-align: left; }
             schedulePaint();
           } else if (event.name === "result") {
             cancelPaint();
-            finish(card, event.data);
+            finish(card, event.data, query);
             if (event.data.status === "failed") addRetry(card, query, bookId);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {

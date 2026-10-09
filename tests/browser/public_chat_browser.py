@@ -296,6 +296,43 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(excerpt).not_to_have_js_property("scrollTop", 0)
         self.expect(excerpt).to_contain_text("原文结尾已核对")
 
+    def test_download_preserves_original_question_sources_and_notices_without_new_requests(self) -> None:
+        self.open_page()
+        for width in (1280, 390):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width": width, "height": 844})
+                result = answer_result()
+                result["answer"] = "完整回答【参考资料 7】【参考资料 99】"
+                result["citation_integrity"] = {"status": "invalid", "unknown": [99]}
+                result["conflicts"] = ["不同定义"]
+                result["sources"][0].update({"citation_id": 7, "truncated": True,
+                    "section": "第二章 > 第四级标题", "excerpt": "原文\n```python\nprint(7)\n```\n原文末尾"})
+                result["internal_metadata"] = "private-do-not-export"
+                self.backend.enqueue(Reply(final=[("result", result)]))
+                question = f"原问题{width}：教材如何定义进程？"
+                self.submit(question)
+                card = self.page.locator(".answer").last
+                self.expect(card.locator(".body")).to_contain_text("完整回答")
+                self.expect_ready()
+                self.page.locator("#input").fill("尚未发送的新问题")
+                self.page.locator("#book").select_option("database")
+                requests_before = len(self.backend.asks)
+                with self.page.expect_download(timeout=5000) as download_info:
+                    card.get_by_role("button", name="保存问答（含来源）", exact=True).click()
+                download = download_info.value
+                self.assertEqual(download.suggested_filename, "教材问答.md")
+                text = Path(download.path()).read_text(encoding="utf-8")
+                for expected in (question, result["answer"], "参考资料 7", "第四级标题",
+                                 result["sources"][0]["excerpt"], "````text", "片段已截断",
+                                 "不存在的资料编号（99）", "不同定义"):
+                    self.assertIn(expected, text)
+                self.assertNotIn("尚未发送的新问题", text)
+                self.assertNotIn("private-do-not-export", text)
+                self.assertEqual(len(self.backend.asks), requests_before)
+                self.expect(self.page.locator("#input")).to_have_value("尚未发送的新问题")
+                self.expect(self.page.locator("#book")).to_have_value("database")
+                self.expect(card.get_by_role("button", name="保存问答（含来源）")).to_be_focused()
+
     def test_book_loading_failure_recovers_without_losing_question_draft(self) -> None:
         self.backend.book_failures_remaining = 1
         self.page.goto(self.base_url)
@@ -481,6 +518,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".answer .body")).to_have_text("已生成的部分内容")
         self.page.locator("#cancel").click()
         self.expect(self.page.locator(".notice.warn")).to_have_text("已停止生成。")
+        self.expect(self.page.get_by_role("button", name="保存问答（含来源）")).to_have_count(0)
         self.expect_ready()
         gate.set()
         self.submit("停止后再问一个问题")
