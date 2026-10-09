@@ -328,7 +328,9 @@ footer details p { margin-top: 6px; text-align: left; }
       excerpt.setAttribute("aria-label", `资料 ${source.citation_id} 原文`);
       item.append(
         element("div", "title", `资料 ${source.citation_id} · ${source.book}`),
-        element("div", "section", (source.section || "未标注章节") + (source.truncated ? " · 片段已截断" : "")),
+        element("div", "section", (source.section || "未标注章节")
+          + (source.truncated ? " · 片段已截断" : "")
+          + (source.table_compacted ? " · 表格按行整理" : "")),
         excerpt,
       );
       details.append(item);
@@ -408,6 +410,7 @@ footer details p { margin-top: 6px; text-align: left; }
       lines.push(`### 参考资料 ${source.citation_id} · ${source.book}`, "",
         source.section || "未标注章节", "");
       if (source.truncated) lines.push("片段已截断。", "");
+      if (source.table_compacted) lines.push("表格按行整理。", "");
       lines.push(literalBlock(source.excerpt), "");
     }
     if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");

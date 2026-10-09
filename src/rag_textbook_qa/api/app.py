@@ -188,6 +188,7 @@ def _public_source(source: Mapping[str, Any]) -> dict[str, Any]:
         "section": " > ".join(str(source[field]) for field in _HEADING_FIELDS if source.get(field)),
         "excerpt": str(source.get("content") or ""),
         "truncated": bool(source.get("truncated")),
+        "table_compacted": bool(source.get("table_compacted")),
     }
 
 

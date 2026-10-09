@@ -241,6 +241,7 @@ class PublicResultTests(unittest.TestCase):
 
     def test_internals_and_provider_error_text_never_leave(self):
         raw = FakeEngine(success=False, error=SECRET).ask(query="q", use_llm=True)
+        raw["context_sources"][0]["table_compacted"] = True
         payload = public_result(raw, retrieval_only=None)
 
         self.assertEqual(payload["status"], "failed")
@@ -250,6 +251,7 @@ class PublicResultTests(unittest.TestCase):
             self.assertNotIn(leaked, rendered)
         self.assertEqual(payload["sources"][0]["book"], "操作系统")
         self.assertEqual(payload["sources"][0]["section"], "第二章 > 2.1 进程")
+        self.assertIs(payload["sources"][0]["table_compacted"], True)
         self.assertEqual(
             payload["compute"]["embedding"],
             {

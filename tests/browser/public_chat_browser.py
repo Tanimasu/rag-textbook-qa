@@ -305,7 +305,7 @@ class PublicChatBrowserTests(unittest.TestCase):
                 result["answer"] = "完整回答【参考资料 7】【参考资料 99】"
                 result["citation_integrity"] = {"status": "invalid", "unknown": [99]}
                 result["conflicts"] = ["不同定义"]
-                result["sources"][0].update({"citation_id": 7, "truncated": True,
+                result["sources"][0].update({"citation_id": 7, "truncated": True, "table_compacted": True,
                     "section": "第二章 > 第四级标题", "excerpt": "原文\n```python\nprint(7)\n```\n原文末尾"})
                 result["internal_metadata"] = "private-do-not-export"
                 self.backend.enqueue(Reply(final=[("result", result)]))
@@ -313,6 +313,9 @@ class PublicChatBrowserTests(unittest.TestCase):
                 self.submit(question)
                 card = self.page.locator(".answer").last
                 self.expect(card.locator(".body")).to_contain_text("完整回答")
+                self.expect(card.locator(".source .section")).to_have_text(
+                    "第二章 > 第四级标题 · 片段已截断 · 表格按行整理"
+                )
                 self.expect_ready()
                 self.page.locator("#input").fill("尚未发送的新问题")
                 self.page.locator("#book").select_option("database")
@@ -324,7 +327,7 @@ class PublicChatBrowserTests(unittest.TestCase):
                 text = Path(download.path()).read_text(encoding="utf-8")
                 for expected in (question, result["answer"], "参考资料 7", "第四级标题",
                                  result["sources"][0]["excerpt"], "````text", "片段已截断",
-                                 "不存在的资料编号（99）", "不同定义"):
+                                 "表格按行整理", "不存在的资料编号（99）", "不同定义"):
                     self.assertIn(expected, text)
                 self.assertNotIn("尚未发送的新问题", text)
                 self.assertNotIn("private-do-not-export", text)
