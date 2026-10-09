@@ -18,11 +18,63 @@ from rag_textbook_qa.evaluation.ragas import (
     _attach_question_indices,
     _paired_baseline_report,
     _ragas_embedding_model,
+    _write_new_csv,
     run_evaluation,
 )
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_csv_is_visible_only_after_serialization_completes(self):
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "ragas_evaluation_results.csv"
+
+            def serialize(path, **kwargs):
+                self.assertFalse(target.exists())
+                with path.open("x", encoding=kwargs["encoding"]) as handle:
+                    handle.write("question,score\n")
+                    handle.flush()
+                    self.assertFalse(target.exists())
+                    handle.write("测试,0.8\n")
+
+            _write_new_csv(target, MagicMock(to_csv=serialize))
+            self.assertTrue(target.read_bytes().startswith(b"\xef\xbb\xbf"))
+            self.assertEqual(pd.read_csv(target).to_dict("records"),
+                             [{"question": "测试", "score": 0.8}])
+            self.assertEqual(list(Path(directory).iterdir()), [target])
+
+    def test_csv_late_collision_preserves_both_runs(self):
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "ragas_evaluation_results.csv"
+            original = b"another-run\n"
+
+            def serialize(path, **kwargs):
+                pd.DataFrame({"score": [0.8]}).to_csv(path, **kwargs)
+                target.write_bytes(original)
+
+            with self.assertRaises(FileExistsError):
+                _write_new_csv(target, MagicMock(to_csv=serialize))
+            self.assertEqual(target.read_bytes(), original)
+            partial, = Path(directory).glob(".*.partial")
+            self.assertEqual(pd.read_csv(partial)["score"].tolist(), [0.8])
+
+    def test_csv_serialization_failure_never_publishes_partial_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "ragas_evaluation_results.csv"
+
+            def serialize(path, **kwargs):
+                path.write_text("question,score\n", encoding="utf-8")
+                raise OSError("interrupted write")
+
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                _write_new_csv(target, MagicMock(to_csv=serialize))
+            self.assertFalse(target.exists())
+            partial, = Path(directory).glob(".*.partial")
+            self.assertEqual(partial.read_text(), "question,score\n")
+
     def test_run_evaluation_closes_clients_after_generation_or_scoring_failure(self):
         for stage in ("prepare_evaluation_data", "evaluate"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:

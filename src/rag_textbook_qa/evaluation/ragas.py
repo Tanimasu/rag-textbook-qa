@@ -9,6 +9,7 @@ import json
 import math
 import os
 import threading
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -131,6 +132,18 @@ def _write_new_json(path: Path, value: Any) -> None:
     serialized = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(serialized)
+
+
+def _write_new_csv(path: Path, dataframe: Any) -> None:
+    """Publish a complete CSV without replacing another run's output."""
+
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    dataframe.to_csv(temporary, index=False, encoding="utf-8-sig", mode="x")
+    # Linking in the same directory atomically exposes the closed file and
+    # refuses a late collision. Failed writes remain recoverable as .partial.
+    os.link(temporary, path)
+    with contextlib.suppress(OSError):
+        temporary.unlink()
 
 
 def _ragas_embedding_model() -> str:
@@ -944,7 +957,7 @@ def run_evaluation(
         if rag_dataframe is not None:
             destination.mkdir(parents=True, exist_ok=True)
             rag_output = destination / "ragas_evaluation_results.csv"
-            rag_dataframe.to_csv(rag_output, index=False, encoding="utf-8-sig", mode="x")
+            _write_new_csv(rag_output, rag_dataframe)
             print(f"结果已保存到: {rag_output}")
 
         if not include_baseline:
@@ -963,12 +976,7 @@ def run_evaluation(
         if baseline_dataframe is not None:
             destination.mkdir(parents=True, exist_ok=True)
             baseline_output = destination / "ragas_baseline_results.csv"
-            baseline_dataframe.to_csv(
-                baseline_output,
-                index=False,
-                encoding="utf-8-sig",
-                mode="x",
-            )
+            _write_new_csv(baseline_output, baseline_dataframe)
             print(f"结果已保存到: {baseline_output}")
 
         print("\n" + "=" * 60)
