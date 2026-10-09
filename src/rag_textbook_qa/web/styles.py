@@ -246,6 +246,11 @@ def inject_custom_styles() -> None:
             overflow-y: auto;
         }
 
+        .source-snippet:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
+
         .empty-state {
             background: rgba(255, 255, 255, 0.7);
             border: 1px dashed rgba(109, 120, 144, 0.35);

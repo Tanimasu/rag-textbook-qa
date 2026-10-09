@@ -119,11 +119,22 @@ details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted);
   flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent;
   color: var(--text); font: inherit; max-height: 160px; padding: 6px;
 }
+.composer form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer-hint { margin: 5px 8px 0; font-size: 12px; color: var(--muted); }
+.mobile-hint { display: none; }
 .composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
 .composer .cancel { background: transparent; color: var(--err-text); border: 1px solid var(--line); }
 footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
-@media (max-width: 520px) { .bubble { max-width: 92%; } .quota { margin-left: 0; width: 100%; } }
+footer p { margin: 0 0 4px; }
+footer summary { cursor: pointer; }
+footer details p { margin-top: 6px; text-align: left; }
+@media (max-width: 520px) {
+  .bubble { max-width: 92%; }
+  .quota { margin-left: 0; width: 100%; }
+  .desktop-hint { display: none; }
+  .mobile-hint { display: inline; }
+}
 </style>
 </head>
 <body>
@@ -161,12 +172,16 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   <div class="composer">
     <form id="form">
-      <textarea id="input" rows="1" maxlength="500" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+      <textarea id="input" rows="1" maxlength="500" placeholder="输入教材问题…" aria-label="输入教材问题" aria-describedby="composer-hint"></textarea>
       <button class="cancel" id="cancel" type="button" hidden>停止生成</button>
       <button id="send" type="submit">发送</button>
     </form>
+    <p class="composer-hint" id="composer-hint"><span class="desktop-hint">Enter 发送 · Shift+Enter 换行 · </span><span class="mobile-hint">点击发送提问 · </span>最多 500 字</p>
   </div>
-  <footer>回答由大模型依据检索到的教材片段生成，可能出错，请以原文为准。回答会短暂保留在进程内存中；只有主动提交反馈时，本次问题、回答、引用和耗时才会持久保存，反馈数据不包含 IP 或凭据。未通过验收的实验功能在公开版中关闭。</footer>
+  <footer>
+    <p>回答由大模型依据教材片段生成，可能出错，请以原文为准。</p>
+    <details><summary>对话与反馈如何保存</summary><p>对话会在服务中短暂保留。只有主动提交反馈时，本次问题、回答、引用、耗时和反馈内容才会持久保存，不保存 IP 或访问口令。未通过验收的实验功能在公开版中关闭。</p></details>
+  </footer>
 </div>
 <script>
 (() => {

@@ -93,6 +93,7 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         engine = MagicMock()
 
         def ask(**kwargs):
+            kwargs["on_generation_start"]()
             kwargs["on_answer_chunk"]("普通回答")
             return {
                 "success": True,
@@ -153,8 +154,9 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         engine.ask.return_value = {"success": True, "answer": "重试后的回答", "context_sources": []}
         next(b for b in app.button if b.label == "重试本题").click().run(timeout=20)
         retried = engine.ask.call_args.kwargs
-        self.assertEqual({k: v for k, v in retried.items() if k != "on_answer_chunk"},
-                         {k: v for k, v in original.items() if k != "on_answer_chunk"})
+        callbacks = {"on_answer_chunk", "on_generation_start"}
+        self.assertEqual({k: v for k, v in retried.items() if k not in callbacks},
+                         {k: v for k, v in original.items() if k not in callbacks})
         self.assertEqual(engine.ask.call_count, 2)
         self.assertEqual(app.session_state["messages"][-1]["content"], "重试后的回答")
         self.assertFalse(app.exception)

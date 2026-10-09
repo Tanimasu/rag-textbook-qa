@@ -59,7 +59,8 @@ def render_sources_expander(sources: list[dict[str, Any]]) -> None:
                 <div class="source-card">
                     <div class="source-title">参考资料 {citation_id} · {book}</div>
                     <div class="source-meta">{section}</div>
-                    <div class="source-snippet">{snippet}</div>
+                    <div class="source-snippet" tabindex="0" role="region"
+                         aria-label="参考资料 {citation_id} 原文">{snippet}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,

@@ -116,18 +116,26 @@ def render_chat_tab(
 
     with st.chat_message("assistant"):
         render_answer_header()
+        progress_placeholder = st.empty()
+        progress_placeholder.caption("正在检索教材…")
         answer_placeholder = st.empty()
         streamed_chunks: list[str] = []
 
+        def begin_generation() -> None:
+            progress_placeholder.caption("教材检索完成，等待模型回答…")
+
         def render_chunk(chunk: str) -> None:
+            if not streamed_chunks:
+                progress_placeholder.caption("正在接收回答…")
             streamed_chunks.append(chunk)
             answer_placeholder.markdown("".join(streamed_chunks) + "▌")
 
         try:
-            with st.spinner("正在检索教材并生成答案…"):
+            with st.spinner("正在处理问题…"):
                 engine = load_engine()
                 result = engine.ask(
                     **request,
+                    on_generation_start=begin_generation,
                     on_answer_chunk=render_chunk,
                 )
         except (ProviderError, OSError, RuntimeError, ValueError):
@@ -138,6 +146,7 @@ def render_chat_tab(
             }
 
         answer = answer_message(result)
+        progress_placeholder.empty()
         answer_placeholder.markdown(answer)
         sources = result.get("context_sources", result.get("results", []))
         render_answer_details(sources, result.get("execution"))
