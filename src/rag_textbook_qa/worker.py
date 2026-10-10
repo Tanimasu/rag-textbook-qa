@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from rag_textbook_qa.providers.base import (
+    PROTOCOL_VERSION,
     AuthenticationError,
     EmbeddingProvider,
     MissingOptionalDependencyError,
@@ -14,14 +15,17 @@ from rag_textbook_qa.providers.base import (
     ProviderError,
     RerankerProvider,
 )
+from rag_textbook_qa.providers.base import (
+    WORKER_MAX_BATCH_CHARACTERS as MAX_BATCH_CHARACTERS,
+)
+from rag_textbook_qa.providers.base import (
+    WORKER_MAX_BATCH_ITEMS as MAX_BATCH_ITEMS,
+)
 from rag_textbook_qa.providers.config import (
     is_loopback_host,
     validate_worker_token,
 )
 from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalRerankerProvider
-
-MAX_BATCH_ITEMS = 128
-MAX_BATCH_CHARACTERS = 250_000
 
 
 def _validated_worker_token(token: str | None) -> str | None:
@@ -70,7 +74,7 @@ class WorkerRuntime:
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok",
-            "protocol_version": "1",
+            "protocol_version": PROTOCOL_VERSION,
             "device": self.device,
             "platform": platform.system(),
             "models": {
@@ -200,6 +204,7 @@ def run_worker_server(
     device: str,
     token: str | None,
     warmup: bool = False,
+    reranker_batch_size: int = 32,
 ) -> None:
     validate_worker_bind(host, token)
     try:
@@ -211,7 +216,7 @@ def run_worker_server(
 
     runtime = WorkerRuntime(
         LocalEmbeddingProvider(embedding_model, device=device),
-        LocalRerankerProvider(reranker_model, device=device),
+        LocalRerankerProvider(reranker_model, device=device, batch_size=reranker_batch_size),
         token=token,
         device=device,
     )

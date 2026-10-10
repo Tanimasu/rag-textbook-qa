@@ -21,6 +21,7 @@ from __future__ import annotations
 import difflib
 import itertools
 import json
+import math
 import random
 import re
 import statistics
@@ -29,6 +30,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from rag_textbook_qa.json_utils import loads_strict
 
 VERDICT_LABELS = ("supported", "minor", "unsupported", "contradicted")
 QUOTED_LABELS = ("supported", "minor")
@@ -45,6 +48,7 @@ PAIRED_METRICS = (
 MIN_QUOTE_RUN = 5
 MAX_CLAIMS = 60
 EXACT_PERMUTATION_LIMIT = 16
+SUMMARY_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -78,33 +82,112 @@ def parse_arm(spec: str) -> Arm:
     if not match:
         raise ValueError(f"方案应写成 名称=上下文@温度 或 名称=上下文@stored：{spec}")
     name, variant, value = match.groups()
-    return Arm(name, variant, None if value == "stored" else float(value))
+    arm = Arm(name, variant, None if value == "stored" else float(value))
+    validate_generation_arms([arm])
+    return arm
+
+
+def _sequence(value: Any, field: str, *, nonempty: bool = False) -> Sequence:
+    if (not isinstance(value, Sequence) or isinstance(value, (str, bytes))
+            or (nonempty and not value)):
+        raise ValueError(f"{field} 必须是{'非空' if nonempty else ''}数组")
+    return value
+
+
+def _text(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} 必须是非空文本")
+
+
+def validate_generation_arms(arms: Sequence[Arm]) -> None:
+    _sequence(arms, "评测方案", nonempty=True)
+    names = set()
+    for arm in arms:
+        if not isinstance(arm, Arm):
+            raise TypeError("评测方案必须是 Arm")
+        _text(arm.name, "方案名称")
+        _text(arm.variant, "上下文名称")
+        if arm.name in names:
+            raise ValueError("方案名称重复")
+        names.add(arm.name)
+        if arm.temperature is not None and (
+            type(arm.temperature) not in (int, float)
+            or not math.isfinite(arm.temperature) or arm.temperature < 0
+        ):
+            raise ValueError("方案温度必须是有限非负数或 stored")
+
+
+def validate_generation_cases(cases: Sequence[GenerationCase]) -> None:
+    """Validate the complete frozen input before any generated or stored sample."""
+    _sequence(cases, "题集", nonempty=True)
+    identifiers = set()
+    for case in cases:
+        if not isinstance(case, GenerationCase):
+            raise TypeError("题目必须是 GenerationCase")
+        _text(case.case_id, "题目编号")
+        _text(case.question, "问题")
+        if case.case_id in identifiers:
+            raise ValueError("题目编号重复")
+        identifiers.add(case.case_id)
+        for requirement in _sequence(case.requirements, "覆盖要求"):
+            _text(requirement, "覆盖要求")
+        if not isinstance(case.variants, Mapping) or not case.variants:
+            raise ValueError("题目必须提供上下文方案")
+        for name, variant in case.variants.items():
+            _text(name, "上下文名称")
+            if not isinstance(variant, ContextVariant):
+                raise TypeError("上下文必须是 ContextVariant")
+            _text(variant.context, "上下文正文")
+            source_ids = set()
+            for source in _sequence(variant.sources, "资料", nonempty=True):
+                if not isinstance(source, Mapping):
+                    raise TypeError("资料必须是对象")
+                identifier, content = source.get("citation_id"), source.get("content")
+                if type(identifier) is not int or identifier < 1 or identifier in source_ids:
+                    raise ValueError("资料编号必须是唯一正整数")
+                source_ids.add(identifier)
+                _text(content, "资料正文")
+                if content not in variant.context:
+                    raise ValueError(f"{case.case_id}/{name}：资料内容必须出自实际上下文")
+            for answer in _sequence(variant.answers, "已存答案"):
+                # Empty stored outputs remain valid records of incomplete runs.
+                if not isinstance(answer, str):
+                    raise TypeError("已存答案必须是文本数组")
 
 
 def load_generation_cases(path: str | Path) -> list[GenerationCase]:
     """Load frozen cases, refusing sources that are not part of their context."""
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return generation_cases_from_payload(loads_strict(Path(path).read_text(encoding="utf-8")))
+
+
+def generation_cases_from_payload(payload: Any) -> list[GenerationCase]:
+    """Validate cases parsed from an already captured input snapshot."""
+
+    if not isinstance(payload, Mapping):
+        raise TypeError("题集必须是包含 cases 的对象")
     cases = []
-    for raw in payload["cases"]:
+    for raw in _sequence(payload.get("cases"), "cases", nonempty=True):
+        if not isinstance(raw, Mapping):
+            raise TypeError("题目必须是对象")
+        raw_variants = raw.get("variants")
+        if not isinstance(raw_variants, Mapping):
+            raise TypeError("上下文方案必须是对象")
         variants = {}
-        for key, item in raw["variants"].items():
-            sources = tuple(item["sources"])
-            ids = [source["citation_id"] for source in sources]
-            if not sources or len(set(ids)) != len(ids):
-                raise ValueError(f"{raw['id']}/{key}：资料为空或编号重复")
-            if any(str(source["content"]) not in item["context"] for source in sources):
-                raise ValueError(f"{raw['id']}/{key}：资料内容必须出自实际上下文")
+        for key, item in raw_variants.items():
+            if not isinstance(item, Mapping):
+                raise TypeError("上下文必须是对象")
+            sources = tuple(_sequence(item.get("sources"), "资料", nonempty=True))
             variants[key] = ContextVariant(
-                item["context"], sources, tuple(item.get("answers", ()))
+                item.get("context"), sources, tuple(_sequence(item.get("answers", ()), "已存答案"))
             )
         cases.append(
             GenerationCase(
-                str(raw["id"]), raw["question"], tuple(raw.get("requirements", ())), variants
+                raw.get("id"), raw.get("question"),
+                tuple(_sequence(raw.get("requirements", ()), "覆盖要求")), variants
             )
         )
-    if len({case.case_id for case in cases}) != len(cases):
-        raise ValueError("题目编号重复")
+    validate_generation_cases(cases)
     return cases
 
 
@@ -169,7 +252,7 @@ def parse_json_object(raw: str) -> dict[str, Any]:
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("no_json_object")
-    payload = json.loads(raw[start : end + 1])
+    payload = loads_strict(raw[start : end + 1])
     if not isinstance(payload, dict):
         raise TypeError("no_json_object")
     return payload
@@ -353,22 +436,25 @@ def score_answer(
 ) -> dict[str, Any]:
     """Score fact claims on the substantive standard, keeping the strict view alongside.
 
-    A ``supported`` or ``minor`` label whose quote cannot be found in the context
-    becomes ``unverified`` and counts as a problem, so a judge cannot manufacture
-    support.
+    A ``supported`` or ``minor`` label requires every quote to match its declared
+    source. Missing or mismatched references become ``unverified`` and count as a
+    problem, so a judge cannot manufacture support by citing another passage.
     """
 
-    contents = [str(source["content"]) for source in sources]
+    contents = {source["citation_id"]: str(source["content"]) for source in sources}
     rows = []
     for claim in claims:
         if claim["type"] != "fact":
             continue
         verdict = verdicts[claim["id"]]
         status = verdict["label"]
-        if status in QUOTED_LABELS and not any(
-            quote_found(item["quote"], content)
-            for item in verdict["evidence"]
-            for content in contents
+        if status in QUOTED_LABELS and (
+            not verdict["evidence"] or not all(
+                type(item["source_id"]) is int
+                and item["source_id"] in contents
+                and quote_found(item["quote"], contents[item["source_id"]])
+                for item in verdict["evidence"]
+            )
         ):
             status = "unverified"
         rows.append(
@@ -444,13 +530,30 @@ def _mean(values: Sequence[float | None]) -> float | None:
     return statistics.fmean(present) if present else None
 
 
-def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Summarize one case under one arm; each sample may carry a judge ``score``."""
+def generation_is_complete(sample: Mapping[str, Any]) -> bool:
+    """Only nonempty, normally finished answers (or stored answers) can be judged."""
 
-    scores = [sample["score"] for sample in samples if sample.get("score") is not None]
+    answer = sample.get("answer")
+    return (
+        sample.get("finish_reason") in ("stop", "stored")
+        and isinstance(answer, str)
+        and bool(answer.strip())
+    )
+
+
+def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Quality is conditional on complete answers; retain incomplete sample counts."""
+
+    completed = [sample for sample in samples if generation_is_complete(sample)]
+    # Older logs may contain judgments for truncated answers. Filtering here also
+    # prevents those scores from leaking into means or paired comparisons on resume.
+    scores = [sample["score"] for sample in completed if sample.get("score") is not None]
     counts = [score["problem_claims"] for score in scores]
     return {
         "samples": len(samples),
+        "completed": len(completed),
+        "incomplete": len(samples) - len(completed),
+        "empty_answers": sum(not str(sample.get("answer") or "").strip() for sample in samples),
         "judged": len(scores),
         "problem_claims": _mean(counts),
         "problem_claims_sd": statistics.stdev(counts) if len(counts) > 1 else None,
@@ -462,8 +565,8 @@ def summarize_case_arm(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "abstentions": sum(score["fact_claims"] == 0 for score in scores),
         "mixed_verdicts": len({count > 0 for count in counts}) > 1,
         "truncated": sum(sample.get("finish_reason") == "length" for sample in samples),
-        "answer_chars": _mean([len(sample["answer"]) for sample in samples]),
-        "overlap": mean_pairwise_overlap([sample["answer"] for sample in samples]),
+        "answer_chars": _mean([len(sample["answer"]) for sample in completed]),
+        "overlap": mean_pairwise_overlap([sample["answer"] for sample in completed]),
     }
 
 
@@ -518,7 +621,10 @@ def summarize(
         for case in cases
     }
     averaged = (*PAIRED_METRICS, "problem_claims_sd", "answer_chars", "overlap")
-    counted = ("samples", "judged", "abstentions", "truncated", "mixed_verdicts")
+    counted = (
+        "samples", "completed", "incomplete", "empty_answers", "judged", "abstentions",
+        "truncated", "mixed_verdicts",
+    )
     arm_summary = {}
     for arm in arms:
         rows = [per_case[case.case_id][arm.name] for case in cases]
@@ -529,6 +635,8 @@ def summarize(
             **{metric: sum(row[metric] for row in rows) for metric in counted},
         }
     return {
+        "summary_version": SUMMARY_VERSION,
+        "quality_sample_policy": "completed_answers_only",
         "reference_arm": arms[0].name,
         "arms": arm_summary,
         "comparisons": {

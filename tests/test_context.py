@@ -64,10 +64,14 @@ class TableContextTests(unittest.TestCase):
             "book_name": "os",
             "content": "<table><caption>不可省略的单位</caption><tr><td>10</td></tr></table>",
         }])
-        result = engine.ask("数值是多少", book_name="os")
+        generation_started = MagicMock()
+        result = engine.ask(
+            "数值是多少", book_name="os", on_generation_start=generation_started
+        )
         self.assertFalse(result["success"])
         self.assertEqual(result["context_sources"], [])
         engine.llm.generate_answer.assert_not_called()
+        generation_started.assert_not_called()
 
     def test_prose_still_respects_existing_budget(self):
         self.assertEqual(evidence_excerpt('abcdef', 3), ('abc', True, False))

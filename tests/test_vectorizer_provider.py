@@ -1,11 +1,11 @@
 import contextlib
 import io
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
 from rag_textbook_qa.indexing import MultiBookVectorizer, list_indexed_books
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory
 from rag_textbook_qa.providers import ModelIdentity, TransientProviderError
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 
@@ -71,7 +71,7 @@ def _chunks():
 
 class VectorizerProviderTests(unittest.TestCase):
     def test_vectorization_records_fingerprint_and_uses_injected_provider(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             chunks_path = root / "chunks.json"
             chunks_path.write_text(json.dumps(_chunks(), ensure_ascii=False), encoding="utf-8")
@@ -101,7 +101,7 @@ class VectorizerProviderTests(unittest.TestCase):
                 )
 
     def test_provider_failure_does_not_clear_existing_collection(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             chunks_path = root / "chunks.json"
             chunks_path.write_text(json.dumps(_chunks(), ensure_ascii=False), encoding="utf-8")
@@ -137,7 +137,7 @@ class VectorizerProviderTests(unittest.TestCase):
                 )
 
     def test_invalid_chunks_fail_before_embedding_or_collection_creation(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             chunks = _chunks()
             chunks[1]["chunk_id"] = chunks[0]["chunk_id"]

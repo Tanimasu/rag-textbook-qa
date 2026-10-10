@@ -92,8 +92,10 @@ def analyze_chunks(chunks_path: str | Path) -> dict[str, Any]:
     }
 
     seen_content: dict[str, str] = {}
+    affected_chunks = 0
 
     for chunk in chunks:
+        previous_issues = sum(len(identifiers) for identifiers in issues.values())
         chunk_id = chunk["chunk_id"]
         content = chunk["content"]
         char_count = chunk["char_count"]
@@ -126,6 +128,8 @@ def analyze_chunks(chunks_path: str | Path) -> dict[str, Any]:
                 issues["duplicate_content"].append(chunk_id)
             else:
                 seen_content[normalized_content] = chunk_id
+        if sum(len(identifiers) for identifiers in issues.values()) > previous_issues:
+            affected_chunks += 1
 
     total = len(chunks)
     total_issues = sum(len(chunk_ids) for chunk_ids in issues.values())
@@ -144,6 +148,9 @@ def analyze_chunks(chunks_path: str | Path) -> dict[str, Any]:
         "issue_counts": {name: len(chunk_ids) for name, chunk_ids in issues.items()},
         "total_issues": total_issues,
         "issue_rate": issue_rate,
+        "issue_rate_basis": "issue_occurrences_per_100_chunks",
+        "affected_chunks": affected_chunks,
+        "affected_chunk_rate": (affected_chunks / total * 100) if total else 0.0,
         "grade": grade,
     }
 
@@ -159,11 +166,22 @@ def render_chunks_report(report: dict[str, Any]) -> str:
         if 0 < count <= 3:
             lines.extend(f"      - {chunk_id}" for chunk_id in chunk_ids)
 
-    lines.extend(["\n" + "=" * 70, "📋 总体评估:", "-" * 70])
+    lines.extend(["\n" + "=" * 70, "📋 基础检查汇总:", "-" * 70])
+    lines.append(
+        f"涉及分块: {report['affected_chunks']}/{report['total']} 个"
+        f"（{report['affected_chunk_rate']:.1f}%）"
+    )
+    lines.append(
+        f"规则命中: {report['total_issues']} 项"
+        f"（每 100 块 {report['issue_rate']:.1f} 项；同一块可能命中多项）"
+    )
+    if not report["total"]:
+        lines.append("没有分块可供检查。")
+        return "\n".join(lines)
     messages = {
-        "excellent": "✅ 质量优秀！问题率 < 5%，可以直接使用",
-        "good": "⚠️  质量良好。问题率 < 15%，可以使用，建议关注特定问题块",
-        "poor": "❌ 质量较差。问题率 >= 15%，建议修复后再使用",
+        "excellent": "基础规则命中频次 < 5 项/100 块。",
+        "good": "基础规则命中频次为 5 至不足 15 项/100 块。",
+        "poor": "基础规则命中频次 >= 15 项/100 块。",
     }
     lines.append(messages[report["grade"]])
     return "\n".join(lines)

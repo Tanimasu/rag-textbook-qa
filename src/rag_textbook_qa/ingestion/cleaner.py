@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.ingestion.path_guard import validate_output_paths
+
 
 class SmartMarkdownCleaner:
     """Clean parsed textbook Markdown while preserving the legacy V4 rules."""
@@ -135,8 +137,24 @@ class SmartMarkdownCleaner:
         """规范化标题层级。"""
         lines = content.split("\n")
         result = []
+        fence_token: str | None = None
 
         for line in lines:
+            fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if fence_token is not None:
+                result.append(line)
+                if (
+                    fence
+                    and fence.group(1)[0] == fence_token[0]
+                    and len(fence.group(1)) >= len(fence_token)
+                    and not fence.group(2).strip()
+                ):
+                    fence_token = None
+                continue
+            if fence:
+                fence_token = fence.group(1)
+                result.append(line)
+                continue
             if line.strip().startswith("#"):
                 title_text = re.sub(r"^#+\s*", "", line.strip())
                 level, clean_text = self.detect_title_level(title_text)
@@ -192,6 +210,7 @@ class SmartMarkdownCleaner:
         """执行完整清洗流程并返回清洗后的 Markdown。"""
         input_path = Path(input_path)
         output_path = Path(output_path)
+        validate_output_paths([input_path], [output_path])
 
         print("=" * 70)
         print("🚀 智能 Markdown 清洗 V4")
@@ -376,8 +395,7 @@ def clean_markdown(
     destination = Path(output_path)
     if not source.is_file():
         raise FileNotFoundError(f"找不到 Markdown 文件: {source}")
-    if source.resolve() == destination.resolve():
-        raise ValueError("输入和输出不能是同一个文件")
+    validate_output_paths([source], [destination])
     if destination.exists() and not overwrite:
         raise FileExistsError(f"输出文件已存在，未覆盖: {destination}")
 

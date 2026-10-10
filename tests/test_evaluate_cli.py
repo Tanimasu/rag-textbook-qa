@@ -11,6 +11,30 @@ from rag_textbook_qa.evaluation import RetrievalQuestion
 
 
 class EvaluateCliTests(unittest.TestCase):
+    def test_evaluate_reused_output_fails_before_loading_engine(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "src" / "rag_textbook_qa").mkdir(parents=True)
+            (root / "project").mkdir()
+            (root / "pyproject.toml").write_text("[project]\nname='test'\n")
+            questions = root / "questions.json"
+            questions.write_text('[{"question":"问题"}]', encoding="utf-8")
+            output = root / "existing-run"
+            output.mkdir()
+            previous = output / "old.csv"
+            previous.write_bytes(b"old results")
+            with (
+                patch("rag_textbook_qa.rag.RAGEngine") as create,
+                contextlib.redirect_stderr(io.StringIO()) as error,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(["--workspace", str(root), "evaluate", "--questions", str(questions),
+                      "--output-dir", str(output)])
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("输出目录", error.getvalue())
+            create.assert_not_called()
+            self.assertEqual(previous.read_bytes(), b"old results")
+
     def test_evaluate_command_delegates_without_loading_real_models(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

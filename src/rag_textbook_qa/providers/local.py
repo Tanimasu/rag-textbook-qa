@@ -117,9 +117,12 @@ class LocalEmbeddingProvider:
 class LocalRerankerProvider:
     """CrossEncoder provider that loads its model on first use."""
 
-    def __init__(self, model: str, *, device: str = "auto") -> None:
+    def __init__(self, model: str, *, device: str = "auto", batch_size: int = 32) -> None:
+        if type(batch_size) is not int or batch_size <= 0:
+            raise ValueError("batch_size 必须是正整数")
         self._identity = ModelIdentity(task="reranker", model=model)
         self.device = _model_device(device)
+        self.batch_size = batch_size
         self._model: Any | None = None
         self._lock = threading.RLock()
         self.telemetry = ProviderTelemetry()
@@ -151,7 +154,7 @@ class LocalRerankerProvider:
         try:
             with self._lock:
                 model = self._load()
-                scores = model.predict(pairs)
+                scores = model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
             if hasattr(scores, "tolist"):
                 scores = scores.tolist()
             result = validate_scores(scores, len(values))

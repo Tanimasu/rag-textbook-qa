@@ -23,6 +23,12 @@ def load_ordered_chunks(collection: Any, book_name: str) -> list[dict[str, Any]]
     """Read the indexed corpus in source order without a separate chunks artifact."""
 
     data = collection.get(include=["documents", "metadatas"])
+    return order_indexed_chunks(data, book_name)
+
+
+def order_indexed_chunks(data: Mapping[str, Any], book_name: str) -> list[dict[str, Any]]:
+    """Order a coherent documents/metadata snapshot for neighbour expansion."""
+
     ids = data.get("ids") or []
     documents = data.get("documents") or []
     metadatas = data.get("metadatas") or []
@@ -66,7 +72,10 @@ def append_same_section_neighbours(
         }
         for book_name, corpus in corpora.items()
     }
-    seen = {str(result.get("chunk_id", "")) for result in results}
+    seen = {
+        (str(result.get("book_name", "")), str(result.get("chunk_id", "")))
+        for result in results
+    }
     expanded = list(results)
     for anchor in results:
         anchor_id = str(anchor.get("chunk_id", ""))
@@ -81,7 +90,8 @@ def append_same_section_neighbours(
                 continue
             neighbour = corpus[neighbour_index]
             neighbour_id = str(neighbour.get("chunk_id", ""))
-            if not neighbour_id or neighbour_id in seen:
+            neighbour_key = (book_name, neighbour_id)
+            if not neighbour_id or neighbour_key in seen:
                 continue
             if not _same_named_section(anchor, neighbour):
                 continue
@@ -95,5 +105,5 @@ def append_same_section_neighbours(
                     "query_ids": list(anchor.get("query_ids", [])),
                 }
             )
-            seen.add(neighbour_id)
+            seen.add(neighbour_key)
     return expanded

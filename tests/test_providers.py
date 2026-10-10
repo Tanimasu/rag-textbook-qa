@@ -1,6 +1,7 @@
 import io
 import unittest
-from unittest.mock import patch
+from http.client import IncompleteRead, RemoteDisconnected
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
 from rag_textbook_qa.providers import (
@@ -15,9 +16,13 @@ from rag_textbook_qa.providers import (
     provider_trace,
 )
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION, validate_embeddings
+from rag_textbook_qa.providers.config import ComputeSettings
+from rag_textbook_qa.providers.factory import create_reranker_provider
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
+    FallbackRerankerProvider,
     RemoteEmbeddingProvider,
+    RemoteRerankerProvider,
     RemoteWorkerClient,
 )
 
@@ -36,6 +41,7 @@ class FakeRemoteClient:
         self.requests.append((path, method, payload))
         if path == "/health":
             return {
+                "status": "ok", "protocol_version": "1",
                 "device": "cuda",
                 "platform": "Windows",
                 "models": {"embedding": self.identity.as_dict()},
@@ -70,6 +76,82 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_unhealthy_or_incompatible_health_stops_before_inference_or_fallback(self):
+        invalid_states = [
+            {"status": "starting", "protocol_version": "1"},
+            {"protocol_version": "1"},
+            {"status": "ok", "protocol_version": "2"},
+            {"status": "ok"},
+            {"status": "ok", "protocol_version": 1},
+        ]
+        for primary_type, fallback_type in (
+            (RemoteEmbeddingProvider, FallbackEmbeddingProvider),
+            (RemoteRerankerProvider, FallbackRerankerProvider),
+        ):
+            for health in invalid_states:
+                with self.subTest(provider=primary_type.__name__, health=health):
+                    client = MagicMock()
+                    primary = primary_type(client, "model")
+                    client.request.return_value = {
+                        **health, "device": "cuda",
+                        "models": {primary.identity.task: primary.identity.as_dict()},
+                        "fingerprint": primary.identity.fingerprint,
+                        "embeddings": [[1.0, 0.0]], "scores": [0.5],
+                    }
+                    fallback = MagicMock(identity=primary.identity)
+                    provider = fallback_type(primary, fallback)
+                    with self.assertRaises(ProviderProtocolError):
+                        if primary.identity.task == "embedding":
+                            provider.embed_queries(["question"])
+                        else:
+                            provider.rerank("question", ["document"])
+                    client.request.assert_called_once_with("/health")
+                    fallback.embed_queries.assert_not_called()
+                    fallback.rerank.assert_not_called()
+                    self.assertFalse(primary._health_verified)
+
+    def test_remote_health_is_rechecked_after_an_interrupted_worker(self):
+        for provider_type in (RemoteEmbeddingProvider, RemoteRerankerProvider):
+            with self.subTest(provider=provider_type.__name__):
+                client = MagicMock()
+                provider = provider_type(client, "model")
+                payload = {"fingerprint": provider.identity.fingerprint,
+                           "embeddings": [[1.0, 0.0]], "scores": [0.9]}
+                def health(device, platform, provider=provider):
+                    return {"status": "ok", "protocol_version": "1",
+                            "device": device, "platform": platform,
+                            "models": {provider.identity.task: provider.identity.as_dict()}}
+                client.request.side_effect = [
+                    health("cuda", "Windows"), payload,
+                    TransientProviderError("worker restarted"),
+                    health("cpu", "Linux"), payload,
+                ]
+                def invoke(provider=provider):
+                    if provider.identity.task == "embedding":
+                        return provider.embed_queries(["question"])
+                    return provider.rerank("question", ["document"])
+                invoke()
+                with self.assertRaises(TransientProviderError):
+                    invoke()
+                invoke()
+                calls = provider.telemetry.since(0)
+                self.assertEqual(calls[0].device, "cuda")
+                self.assertEqual(calls[-1].device, "cpu")
+                self.assertEqual(calls[-1].platform, "Linux")
+                self.assertEqual(sum(call.args[0] == "/health" for call in client.request.call_args_list), 2)
+
+    def test_local_reranker_batches_without_reordering_documents(self):
+        provider = create_reranker_provider(ComputeSettings(device="cpu", reranker_batch_size=8))
+        scores = [0.2, 0.9, 0.1]
+        with patch.object(provider, "_load") as load:
+            load.return_value.predict.return_value = scores
+            self.assertEqual(provider.rerank("query", ["first", "second", "third"]), scores)
+        load.return_value.predict.assert_called_once_with(
+            [("query", "first"), ("query", "second"), ("query", "third")],
+            batch_size=8, show_progress_bar=False,
+        )
+        self.assertEqual(len(provider.telemetry.since(0)), 1)
+
     def test_provider_telemetry_is_isolated_by_request_trace(self):
         telemetry = ProviderTelemetry()
         call = ProviderCall(
@@ -104,14 +186,14 @@ class ProviderTests(unittest.TestCase):
             io.BytesIO(b'{"detail":"bad token"}'),
         )
         with (
-            patch("rag_textbook_qa.providers.remote.urlopen", side_effect=unauthorized),
+            patch.object(client._opener, "open", side_effect=unauthorized),
             self.assertRaises(AuthenticationError),
         ):
             client.request("/health")
 
         with (
-            patch(
-                "rag_textbook_qa.providers.remote.urlopen",
+            patch.object(
+                client._opener, "open",
                 side_effect=URLError("offline"),
             ),
             self.assertRaises(TransientProviderError),
@@ -121,6 +203,46 @@ class ProviderTests(unittest.TestCase):
     def test_http_client_rejects_non_ascii_token_before_building_request(self):
         with self.assertRaisesRegex(ProviderError, "ASCII"):
             RemoteWorkerClient("http://worker", token="中文-token", timeout=1)
+
+    def test_interrupted_response_is_transient_and_triggers_query_fallback(self):
+        client = RemoteWorkerClient("http://worker", token=None, timeout=1)
+        primary = RemoteEmbeddingProvider(client, "embedding-model")
+        primary._health_verified = True
+        fallback = StubEmbeddingProvider(primary.identity, [[1.0, 2.0]])
+        provider = FallbackEmbeddingProvider(primary, fallback)
+        for interruption in (IncompleteRead(b'{"embeddings":', 20),
+                             RemoteDisconnected("closed"), ConnectionResetError("reset")):
+            response = MagicMock()
+            response.__enter__.return_value.read.side_effect = interruption
+            with self.subTest(interruption=type(interruption).__name__), patch.object(
+                client._opener, "open", return_value=response,
+            ):
+                self.assertEqual(provider.embed_queries(["question"]), [[1.0, 2.0]])
+                event = provider.telemetry.since(0)[-1]
+                self.assertTrue(event.fallback_used)
+                self.assertEqual(event.error_category, "TransientProviderError")
+        self.assertEqual(fallback.calls, 3)
+
+    def test_truncated_auth_error_body_still_fails_closed_without_fallback(self):
+        client = RemoteWorkerClient("http://worker", token="secret", timeout=1)
+        primary = RemoteEmbeddingProvider(client, "embedding-model")
+        fallback = StubEmbeddingProvider(primary.identity, [[1.0, 2.0]])
+        provider = FallbackEmbeddingProvider(primary, fallback)
+        error = HTTPError("http://worker/health", 401, "Unauthorized", {}, None)
+        error.read = MagicMock(side_effect=IncompleteRead(b'{"detail":', 10))
+        error.close = MagicMock()
+        with (
+            patch.object(client._opener, "open", side_effect=error),
+            self.assertRaises(AuthenticationError),
+        ):
+            provider.embed_queries(["question"])
+        self.assertEqual(fallback.calls, 0)
+        error.close.assert_called_once()
+
+    def test_client_timeout_must_be_finite_and_positive_before_connecting(self):
+        for timeout in (float("nan"), float("inf"), -1, 0):
+            with self.subTest(timeout=timeout), self.assertRaises(ProviderError):
+                RemoteWorkerClient("http://worker", token=None, timeout=timeout)
 
     def test_remote_embedding_checks_health_once_and_preserves_input_type(self):
         client = FakeRemoteClient()

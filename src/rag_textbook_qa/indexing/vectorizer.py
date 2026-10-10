@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -12,14 +13,17 @@ from pathlib import Path
 from typing import Any, Self
 
 import chromadb
+from filelock import FileLock, Timeout
 from tqdm import tqdm
 
 from rag_textbook_qa.catalog import book_id_from_chunk_stem
 from rag_textbook_qa.config import Settings
+from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
 
 _BOOK_ID_PATTERN = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?")
+_BACKUP_NAME_PATTERN = re.compile(r"ragbackup_[0-9a-f]{32}_(.+)")
 _REQUIRED_CHUNK_FIELDS = {
     "chunk_id",
     "content",
@@ -195,6 +199,46 @@ class MultiBookVectorizer:
             for collection in self.client.list_collections()
         )
 
+    def _build_lock_path(self, book_name: str) -> Path:
+        # Chroma permits ids longer than a filesystem component. A fixed digest
+        # also keeps distinct case-sensitive book ids separate on Windows.
+        digest = hashlib.sha256(book_name.encode("utf-8")).hexdigest()
+        return self.db_path / f"ragbuild_{digest}.lock"
+
+    def _recover_interrupted_publication(self, book_name: str) -> None:
+        """Restore the sole old backup after a crash between the two renames.
+
+        The caller holds this book's writer lock. A staged build has no completion
+        marker, so it cannot be promoted during recovery. Multiple old backups
+        require inspection; guessing could restore the wrong published version.
+        """
+
+        collection_name = f"textbook_{book_name}"
+        collections = self.client.list_collections()
+        if any(collection.name == collection_name for collection in collections):
+            return
+        backups = []
+        for collection in collections:
+            if not collection.name.startswith("ragbackup_"):
+                continue
+            saved_book = (collection.metadata or {}).get("book_name")
+            if saved_book == book_name:
+                backups.append(collection)
+            elif not saved_book:
+                # Older published collections may lack book metadata. Their
+                # generated backup name identifies short ids exactly; a clipped
+                # long id is ambiguous and must never become a fresh append.
+                legacy_name = _BACKUP_NAME_PATTERN.fullmatch(collection.name)
+                if legacy_name and legacy_name.group(1) == book_name[:469]:
+                    if len(book_name) > 469:
+                        raise RuntimeError("旧发布备份缺少完整教材标识，无法安全恢复，请检查索引")
+                    backups.append(collection)
+        if len(backups) > 1:
+            raise RuntimeError(f"教材 {book_name} 存在多个发布备份，无法自动确定版本，请检查索引")
+        if backups:
+            backups[0].modify(name=collection_name)
+            print(f"已恢复中断前的已发布索引: {collection_name}")
+
     def vectorize_book(
         self,
         chunks_path: str | Path,
@@ -208,6 +252,20 @@ class MultiBookVectorizer:
         if batch_size <= 0:
             raise ValueError("batch_size 必须大于 0")
 
+        # Serialise writers across processes before reading an append snapshot.
+        # Readers never acquire this lock, so a long embedding batch does not
+        # prevent serving the previously published collection.
+        build_lock = FileLock(self._build_lock_path(book_name), timeout=0)
+        try:
+            with build_lock:
+                return self._vectorize_book_locked(chunks_path, book_name, batch_size, clear_existing)
+        except Timeout as exc:
+            raise RuntimeError(f"教材 {book_name} 正在构建索引，请稍后重试") from exc
+
+    def _vectorize_book_locked(
+        self, chunks_path: str | Path, book_name: str, batch_size: int, clear_existing: bool,
+    ) -> str:
+
         print("=" * 70)
         print(f"开始向量化教材: {book_name}")
         print("=" * 70)
@@ -216,34 +274,46 @@ class MultiBookVectorizer:
         total = len(chunks)
         print(f"加载了 {total} 个 chunks\n")
 
-        first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
-        first_embeddings = self.embedding_provider.embed_documents(first_documents)
         collection_name = f"textbook_{book_name}"
+        self._recover_interrupted_publication(book_name)
         collection_metadata = {
+            "book_name": book_name,
             "description": f"{book_name} 教材分块",
             "hnsw:space": "cosine",
             "embedding_model": self.embedding_provider.identity.model,
             "embedding_fingerprint": self.embedding_provider.identity.fingerprint,
         }
 
-        if clear_existing:
-            write_collection_name = f"ragbuild_{uuid.uuid4().hex}"
-            collection = self.client.create_collection(
-                name=write_collection_name,
-                metadata=collection_metadata,
-            )
-        else:
-            write_collection_name = collection_name
-            collection = self.client.get_or_create_collection(
-                name=collection_name,
-                metadata=collection_metadata,
-            )
-            self.validate_collection_embedding(collection)
+        existing = None
+        if not clear_existing and self._collection_exists(collection_name):
+            existing = self.client.get_collection(collection_name)
+            self.validate_collection_embedding(existing)
+            for offset in range(0, total, 256):
+                identifiers = [chunk["chunk_id"] for chunk in chunks[offset : offset + 256]]
+                if existing.get(ids=identifiers, include=[])["ids"]:
+                    raise ValueError("追加构建包含已存在的 chunk_id；请移除重复片段或使用替换构建")
+            collection_metadata = {**(existing.metadata or {}), **collection_metadata}
+        first_documents = [chunk["content"] for chunk in chunks[:batch_size]]
+        first_embeddings = self.embedding_provider.embed_documents(first_documents)
+        # Private until promotion; failed builds never publish this revision.
+        collection_metadata[INDEX_REVISION_KEY] = uuid.uuid4().hex
+        write_collection_name = f"ragbuild_{uuid.uuid4().hex}"
+        collection = self.client.create_collection(
+            name=write_collection_name,
+            metadata=collection_metadata,
+            # Rust Chroma marks collections as backfilled for the lifetime of
+            # the client. If an unsynced HNSW index is evicted, later reads do
+            # not replay its WAL and can fail (or reload stale vectors). Sync
+            # every applied log batch so published indexes survive eviction.
+            configuration={"hnsw": {"space": "cosine", "sync_threshold": 1}},
+        )
         print(f"集合写入目标: {write_collection_name}\n")
 
         print(f"开始向量化（批大小={batch_size}）...")
         start_time = time.time()
         try:
+            if existing is not None:
+                self._copy_collection(existing, collection, batch_size)
             for offset in tqdm(range(0, total, batch_size), desc="向量化进度"):
                 batch_chunks = chunks[offset : offset + batch_size]
                 ids = [chunk["chunk_id"] for chunk in batch_chunks]
@@ -274,12 +344,11 @@ class MultiBookVectorizer:
                     metadatas=metadatas,
                 )
         except BaseException:
-            if clear_existing and self._collection_exists(write_collection_name):
+            if self._collection_exists(write_collection_name):
                 self.client.delete_collection(write_collection_name)
             raise
 
-        if clear_existing:
-            collection = self._promote_collection(collection, collection_name)
+        collection = self._promote_collection(collection, collection_name)
 
         elapsed_time = time.time() - start_time
         print("\n" + "=" * 70)
@@ -293,27 +362,69 @@ class MultiBookVectorizer:
         print("=" * 70)
         return collection_name
 
+    @staticmethod
+    def _copy_collection(source: Any, target: Any, batch_size: int) -> None:
+        """Keep append builds private until all batches have succeeded."""
+
+        for offset in range(0, source.count(), batch_size):
+            data = source.get(
+                offset=offset,
+                limit=batch_size,
+                include=["embeddings", "documents", "metadatas"],
+            )
+            if data["ids"]:
+                target.add(
+                    ids=data["ids"],
+                    embeddings=data["embeddings"],
+                    documents=data["documents"],
+                    metadatas=data["metadatas"],
+                )
+
     def _promote_collection(self, staging_collection: Any, collection_name: str):
         """Replace the visible collection only after staging is complete."""
 
         staging_name = staging_collection.name
         backup_name = None
-        if self._collection_exists(collection_name):
-            backup_name = f"ragbackup_{uuid.uuid4().hex}"
-            self.client.get_collection(collection_name).modify(name=backup_name)
-
         try:
+            if self._collection_exists(collection_name):
+                book_name = collection_name.removeprefix("textbook_")
+                # Keep the whole name within Chroma's 512-character limit. The
+                # backup's metadata retains the complete book id for readers.
+                backup_name = f"ragbackup_{uuid.uuid4().hex}_{book_name[:469]}"
+                published = self.client.get_collection(collection_name)
+                metadata = published.metadata or {}
+                if metadata.get("book_name") == book_name:
+                    published.modify(name=backup_name)
+                else:
+                    # Legacy collections need an explicit identity before the
+                    # publication gap. Chroma rejects hnsw:space in modify()
+                    # metadata even when unchanged; its actual configuration
+                    # remains intact when this legacy metadata key is omitted.
+                    backup_metadata = {**metadata, "book_name": book_name}
+                    backup_metadata.pop("hnsw:space", None)
+                    published.modify(name=backup_name, metadata=backup_metadata)
             staging_collection.modify(name=collection_name)
         except BaseException:
             if backup_name and self._collection_exists(backup_name):
+                if self._collection_exists(collection_name):
+                    current = self.client.get_collection(collection_name)
+                    if current.id == staging_collection.id:
+                        self.client.delete_collection(collection_name)
                 self.client.get_collection(backup_name).modify(name=collection_name)
             if self._collection_exists(staging_name):
                 self.client.delete_collection(staging_name)
             raise
 
         if backup_name and self._collection_exists(backup_name):
-            self.client.delete_collection(backup_name)
-            print(f"已替换旧数据: {collection_name}")
+            try:
+                self.client.delete_collection(backup_name)
+            except Exception as error:  # noqa: BLE001 - publication has already committed
+                # Publication has completed. A failed maintenance operation must
+                # not report the new, readable index as a failed build. Retained
+                # backups remain private and can be inspected separately.
+                print(f"新索引已发布，旧备份清理未确认完成: {type(error).__name__}")
+            else:
+                print(f"已替换旧数据: {collection_name}")
         return self.client.get_collection(collection_name)
 
     def search_book(self, book_name: str, query: str, top_k: int = 5) -> None:
@@ -369,7 +480,9 @@ class MultiBookVectorizer:
     def validate_collection_embedding(self, collection: Any) -> None:
         metadata = collection.metadata or {}
         fingerprint = metadata.get("embedding_fingerprint")
-        if fingerprint and fingerprint != self.embedding_provider.identity.fingerprint:
+        model = metadata.get("embedding_model")
+        identity = self.embedding_provider.identity
+        if (fingerprint and fingerprint != identity.fingerprint) or (model and model != identity.model):
             raise ValueError(
                 "向量库 embedding 模型与当前 Provider 不一致；"
                 "请使用同一模型或重新向量化该教材"
@@ -424,24 +537,24 @@ def interactive_main() -> None:
         print("未选中任何文件，退出。")
         return
 
-    vectorizer = MultiBookVectorizer(db_path=settings.paths.vector_db)
     success: list[str] = []
     failed: list[str] = []
-    for index in selected_indices:
-        path = chunk_files[index]
-        book_name = book_id_from_chunk_stem(path.stem)
-        try:
-            vectorizer.vectorize_book(path, book_name)
-            success.append(book_name)
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            print(f"\n错误：{path.name} 向量化失败 — {exc}")
-            traceback.print_exc()
-            failed.append(book_name)
+    with MultiBookVectorizer(db_path=settings.paths.vector_db) as vectorizer:
+        for index in selected_indices:
+            path = chunk_files[index]
+            book_name = book_id_from_chunk_stem(path.stem)
+            try:
+                vectorizer.vectorize_book(path, book_name)
+                success.append(book_name)
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                print(f"\n错误：{path.name} 向量化失败 — {exc}")
+                traceback.print_exc()
+                failed.append(book_name)
 
-    print("\n" + "=" * 70)
-    print("向量化汇总")
-    print(f"成功: {len(success)} 本 {success}")
-    if failed:
-        print(f"失败: {len(failed)} 本 {failed}")
-    print("=" * 70)
-    vectorizer.list_books()
+        print("\n" + "=" * 70)
+        print("向量化汇总")
+        print(f"成功: {len(success)} 本 {success}")
+        if failed:
+            print(f"失败: {len(failed)} 本 {failed}")
+        print("=" * 70)
+        vectorizer.list_books()

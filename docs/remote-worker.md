@@ -20,6 +20,10 @@ RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
 ```
 
+本地模型重排可通过 `RAG_QA_RERANK_BATCH_SIZE` 调整推理批大小，默认 32。
+应在实际设备上使用同一批候选计时并检查排名；更大的批大小不一定更快。
+使用远程 Worker 时该值应配置在 Worker 机器，Mac 上的值只控制本地查询回退。
+
 ## Windows Worker（4070 Super）
 
 拉取同一分支后，在 PowerShell 中创建环境并安装依赖：
@@ -108,5 +112,14 @@ rag-qa worker check --json   # 结构化输出
 Worker 在首次收到 embedding 或 rerank 请求时才加载并下载模型。
 
 要启用查询回退，Mac 还需安装 `local-models` 并把 `RAG_QA_QUERY_FALLBACK_TO_LOCAL` 改为 `true`。
-回退只针对**查询**且只在瞬时故障（如连接超时）时发生；认证失败和模型指纹不一致始终直接报错，
+回退只针对**查询**且只在瞬时故障（如连接超时）时发生；认证失败和模型指纹不一致始终直接报错。
+Worker 的 HTTP 重定向也会作为协议错误直接拒绝，避免向另一个地址发送认证头；
+`RAG_QA_REMOTE_URL` 应直接指向实际服务地址。
+实际推理与 `worker check` 使用相同的健康状态 / 协议校验：状态必须为 `ok`、协议版本必须为字符串
+`1`。缺失或不兼容时在调用模型前报协议错误，不触发本地回退。
 索引构建则从不回退——一次构建必须全程使用同一个后端，否则向量会不同源。
+
+远程客户端会按 Worker 每批 128 条、250000 字符的协议上限拆批，并按原顺序合并结果。
+因此全库候选较多或 `index build` 的批大小超过 128 时，也能通过同一个 Provider 完成。
+单条正文超过字符上限时会在请求前报错，需要先调整分块；客户端不会截掉正文。
+一批失败会让整个调用失败，不会把已经取得的部分向量或分数当作完整结果。

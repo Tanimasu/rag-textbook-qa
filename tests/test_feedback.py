@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,36 @@ class AnswerRegistryTests(unittest.TestCase):
 
 
 class FeedbackStoreTests(unittest.TestCase):
+    def test_exports_refuse_database_and_sqlite_sidecars_even_with_force(self):
+        for method in ("export_jsonl", "export_candidates"):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                with self.subTest(method=method, suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                    store = FeedbackStore(Path(directory) / "feedback.sqlite3")
+                    destination = Path(str(store.path) + suffix)
+                    if suffix:
+                        destination.write_bytes(b"sidecar must survive")
+                    original = destination.read_bytes()
+                    with (
+                        patch.object(store, "records", return_value=[]) as records,
+                        self.assertRaisesRegex(ValueError, "反馈数据库"),
+                    ):
+                        getattr(store, method)(destination, overwrite=True)
+                    records.assert_not_called()
+                    self.assertEqual(destination.read_bytes(), original)
+
+    def test_exports_refuse_hard_link_to_database(self):
+        for method in ("export_jsonl", "export_candidates"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = FeedbackStore(root / "feedback.sqlite3")
+                alias = root / "alias.json"
+                os.link(store.path, alias)
+                original = store.path.read_bytes()
+                with self.assertRaisesRegex(ValueError, "反馈数据库"):
+                    getattr(store, method)(alias, overwrite=True)
+                self.assertEqual(store.path.read_bytes(), original)
+                self.assertEqual(store.records(), [])
+
     def test_every_short_lived_database_connection_is_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             store = FeedbackStore(Path(directory) / "feedback.sqlite3")
@@ -173,6 +204,22 @@ class FeedbackStoreTests(unittest.TestCase):
         self.assertNotIn("不应进入候选文件", rendered)
         all_books = next(item for item in candidates if item["book_name"] == "all_books")
         self.assertEqual(all_books["suggested_checks"], ["manual_review"])
+
+    def test_summary_skips_overflowing_metadata_and_retains_real_zero_measurements(self):
+        values = [10**400, float("inf"), float("nan"), -1, True, "1.0", None, 0, 2.0]
+        records = [{"rating": "helpful", "timing": {"total_seconds": value}} for value in values]
+        summary = summarize_feedback(records)
+        self.assertEqual(summary["total"], len(values))
+        self.assertEqual(summary["latency_seconds"],
+                         {"samples": 2, "average": 1.0, "p50": 1.0, "p95": 1.9})
+        self.assertEqual(records[0]["timing"]["total_seconds"], 10**400)
+        json.dumps(summary, allow_nan=False)
+
+    def test_summary_mean_remains_finite_when_valid_duration_sum_overflows(self):
+        records = [{"rating": "helpful", "timing": {"total_seconds": 1e308}} for _ in range(2)]
+        latency = summarize_feedback(records)["latency_seconds"]
+        self.assertEqual(latency, {"samples": 2, "average": 1e308, "p50": 1e308, "p95": 1e308})
+        json.dumps(latency, allow_nan=False)
 
     def test_candidate_export_refuses_to_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:

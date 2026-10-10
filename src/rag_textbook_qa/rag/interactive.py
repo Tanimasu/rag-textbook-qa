@@ -29,7 +29,7 @@ def interactive_main(
 ) -> None:
     settings = Settings.load(workspace)
     load_dotenv(settings.paths.root / "project" / ".env", override=False)
-    engine = RAGEngine(
+    with RAGEngine(
         db_path=db_path or settings.paths.vector_db,
         enable_llm=enable_llm,
         enable_reranker=enable_reranker,
@@ -37,28 +37,28 @@ def interactive_main(
         enable_adjacent_context=enable_adjacent_context,
         context_budget=context_budget,
         verbose=True,
-    )
+    ) as engine:
 
-    print("\n" + "=" * 70)
-    print("计算机课程 AI 助教系统")
-    print("=" * 70)
-    engine.vectorizer.list_books()
-    print("输入 test 运行测试，输入 quit 退出。")
+        print("\n" + "=" * 70)
+        print("计算机课程 AI 助教系统")
+        print("=" * 70)
+        engine.vectorizer.list_books()
+        print("输入 test 运行测试，输入 quit 退出。")
 
-    while True:
-        user_input = input("\n你的问题 > ").strip()
-        if not user_input:
-            continue
-        if user_input.lower() in {"quit", "exit", "q"}:
-            print("再见！")
-            return
-        if user_input.lower() == "test":
-            for index, case in enumerate(TEST_QUERIES, 1):
-                print(f"\n测试用例 {index}/{len(TEST_QUERIES)}")
-                engine.ask(
-                    query=case["query"],
-                    book_name=case["book"],
-                    top_k=5,
-                )
-            continue
-        engine.ask(query=user_input, top_k=5)
+        while True:
+            user_input = input("\n你的问题 > ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in {"quit", "exit", "q"}:
+                print("再见！")
+                return
+            if user_input.lower() == "test":
+                for index, case in enumerate(TEST_QUERIES, 1):
+                    print(f"\n测试用例 {index}/{len(TEST_QUERIES)}")
+                    engine.ask(
+                        query=case["query"],
+                        book_name=case["book"],
+                        top_k=5,
+                    )
+                continue
+            engine.ask(query=user_input, top_k=5)

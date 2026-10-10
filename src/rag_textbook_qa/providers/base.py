@@ -8,7 +8,7 @@ import math
 import threading
 import uuid
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -16,6 +16,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 DEFAULT_QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 PROTOCOL_VERSION = "1"
+WORKER_MAX_BATCH_ITEMS = 128
+WORKER_MAX_BATCH_CHARACTERS = 250_000
 _TRACE_ID: ContextVar[str | None] = ContextVar("rag_qa_provider_trace_id", default=None)
 
 
@@ -41,6 +43,14 @@ class ProviderProtocolError(ProviderError):
 
 class MissingOptionalDependencyError(ProviderError):
     """A provider cannot start until its optional dependency group is installed."""
+
+
+def validate_worker_health_status(payload: Mapping[str, object]) -> None:
+    """Require the same health envelope for diagnostics and real inference."""
+    if payload.get("status") != "ok":
+        raise ProviderProtocolError("远程 Worker /health 状态不是 ok")
+    if payload.get("protocol_version") != PROTOCOL_VERSION:
+        raise ProviderProtocolError("远程 Worker 协议版本与客户端不一致")
 
 
 @dataclass(frozen=True)

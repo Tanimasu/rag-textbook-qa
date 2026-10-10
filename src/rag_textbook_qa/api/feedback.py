@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.timing import finite_seconds
+
 FEEDBACK_RATINGS = frozenset({"helpful", "needs_improvement"})
 FEEDBACK_REASON_ORDER = (
     "not_answered",
@@ -218,8 +220,22 @@ class FeedbackStore:
             records.append(record)
         return records
 
-    def export_jsonl(self, output: str | Path, *, overwrite: bool = False) -> int:
+    def _export_destination(self, output: str | Path) -> Path:
         destination = Path(output).expanduser().resolve()
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            protected = Path(str(self.path) + suffix)
+            if destination == protected:
+                raise ValueError("导出不能覆盖反馈数据库或其 SQLite 辅助文件")
+            try:
+                alias = destination.samefile(protected)
+            except FileNotFoundError:
+                continue
+            if alias:
+                raise ValueError("导出不能覆盖反馈数据库或其 SQLite 辅助文件")
+        return destination
+
+    def export_jsonl(self, output: str | Path, *, overwrite: bool = False) -> int:
+        destination = self._export_destination(output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if overwrite else "x"
         records = self.records()
@@ -229,7 +245,7 @@ class FeedbackStore:
         return len(records)
 
     def export_candidates(self, output: str | Path, *, overwrite: bool = False) -> int:
-        destination = Path(output).expanduser().resolve()
+        destination = self._export_destination(output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if overwrite else "x"
         candidates = build_feedback_candidates(self.records())
@@ -274,10 +290,20 @@ def summarize_feedback(records: list[Mapping[str, Any]]) -> dict[str, Any]:
         timing = record.get("timing")
         value = timing.get("total_seconds") if isinstance(timing, Mapping) else None
         if isinstance(value, int | float) and not isinstance(value, bool):
-            duration = float(value)
-            if math.isfinite(duration) and duration >= 0:
+            duration = finite_seconds(value)
+            if duration is not None:
                 durations.append(duration)
     durations.sort()
+
+    average = None
+    if durations:
+        # Normalize before summing: the mean of finite nonnegative durations is
+        # finite even when their unscaled sum would overflow.
+        scale = durations[-1]
+        average = (
+            _rounded(sum(value / scale for value in durations) / len(durations) * scale)
+            if scale else 0.0
+        )
 
     return {
         "total": total,
@@ -290,7 +316,7 @@ def summarize_feedback(records: list[Mapping[str, Any]]) -> dict[str, Any]:
         "negative_by_book": dict(sorted(negative_by_book.items())),
         "latency_seconds": {
             "samples": len(durations),
-            "average": _rounded(sum(durations) / len(durations)) if durations else None,
+            "average": average,
             "p50": _rounded(_percentile(durations, 0.50)) if durations else None,
             "p95": _rounded(_percentile(durations, 0.95)) if durations else None,
         },

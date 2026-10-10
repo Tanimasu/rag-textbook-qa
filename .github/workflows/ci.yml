@@ -22,6 +22,8 @@ jobs:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,22 +43,41 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
-      - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[ui,worker,api]" ruff
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.27"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked test dependencies
+        run: uv sync --locked --extra ui --extra worker --extra api
+
+      - name: Verify matrix interpreter
+        run: uv run --no-sync python -c "import sys; print(sys.version); assert f'{sys.version_info.major}.{sys.version_info.minor}' == '${{ matrix.python-version }}'"
 
       - name: Lint packaged code, tests, and release helpers
-        run: python -m ruff check src tests scripts
+        run: uv run --no-sync python -m ruff check src tests scripts
 
       - name: Run offline test suite
-        run: python -m unittest discover -s tests -v
+        run: uv run --no-sync python -m unittest discover -s tests -v
+
+      - name: Verify queue saturation and cancellation over real HTTP
+        run: uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/ci/queue-http.json
+
+      - name: Verify interrupted Worker responses over real HTTP
+        run: uv run --no-sync python scripts/check_remote_transport.py --output artifacts/evaluations/ci/remote-transport.json
+
+      - name: Verify generation terminal markers over real HTTP
+        run: uv run --no-sync python scripts/check_generation_transport.py --output artifacts/evaluations/ci/generation-transport.json
+
+      - name: Repeat Windows Chroma lifecycle regressions
+        if: runner.os == 'Windows'
+        run: uv run --no-sync python scripts/check_index_lifecycle.py --iterations 25 --output artifacts/evaluations/ci/index-lifecycle.json
 
       - name: Compile Python sources
-        run: python -m compileall -q src tests project
+        run: uv run --no-sync python -m compileall -q src tests project
 
       - name: Parse Windows Worker launcher
         if: runner.os == 'Windows'
@@ -74,6 +95,36 @@ jobs:
             exit 1
           }
 
+  browser:
+    name: Public chat / Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.27"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked browser test dependencies
+        run: uv sync --locked --only-group browser
+
+      - name: Install Chromium and system libraries
+        run: uv run --no-sync python -m playwright install --with-deps chromium
+
+      - name: Run public chat in a real browser with a local fake backend
+        run: uv run --no-sync python tests/browser/public_chat_browser.py -v
+
   package:
     name: Build and inspect package
     runs-on: ubuntu-latest
@@ -87,22 +138,29 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
-      - name: Install build dependencies
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.27"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked build and package dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[eval,ui,worker]" build
+          uv sync --locked --only-group build
+          uv sync --locked --no-dev --group build --extra eval --extra ui --extra worker --extra api --no-editable --no-build-isolation
 
       - name: Build source and wheel distributions
-        run: python -m build
+        run: uv run --no-sync python -m build --no-isolation
 
       - name: Verify packaged entry points and Web UI
         run: |
-          python scripts/check_distribution.py dist
-          python -c "import glob, subprocess, sys; wheel = glob.glob('dist/*.whl')[0]; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', wheel])"
-          python -c "import datasets, ragas; from datasets import Dataset; assert len(Dataset.from_dict({'question': ['ok']})) == 1"
-          python -c "from rag_textbook_qa.evaluation import RAGASEvaluator; evaluator = RAGASEvaluator(api_key='ci-only', base_url='http://127.0.0.1:9/v1', model='test-model'); assert evaluator._answer_relevancy.strictness == 1; assert evaluator.embeddings.check_embedding_ctx_length is False"
-          rag-qa --help
-          rag-qa doctor --json
+          uv run --no-sync python scripts/check_distribution.py dist
+          uv pip install --python .venv/bin/python --reinstall --no-deps dist/*.whl
+          uv run --no-sync python -c "import datasets, ragas; from datasets import Dataset; assert len(Dataset.from_dict({'question': ['ok']})) == 1"
+          uv run --no-sync python -c "from rag_textbook_qa.evaluation import RAGASEvaluator; evaluator = RAGASEvaluator(api_key='ci-only', base_url='http://127.0.0.1:9/v1', model='test-model'); assert evaluator._answer_relevancy.strictness == 1; assert evaluator.embeddings.check_embedding_ctx_length is False"
+          uv run --no-sync python -m unittest discover -s tests -p test_ragas_transport.py -v
+          uv run --no-sync python -m unittest discover -s tests -p test_generation_cli.py -v
+          uv run --no-sync rag-qa --help
+          uv run --no-sync rag-qa doctor --json

@@ -8,7 +8,8 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.catalog import BOOK_LABELS
-from rag_textbook_qa.web.messages import compute_trace_items
+from rag_textbook_qa.rag.references import render_source_sections
+from rag_textbook_qa.web.messages import compute_trace_items, source_section_label
 
 
 def format_book_label(book_id: str) -> str:
@@ -16,13 +17,7 @@ def format_book_label(book_id: str) -> str:
 
 
 def format_section_label(source: dict[str, Any]) -> str:
-    parts = [
-        str(source.get("chapter", "")).strip(),
-        str(source.get("section_h2", "")).strip(),
-        str(source.get("section_h3", "")).strip(),
-    ]
-    populated = [part for part in parts if part]
-    return " > ".join(populated) if populated else "未标注章节"
+    return source_section_label(source)
 
 
 def render_source_preview(sources: list[dict[str, Any]]) -> None:
@@ -46,20 +41,25 @@ def render_sources_expander(sources: list[dict[str, Any]]) -> None:
         return
 
     with st.expander(f"📚 参考来源（{len(sources)}）", expanded=False):
+        st.caption("逐条核对回答中的参考资料编号与教材原文。")
         for index, source in enumerate(sources, 1):
-            score = float(source.get("final_score", source.get("similarity", 0)))
-            method = html.escape(str(source.get("method", "hybrid")))
             book = html.escape(format_book_label(source.get("book_name", "") or "未知教材"))
             section = html.escape(format_section_label(source))
+            if source.get("truncated"):
+                section += " · 片段已截断"
+            if source.get("table_compacted"):
+                section += " · 表格按行整理"
             content = str(source.get("content", ""))
-            snippet = html.escape(content[:220] + ("..." if len(content) > 220 else ""))
+            citation_id = html.escape(str(source.get("citation_id", index)))
+            snippet = html.escape(content)
 
             st.markdown(
                 f"""
                 <div class="source-card">
-                    <div class="source-title">{index}. {book}</div>
-                    <div class="source-meta">{section} · 分数 {score:.3f} · {method}</div>
-                    <div class="source-snippet">{snippet}</div>
+                    <div class="source-title">参考资料 {citation_id} · {book}</div>
+                    <div class="source-meta">{section}</div>
+                    <div class="source-snippet" tabindex="0" role="region"
+                         aria-label="参考资料 {citation_id} 原文">{snippet}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -89,7 +89,7 @@ def render_answer_block(
     execution: dict[str, Any] | None = None,
 ) -> None:
     render_answer_header()
-    st.markdown(answer)
+    st.markdown(render_source_sections(answer, sources))
     render_answer_details(sources, execution)
 
 

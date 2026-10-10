@@ -7,10 +7,12 @@ import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlsplit
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
+
+from rag_textbook_qa.token_usage import completion_usage
 
 DEFAULT_LLM_BASE_URL = "https://api.ohmygpt.com/v1"
 DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite-preview"
@@ -97,22 +99,37 @@ class LLMClient:
         self.client = (
             sdk_client
             if sdk_client is not None
-            else OpenAI(api_key=api_key, base_url=self.base_url)
+            # generate_answer owns its retry budget. SDK retries would multiply
+            # it and also retry streaming requests without the caller's intent.
+            else OpenAI(api_key=api_key, base_url=self.base_url, max_retries=0)
         )
+        self._closed = False
 
         if self.verbose:
             print("LLM 客户端初始化:")
             print(f"Base URL: {self.base_url}")
             print(f"默认模型: {self.default_model}")
 
+    def close(self) -> None:
+        """Release the SDK's HTTP connections; repeated closure is harmless."""
+
+        if self._closed:
+            return
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
+        self._closed = True
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
     @staticmethod
-    def _usage(response: Any) -> dict[str, int]:
-        usage = getattr(response, "usage", None)
-        return {
-            "prompt": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion": int(getattr(usage, "completion_tokens", 0) or 0),
-            "total": int(getattr(usage, "total_tokens", 0) or 0),
-        }
+    def _usage(response: Any) -> dict[str, int | None]:
+        usage = completion_usage(response) or {}
+        return {key: usage.get(key) for key in ("prompt", "completion", "total")}
 
     @staticmethod
     def _failure(error: Exception, *, model: str, label: str) -> dict[str, Any]:
@@ -122,9 +139,39 @@ class LLMClient:
             "error": message,
             "answer": f"❌ {label}：{message}",
             "model": model,
-            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "tokens": {"prompt": None, "completion": None, "total": None},
             "time": 0,
         }
+
+    @classmethod
+    def _completion_result(cls, response: Any, *, model: str, elapsed: float) -> dict[str, Any]:
+        """A received response is checked once, without starting a paid retry."""
+        choices = getattr(response, "choices", None)
+        choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+        message = getattr(choice, "message", None)
+        content = getattr(message, "content", None)
+        answer = content if isinstance(content, str) else ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        error = None
+        if choice is None or message is None:
+            error = "模型响应缺少有效回答，无法生成答案"
+        elif content is not None and not isinstance(content, str):
+            error = "模型响应内容格式异常，无法生成答案"
+        elif finish_reason != "stop":
+            error = _incomplete_generation_message(finish_reason)
+        elif not answer.strip():
+            error = "模型响应为空，无法生成回答"
+        result = {
+            "success": error is None,
+            "answer": answer,
+            "model": model,
+            "tokens": cls._usage(response),
+            "time": elapsed,
+            "finish_reason": finish_reason,
+        }
+        if error is not None:
+            result["error"] = error
+        return result
 
     def plan_queries(self, prompt: str) -> str:
         """One bounded planning request, without SDK or application retries."""
@@ -141,7 +188,10 @@ class LLMClient:
             stream=False,
             **options,
         )
-        return response.choices[0].message.content or ""
+        result = self._completion_result(response, model=self.default_model, elapsed=0)
+        if not result["success"]:
+            raise LLMGenerationIncompleteError(result["error"])
+        return result["answer"]
 
     def audit_citations(self, prompt: str) -> str:
         """Bounded evidence checking; no SDK/application retries or reasoning text storage."""
@@ -188,34 +238,22 @@ class LLMClient:
                     stream=False,
                 )
                 elapsed = round(time.monotonic() - started, 2)
-                choice = response.choices[0]
-                answer = choice.message.content or ""
-                usage = self._usage(response)
-                finish_reason = getattr(choice, "finish_reason", None)
-                if finish_reason != "stop":
-                    return {
-                        "success": False,
-                        "error": _incomplete_generation_message(finish_reason),
-                        "answer": answer,
-                        "model": selected_model,
-                        "tokens": usage,
-                        "time": elapsed,
-                        "finish_reason": finish_reason,
-                    }
-                if self.verbose:
-                    print(f"成功（{elapsed} 秒，{usage['total']} tokens）")
-                return {
-                    "success": True,
-                    "answer": answer,
-                    "model": selected_model,
-                    "tokens": usage,
-                    "time": elapsed,
-                    "finish_reason": finish_reason,
-                }
+                result = self._completion_result(response, model=selected_model, elapsed=elapsed)
+                if self.verbose and result["success"]:
+                    total = result["tokens"]["total"]
+                    usage_label = f"{total} tokens" if total is not None else "token 用量未知"
+                    print(f"成功（{elapsed} 秒，{usage_label}）")
+                return result
             except Exception as exc:  # noqa: BLE001 - normalize third-party SDK errors
                 last_error = exc
                 if self.verbose:
                     print(f"调用失败: {str(exc)[:100]}")
+                if (isinstance(exc, APIStatusError)
+                        and exc.status_code not in {408, 409, 429}
+                        and exc.status_code < 500):
+                    # Invalid credentials, requests and model names need a caller
+                    # change. Repeating them only delays the same failure.
+                    break
                 if attempt < retry:
                     time.sleep(1)
 
@@ -262,6 +300,10 @@ class LLMClient:
                 content = getattr(delta, "content", None)
                 if content:
                     yield content
+                if chunk_finish_reason is not None:
+                    # One choice is requested. Its terminal marker completes the
+                    # answer even if the upstream leaves its HTTP stream open.
+                    break
             if finish_reason != "stop":
                 raise LLMGenerationIncompleteError(
                     _incomplete_generation_message(finish_reason)
@@ -300,13 +342,7 @@ class LLMClient:
                 max_tokens=max_tokens,
             )
             elapsed = round(time.monotonic() - started, 2)
-            return {
-                "success": True,
-                "answer": response.choices[0].message.content or "",
-                "model": selected_model,
-                "tokens": self._usage(response),
-                "time": elapsed,
-            }
+            return self._completion_result(response, model=selected_model, elapsed=elapsed)
         except Exception as exc:  # noqa: BLE001 - normalize third-party SDK errors
             if self.verbose:
                 print(f"对话失败: {str(exc)[:100]}")

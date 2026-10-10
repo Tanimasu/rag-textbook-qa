@@ -14,6 +14,37 @@ COMPATIBILITY_SCRIPT = REPOSITORY_ROOT / "project" / "clean_markdown.py"
 
 
 class SmartMarkdownCleanerTests(unittest.TestCase):
+    def test_title_normalization_preserves_fenced_directives(self):
+        cleaner = SmartMarkdownCleaner()
+        blocks = [
+            "```c\n#include <stdio.h>\n#define LIMIT 10\n#if LIMIT\n#endif\n```",
+            "   ~~~~c\n#define LIMIT 10\n~~~\n# retained\n    ~~~~\n~~~~ trailing\n~~~~~",
+            "````c\n```\n# retained\n~~~~\n````",
+            "```c\n#define LIMIT 10\n# unclosed",
+        ]
+        for block in blocks:
+            with self.subTest(block=block):
+                self.assertEqual(cleaner.normalize_titles(block), block)
+
+        content = "```c\n#define LIMIT 10\n```\n# 1.2 正文标题\n"
+        self.assertEqual(
+            cleaner.normalize_titles(content),
+            "```c\n#define LIMIT 10\n```\n## 1.2 正文标题\n",
+        )
+
+    def test_clean_markdown_preserves_fenced_preprocessor_directives(self):
+        source = "# 第1章 测试章节\n\n```c\n#include <stdio.h>\n#define LIMIT 10\n#if LIMIT\n#endif\n```\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            input_path = root / "input.md"
+            output_path = root / "output.md"
+            input_path.write_text(source, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = clean_markdown(input_path, output_path)
+            for directive in ("#include <stdio.h>", "#define LIMIT 10", "#if LIMIT", "#endif"):
+                self.assertIn(directive, result.splitlines())
+            self.assertEqual(input_path.read_text(encoding="utf-8"), source)
+
     def test_title_levels_preserve_legacy_rules(self):
         cleaner = SmartMarkdownCleaner()
 
@@ -104,6 +135,31 @@ if（ready），return；
                 clean_markdown(input_path, output_path)
 
             self.assertEqual(output_path.read_text(encoding="utf-8"), "preserved")
+
+    def test_force_rejects_a_hardlink_to_the_source(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source.md"
+            output = root / "alias.md"
+            original = "## 第1章 原始教材\n"
+            source.write_text(original, encoding="utf-8")
+            os.link(source, output)
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                clean_markdown(source, output, overwrite=True)
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
+
+    def test_direct_cleaner_rejects_the_source_and_its_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "book.md"
+            alias = Path(directory) / "alias.md"
+            original = "## 第1章 原始教材\n"
+            source.write_text(original, encoding="utf-8")
+            os.link(source, alias)
+            for destination in (source, alias):
+                with self.subTest(destination=destination):
+                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                        SmartMarkdownCleaner().clean(source, destination)
+                    self.assertEqual(source.read_text(encoding="utf-8"), original)
 
 
 if __name__ == "__main__":

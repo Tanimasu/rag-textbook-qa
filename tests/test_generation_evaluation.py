@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -33,6 +34,46 @@ def write_cases(directory: str, cases: list[dict]) -> Path:
 
 
 class ArmAndCaseTests(unittest.TestCase):
+    def test_frozen_json_rejects_duplicate_fields_and_nonstandard_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            for raw, reason in (
+                ('{"cases":[],"cases":[]}', "duplicate_json_key"),
+                ('{"cases":[],"metadata":NaN}', "invalid_json_constant"),
+            ):
+                with self.subTest(raw=raw):
+                    path.write_text(raw, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, reason):
+                        load_generation_cases(path)
+
+    def test_frozen_case_fields_are_validated_without_coercing_text_or_arrays(self):
+        valid = {"id": "01", "question": "问题", "requirements": ["要求"],
+                 "variants": {"baseline": {"context": SOURCE["content"],
+                                            "sources": [SOURCE], "answers": ["答案"]}}}
+        changes = [
+            (("id",), True), (("id",), " "), (("question",), 12),
+            (("question",), " "), (("requirements",), "要求"),
+            (("requirements",), [False]), (("variants",), {}),
+            (("variants", "baseline", "context"), ""),
+            (("variants", "baseline", "sources"), []),
+            (("variants", "baseline", "sources"), [{"citation_id": True, "content": SOURCE["content"]}]),
+            (("variants", "baseline", "sources"), [{"citation_id": 1, "content": ""}]),
+            (("variants", "baseline", "answers"), "保存过的回答"),
+            (("variants", "baseline", "answers"), [3]),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for path, value in changes:
+                with self.subTest(field=path, value=value):
+                    case = copy.deepcopy(valid)
+                    target = case
+                    for key in path[:-1]:
+                        target = target[key]
+                    target[path[-1]] = value
+                    with self.assertRaises((TypeError, ValueError)):
+                        load_generation_cases(write_cases(directory, [case]))
+            with self.assertRaises(ValueError):
+                load_generation_cases(write_cases(directory, []))
+
     def test_parses_generated_and_stored_arms(self):
         self.assertEqual(parse_arm("t07=baseline@0.7"), Arm("t07", "baseline", 0.7))
         self.assertEqual(parse_arm("reviewed=baseline@stored"), Arm("reviewed", "baseline", None))
@@ -77,6 +118,25 @@ class QuoteTests(unittest.TestCase):
 
 
 class JudgeOutputTests(unittest.TestCase):
+    def test_rejects_ambiguous_keys_and_nonstandard_numbers(self):
+        examples = (
+            '{"verdicts":[],"verdicts":[]}',
+            '{"coverage":[{"id":1,"addressed":false,"addressed":true}]}',
+            '{"verdicts":[{"id":1,"label":"unsupported","label":"supported"}]}',
+            '{"evidence":[{"source_id":2,"source_id":1,"quote":"原文"}]}',
+            '{"id":1,"\\u0069d":2}',
+        )
+        for raw in examples:
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "duplicate_json_key"):
+                parse_json_object(raw)
+        for token in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, "invalid_json_constant"):
+                parse_json_object('{"ignored":' + token + '}')
+        for token in ("1e999", "-1e999"):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, "nonfinite_json_number"):
+                parse_json_object('{"ignored":' + token + '}')
+        self.assertEqual(parse_json_object('{"number":0.125}'), {"number": 0.125})
+
     def test_parses_fenced_json(self):
         self.assertEqual(parse_json_object('```json\n{"claims": []}\n```'), {"claims": []})
         with self.assertRaises(ValueError):
@@ -114,6 +174,25 @@ class JudgeOutputTests(unittest.TestCase):
 
 
 class ScoreTests(unittest.TestCase):
+    def test_every_quote_must_match_its_declared_source(self):
+        sources = [SOURCE, {"citation_id": 2, "content": "数据库索引用来定位存储记录。"}]
+        claim = {"id": 1, "type": "fact", "text": "进程是资源分配和调度的独立单位"}
+        quote = "资源分配和调度的一个独立单位"
+        for label in ("supported", "minor"):
+            for references in (
+                [{"source_id": 2, "quote": quote}],
+                [{"source_id": 99, "quote": quote}],
+                [{"source_id": True, "quote": quote}],
+                [{"source_id": 1, "quote": quote}, {"source_id": 2, "quote": quote}],
+            ):
+                with self.subTest(label=label, references=references):
+                    verdict = {1: {"label": label, "evidence": references, "reason": ""}}
+                    score = score_answer([claim], [], verdict, sources)
+                    self.assertEqual(score["claims"][0]["status"], "unverified")
+                    self.assertEqual(score["problem_claims"], 1)
+        correct = {1: {"label": "supported", "evidence": [{"source_id": 1, "quote": quote}], "reason": ""}}
+        self.assertEqual(score_answer([claim], [], correct, sources)["supported"], 1)
+
     def test_support_without_a_findable_quote_counts_as_a_problem(self):
         claims = [
             {"id": 1, "type": "fact", "text": "进程是资源分配和调度的独立单位"},
@@ -201,6 +280,40 @@ class StatisticsTests(unittest.TestCase):
         self.assertTrue(report["cases"]["02"]["cool"]["mixed_verdicts"])
         self.assertEqual(report["arms"]["cool"]["mixed_verdicts"], 1)
         json.dumps(report)
+
+    def test_summary_excludes_legacy_incomplete_scores_from_means_and_pairing(self):
+        def record(case_id: str, arm: str, reason: str | None, problems: int,
+                   answer: str = "回答") -> dict:
+            return {
+                "case_id": case_id, "arm": arm, "finish_reason": reason, "answer": answer,
+                "score": {
+                    "fact_claims": 4, "problem_claims": problems,
+                    "problem_rate": problems / 4, "strict_rate": problems / 4,
+                    "coverage": 1.0,
+                },
+            }
+
+        cases = [GenerationCase("01", "问", (), {}), GenerationCase("02", "问", (), {})]
+        arms = [Arm("hot", "baseline", 0.7), Arm("cool", "baseline", None)]
+        records = [
+            record("01", "hot", "stop", 2), record("01", "hot", "length", 100),
+            record("01", "hot", "stop", 100, answer=" \n"),
+            record("01", "cool", "stored", 1), record("02", "hot", None, 100),
+            record("02", "cool", "stored", 0),
+        ]
+
+        report = summarize(records, cases, arms)
+
+        hot = report["arms"]["hot"]
+        self.assertEqual((hot["samples"], hot["completed"], hot["incomplete"], hot["judged"],
+                          hot["truncated"], hot["empty_answers"]), (4, 1, 3, 1, 1, 1))
+        self.assertEqual(hot["problem_claims"], 2.0)
+        self.assertEqual(hot["answer_chars"], 2.0)
+        self.assertIsNone(hot["overlap"])
+        self.assertEqual(report["arms"]["cool"]["judged"], 2)
+        comparison = report["comparisons"]["cool"]["problem_claims"]
+        self.assertEqual((comparison["cases"], comparison["mean_difference"]), (1, -1.0))
+        self.assertIsNone(report["cases"]["02"]["hot"]["coverage"])
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 import sys
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory
 from rag_textbook_qa.llm import GenerationCancelled, LLMClient, LLMGenerationIncompleteError
 from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
@@ -139,6 +139,46 @@ def chunks():
 
 
 class RagProviderIntegrationTests(unittest.TestCase):
+    def test_generation_start_signal_precedes_both_model_paths(self):
+        for streamed in (False, True):
+            with self.subTest(streamed=streamed):
+                engine = object.__new__(RAGEngine)
+                engine.llm = FakeLLMClient()
+                calls = []
+
+                def started(engine=engine, calls=calls):
+                    self.assertEqual(engine.llm.prompts, [])
+                    calls.append("started")
+
+                result, _ = engine._generate(
+                    "提示词",
+                    temperature=0.7,
+                    max_tokens=20,
+                    on_answer_chunk=calls.append if streamed else None,
+                    started=time.monotonic(),
+                    on_generation_start=started,
+                )
+                self.assertTrue(result["success"])
+                self.assertEqual(calls.count("started"), 1)
+                self.assertEqual(len(engine.llm.prompts), 1)
+
+    def test_pre_request_stop_does_not_signal_generation_start(self):
+        engine = object.__new__(RAGEngine)
+        engine.llm = FakeLLMClient()
+        started = MagicMock()
+        with self.assertRaises(GenerationCancelled):
+            engine._generate(
+                "提示词",
+                temperature=0.7,
+                max_tokens=20,
+                on_answer_chunk=None,
+                started=time.monotonic(),
+                should_stop=lambda: True,
+                on_generation_start=started,
+            )
+        started.assert_not_called()
+        self.assertEqual(engine.llm.prompts, [])
+
     def test_engine_does_not_report_a_truncated_stream_as_success(self):
         class TruncatedLLM:
             default_model = "fake-llm"
@@ -163,6 +203,8 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertIsNone(result["answer"])
         self.assertEqual(chunks, ["未完成的回答"])
         self.assertIn("长度上限", result["error"])
+        self.assertEqual(result["tokens"],
+                         {"prompt": None, "completion": None, "total": None})
 
     def test_a_reader_stop_escapes_generate_instead_of_posing_as_a_failure(self):
         # Hidden-reasoning chunks carry no answer text; the stop must still land.
@@ -209,7 +251,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
         before = {"sentence_transformers", "torch"}.intersection(sys.modules)
         with (
             patch.dict("os.environ", {"RAG_QA_COMPUTE_BACKEND": "invalid"}),
-            tempfile.TemporaryDirectory() as temporary_directory,
+            TemporaryIndexDirectory() as temporary_directory,
             contextlib.redirect_stdout(io.StringIO()),
             RAGEngine(
                 db_path=temporary_directory,
@@ -229,8 +271,83 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertEqual(results[0]["content"], "second")
         self.assertEqual(results[0]["rerank_score"], 1.0)
 
+    def test_failed_reranker_initialization_closes_the_open_index(self):
+        vectorizer = MagicMock()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed"),
+            patch("rag_textbook_qa.rag.engine.create_reranker_provider", side_effect=RuntimeError("offline")),
+            self.assertRaisesRegex(RuntimeError, "offline"),
+        ):
+            RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider())
+        vectorizer.close.assert_called_once_with()
+
+    def test_interrupted_keyword_initialization_closes_the_open_index(self):
+        vectorizer = MagicMock()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider(), enable_reranker=False)
+        vectorizer.close.assert_called_once_with()
+
+    def test_engine_closes_only_llm_clients_it_creates(self):
+        for injected in (False, True):
+            with self.subTest(injected=injected):
+                vectorizer, llm = MagicMock(), MagicMock()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+                    patch.object(RAGEngine, "refresh_index_if_changed"),
+                    patch("rag_textbook_qa.rag.engine.create_llm_client", return_value=llm),
+                ):
+                    engine = RAGEngine(
+                        embedding_provider=FakeEmbeddingProvider(), enable_reranker=False,
+                        llm_client=llm if injected else None, verbose=False,
+                    )
+                    engine.close()
+                    engine.close()
+                if injected:
+                    llm.close.assert_not_called()
+                else:
+                    llm.close.assert_called_once_with()
+                self.assertTrue(vectorizer.close.called)
+
+    def test_sdk_close_failure_still_releases_the_index(self):
+        vectorizer, llm = MagicMock(), MagicMock()
+        llm.close.side_effect = RuntimeError("SDK close failed")
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+            patch.object(RAGEngine, "refresh_index_if_changed"),
+            patch("rag_textbook_qa.rag.engine.create_llm_client", return_value=llm),
+        ):
+            engine = RAGEngine(
+                embedding_provider=FakeEmbeddingProvider(), enable_reranker=False, verbose=False,
+            )
+            with self.assertRaisesRegex(RuntimeError, "SDK close failed"):
+                engine.close()
+        vectorizer.close.assert_called_once_with()
+
+    def test_unexpected_llm_initialization_failure_closes_the_open_index(self):
+        for error in (KeyboardInterrupt(), Exception("SDK setup failed")):
+            with self.subTest(error=type(error).__name__):
+                vectorizer = MagicMock()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    patch("rag_textbook_qa.rag.engine.MultiBookVectorizer", return_value=vectorizer),
+                    patch.object(RAGEngine, "refresh_index_if_changed"),
+                    patch("rag_textbook_qa.rag.engine.create_llm_client", side_effect=error),
+                    self.assertRaises(type(error)),
+                ):
+                    RAGEngine(embedding_provider=FakeEmbeddingProvider(), enable_reranker=False)
+                vectorizer.close.assert_called_once_with()
+
     def test_packaged_engine_retrieves_and_uses_injected_llm_without_network(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 contextlib.redirect_stdout(io.StringIO()),
@@ -268,7 +385,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertNotIn("token", repr(execution).lower())
 
     def test_engine_reports_missing_llm_configuration_without_hiding_retrieval(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 patch.dict("os.environ", {}, clear=True),
@@ -292,7 +409,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
             self.assertIn("LLM_API_KEY", result["error"])
 
     def test_hybrid_search_can_skip_configured_reranker(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with (
                 contextlib.redirect_stdout(io.StringIO()),
@@ -406,10 +523,11 @@ class RagProviderIntegrationTests(unittest.TestCase):
         self.assertEqual(len({result["content"] for result in results}), len(results))
 
     def test_engine_streams_answer_chunks_and_preserves_execution_summary(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
+        with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)
+            output = io.StringIO()
             with (
-                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 db_path = build_test_vector_db(root)
@@ -421,7 +539,7 @@ class RagProviderIntegrationTests(unittest.TestCase):
                     reranker_provider=FakeRerankerProvider(),
                     llm_client=llm,
                     enable_hyde=True,
-                    verbose=False,
+                    verbose=True,
                 ) as engine:
                     result = engine.ask(
                         "什么是进程？",
@@ -439,6 +557,9 @@ class RagProviderIntegrationTests(unittest.TestCase):
                 result["context"],
             )
             self.assertTrue(result["llm_response"]["streamed"])
+            self.assertEqual(result["llm_response"]["tokens"],
+                             {"prompt": None, "completion": None, "total": None})
+            self.assertIn("tokens: 未知", output.getvalue())
             self.assertEqual(len(llm.prompts), 1)
             self.assertGreaterEqual(result["execution"]["first_token_seconds"], 0)
             self.assertEqual(result["execution"]["embedding"]["backend"], "remote")

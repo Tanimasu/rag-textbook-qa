@@ -8,12 +8,13 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.providers.base import ProviderError
+from rag_textbook_qa.rag.references import answer_body
 from rag_textbook_qa.web.helpers import (
     render_answer_block,
     render_answer_details,
     render_answer_header,
 )
-from rag_textbook_qa.web.messages import answer_message
+from rag_textbook_qa.web.messages import answer_export_markdown, answer_message
 
 
 def render_decomposition(plan: dict[str, Any] | None) -> None:
@@ -74,7 +75,8 @@ def render_chat_tab(
             unsafe_allow_html=True,
         )
 
-    for message in st.session_state.messages:
+    retry_request = None
+    for index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
                 render_answer_block(
@@ -85,39 +87,69 @@ def render_chat_tab(
                 render_decomposition(message.get("decomposition"))
                 render_grounding(message.get("grounding"))
                 render_context_expansion(message.get("context_expansion"))
+                if message.get("success") is not False:
+                    query = message.get("request", {}).get("query")
+                    if not query and index and st.session_state.messages[index - 1]["role"] == "user":
+                        query = st.session_state.messages[index - 1]["content"]
+                    st.download_button(
+                        "保存问答（含来源）",
+                        data=answer_export_markdown(query or "（未保存问题）", message["content"],
+                                                    message.get("sources", [])),
+                        file_name=f"教材问答-{index + 1}.md",
+                        mime="text/markdown; charset=utf-8",
+                        key=f"download_question_{index}",
+                        on_click="ignore",
+                    )
+                if (
+                    message.get("success") is False and message.get("request")
+                    and st.button("重试本题", key=f"retry_question_{index}")
+                ):
+                    retry_request = message["request"].copy()
             else:
                 st.markdown(message["content"])
 
     user_question = st.chat_input("请输入您的问题…")
-    if not user_question:
+    if not user_question and retry_request is None:
         return
 
+    request = retry_request or {
+        "query": user_question,
+        "book_name": book_id,
+        "top_k": top_k,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "use_hyde": enable_hyde,
+        "use_adjacent_context": enable_adjacent_context,
+        "use_decomposition": enable_decomposition,
+        "verify_citations": verify_citations,
+    }
+    user_question = request["query"]
     st.session_state.messages.append({"role": "user", "content": user_question})
     with st.chat_message("user"):
         st.markdown(user_question)
 
     with st.chat_message("assistant"):
         render_answer_header()
+        progress_placeholder = st.empty()
+        progress_placeholder.caption("正在检索教材…")
         answer_placeholder = st.empty()
         streamed_chunks: list[str] = []
 
+        def begin_generation() -> None:
+            progress_placeholder.caption("教材检索完成，等待模型回答…")
+
         def render_chunk(chunk: str) -> None:
+            if not streamed_chunks:
+                progress_placeholder.caption("正在接收回答…")
             streamed_chunks.append(chunk)
             answer_placeholder.markdown("".join(streamed_chunks) + "▌")
 
         try:
-            with st.spinner("正在检索教材并生成答案…"):
+            with st.spinner("正在处理问题…"):
                 engine = load_engine()
                 result = engine.ask(
-                    query=user_question,
-                    book_name=book_id,
-                    top_k=top_k,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    use_hyde=enable_hyde,
-                    use_adjacent_context=enable_adjacent_context,
-                    use_decomposition=enable_decomposition,
-                    verify_citations=verify_citations,
+                    **request,
+                    on_generation_start=begin_generation,
                     on_answer_chunk=render_chunk,
                 )
         except (ProviderError, OSError, RuntimeError, ValueError):
@@ -127,13 +159,21 @@ def render_chat_tab(
                 "context_sources": [],
             }
 
+        if result.get("success") and not answer_body(str(result.get("answer") or "")).strip():
+            result = {**result, "success": False, "answer": None,
+                      "error": "模型未返回答案正文，请重试。"}
         answer = answer_message(result)
+        progress_placeholder.empty()
         answer_placeholder.markdown(answer)
         sources = result.get("context_sources", result.get("results", []))
         render_answer_details(sources, result.get("execution"))
         render_decomposition(result.get("decomposition"))
         render_grounding(result.get("grounding"))
         render_context_expansion(result.get("context_expansion"))
+        if result.get("success") is False:
+            # Render immediately after failure. The next rerun handles the click
+            # through the saved message above, using this same stable widget key.
+            st.button("重试本题", key=f"retry_question_{len(st.session_state.messages)}")
 
     st.session_state.messages.append(
         {
@@ -144,5 +184,10 @@ def render_chat_tab(
             "decomposition": result.get("decomposition"),
             "grounding": result.get("grounding"),
             "context_expansion": result.get("context_expansion"),
+            "success": result.get("success"),
+            "request": request,
         }
     )
+    # Rebuild the saved history so the empty-state hint disappears and the
+    # composer follows the finished answer. A rerun itself never asks the engine.
+    st.rerun()
