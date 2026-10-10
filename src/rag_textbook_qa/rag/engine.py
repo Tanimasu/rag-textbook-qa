@@ -931,6 +931,8 @@ class RAGEngine:
             response = self.llm.generate_answer(
                 prompt, temperature=temperature, max_tokens=max_tokens
             )
+            if should_stop is not None and should_stop():
+                raise GenerationCancelled(request_sent=True)
             return response, None
 
         first_token_seconds: float | None = None
@@ -1133,7 +1135,14 @@ class RAGEngine:
             )
             answer = llm_response["answer"]
             if verify_citations and llm_response["success"]:
-                grounding = verify_answer(query, answer, context_sources, self.llm)
+                try:
+                    grounding = verify_answer(
+                        query, answer, context_sources, self.llm, should_stop=should_stop,
+                    )
+                except GenerationCancelled:
+                    # The draft generation has already consumed a request even if
+                    # cancellation reaches the audit before its first request.
+                    raise GenerationCancelled(request_sent=True) from None
                 answer = grounding["answer"]
                 llm_response = {**llm_response, "answer": answer,
                                 "success": grounding["status"] == "checked"}

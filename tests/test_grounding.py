@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import test_decomposition as fixtures
 
+from rag_textbook_qa.llm.client import GenerationCancelled
 from rag_textbook_qa.rag.grounding import BLOCKED, verify_answer
 
 
@@ -24,6 +25,69 @@ class GroundingTests(unittest.TestCase):
         self.assertNotIn('返回地址', result['answer'])
         self.assertIn('【参考资料 1】', result['answer'])
         self.assertEqual(llm.audit_citations.call_count, 2)
+
+    def test_invalid_inputs_do_not_send_audit_requests(self):
+        inputs = [
+            ("", "draft", self.sources),
+            ("q", " ", self.sources),
+            ("q", "draft", []),
+            ("q", "draft", [None]),
+            ("q", "draft", [{"citation_id": True, "content": "栈可用于递归。"}]),
+            ("q", "draft", [{"citation_id": 0, "content": "栈可用于递归。"}]),
+            ("q", "draft", [{"citation_id": 1, "content": " "}]),
+            ("q", "draft", [{"citation_id": 1, "content": 42}]),
+            ("q", "draft", [*self.sources, *self.sources]),
+        ]
+        for query, draft, sources in inputs:
+            with self.subTest(query=query, sources=sources):
+                llm = self.client()
+                result = verify_answer(query, draft, sources, llm)
+                self.assertEqual(result["answer"], BLOCKED)
+                self.assertEqual(result["calls"], 0)
+                llm.audit_citations.assert_not_called()
+
+    def test_stop_at_each_audit_boundary_never_releases_an_answer(self):
+        for stop_after in (0, 1, 2):
+            with self.subTest(stop_after=stop_after):
+                llm = self.client()
+                with self.assertRaises(GenerationCancelled) as caught:
+                    verify_answer("q", "draft", self.sources, llm,
+                                  should_stop=lambda llm=llm, stop_after=stop_after:
+                                  llm.audit_citations.call_count >= stop_after)
+                self.assertEqual(llm.audit_citations.call_count, stop_after)
+                self.assertEqual(caught.exception.request_sent, stop_after > 0)
+
+    def test_engine_stop_after_draft_prevents_audit_and_callback(self):
+        for verify in (False, True):
+            with self.subTest(verify=verify):
+                engine = fixtures.DecompositionTests().engine()
+                with self.assertRaises(GenerationCancelled) as caught:
+                    engine.ask("问题", book_name="os", verify_citations=verify,
+                               should_stop=lambda engine=engine: engine.llm.generate_answer.called)
+                self.assertTrue(caught.exception.request_sent)
+                engine.llm.audit_citations.assert_not_called()
+
+    def test_engine_stop_between_audit_calls_keeps_request_sent(self):
+        engine = fixtures.DecompositionTests().engine()
+        claim = {"text": "原文证据", "evidence": [{"id": 1, "quote": "原文证据"}]}
+        engine.llm.audit_citations = self.client([claim]).audit_citations
+        callback = MagicMock()
+        with self.assertRaises(GenerationCancelled) as caught:
+            engine.ask("问题", book_name="os", verify_citations=True,
+                       on_answer_chunk=callback,
+                       should_stop=lambda: engine.llm.audit_citations.called)
+        self.assertTrue(caught.exception.request_sent)
+        self.assertEqual(engine.llm.audit_citations.call_count, 1)
+        callback.assert_not_called()
+
+    def test_source_ids_remain_explicit_and_reference_extras_are_not_retained(self):
+        sources = [{"citation_id": 7, "content": "栈可用于递归。"}]
+        claim = {**self.claim, "evidence": [{"id": 7, "quote": "栈可用于递归。",
+                                            "extra": "untrusted field"}]}
+        result = verify_answer("q", "draft", sources, self.client([claim]))
+        self.assertEqual(result["status"], "checked")
+        self.assertIn("【参考资料 7】", result["answer"])
+        self.assertNotIn("untrusted field", str(result))
 
     def test_fabricated_quote_unknown_source_and_boolean_id_block(self):
         for ref in ({'id': 1, 'quote': '栈保存返回地址'}, {'id': 2, 'quote': '栈可用于递归。'},
