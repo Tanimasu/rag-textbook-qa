@@ -23,6 +23,10 @@ def inject_custom_styles() -> None:
                 linear-gradient(180deg, #f7f8fb 0%, #f3f5f9 100%);
         }
 
+        [data-testid="stAppDeployButton"] {
+            display: none;
+        }
+
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #f6f7fb 0%, #eef2f7 100%);
             border-right: 1px solid rgba(34, 48, 74, 0.08);

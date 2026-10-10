@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
+from numbers import Real
 from typing import Any
 
 import pandas as pd
@@ -12,11 +14,20 @@ from rag_textbook_qa.web.constants import RAGAS_METRIC_LABELS
 
 
 def _question_labels(results: Any) -> list[str]:
-    indices = (
-        results["question_index"] if "question_index" in results.columns
-        else range(1, len(results) + 1)
-    )
-    return [f"Q{int(index)}" for index in indices]
+    if "question_index" not in results.columns:
+        return [f"Q{index}" for index in range(1, len(results) + 1)]
+    indices = list(results["question_index"])
+    try:
+        valid = all(
+            isinstance(index, Real) and not pd.api.types.is_bool(index)
+            and math.isfinite(index) and index > 0 and int(index) == index
+            for index in indices
+        ) and len(set(indices)) == len(indices)
+    except (ValueError, OverflowError):
+        valid = False
+    if valid:
+        return [f"Q{int(index)}" for index in indices]
+    return [f"结果行{index}" for index in range(1, len(results) + 1)]
 
 
 def render_eval_tab(
@@ -61,10 +72,16 @@ def render_eval_tab(
 
     metric_cols = [column for column in RAGAS_METRIC_LABELS if column in results.columns]
     results = results.copy()
+    labels = _question_labels(results)
+    if labels and labels[0].startswith("结果行"):
+        st.warning("题号缺失、重复或格式异常，图表与明细按结果行号显示；原题号保留，不能据此配对题目。")
     invalid_scores = 0
     for metric in metric_cols:
         original = results[metric]
         numeric = pd.to_numeric(original, errors="coerce")
+        numeric = numeric.mask(original.map(pd.api.types.is_bool)).replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
         invalid_scores += int((original.notna() & numeric.isna()).sum())
         results[metric] = numeric
     if invalid_scores:
@@ -166,7 +183,14 @@ def _render_results_table(
     st.subheader("详细结果")
     display_df = results.copy()
     display_df["题号"] = _question_labels(results)
-    display_df = display_df.drop(columns=["question_index"], errors="ignore")
+    if len(display_df) and display_df["题号"].iloc[0].startswith("结果行"):
+        display_df = display_df.rename(columns={"question_index": "原题号"})
+        display_df["原题号"] = display_df["原题号"].map(
+            lambda value: "未提供" if pd.api.types.is_scalar(value) and pd.isna(value)
+            else str(value)
+        )
+    else:
+        display_df = display_df.drop(columns=["question_index"], errors="ignore")
     if question_col:
         display_df = display_df.rename(columns={question_col: "问题"})
 
@@ -206,7 +230,7 @@ def _render_results_table(
     display_df = display_df.sort_values(
         sort_column,
         ascending=sort_desc == "升序",
-        key=lambda values: values.str.removeprefix("Q").astype(int)
+        key=lambda values: values.str.extract(r"(\d+)$", expand=False).map(int)
         if values.name == "题号" else values,
     )
     for column in display_df.select_dtypes(include="number").columns:

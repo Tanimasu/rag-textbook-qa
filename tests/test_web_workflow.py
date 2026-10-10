@@ -160,6 +160,56 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
         self.assertEqual(detail.loc[detail["问题"] == "格式异常", "平均分"].tolist(), ["未评分"])
         self.assertEqual(results["faithfulness"].tolist(), ["0.8", "invalid"])
 
+    def test_nonfinite_and_boolean_scores_are_unknown_and_rows_remain_visible(self):
+        import pandas as pd
+
+        results = pd.DataFrame({"question": ["正常", "正无穷", "负无穷", "布尔值"],
+                                "faithfulness": [0.8, float("inf"), float("-inf"), True]})
+        original = results.copy(deep=True)
+        app, _ = self.app(results=results)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.metric[0].value, "0.800")
+        self.assertTrue(any("1/4 题有得分" in item.value for item in app.caption))
+        self.assertTrue(any("得分格式异常" in item.value for item in app.warning))
+        detail = app.dataframe[1].value.set_index("问题")
+        self.assertEqual(len(detail), 4)
+        for question in ("正无穷", "负无穷", "布尔值"):
+            self.assertEqual(detail.loc[question, "平均分"], "未评分")
+            self.assertEqual(detail.loc[question, "有效指标"], "0/1")
+        pd.testing.assert_frame_equal(results, original)
+
+    def test_boolean_only_metric_has_no_valid_summary_score(self):
+        import pandas as pd
+
+        results = pd.DataFrame({"question": ["布尔真", "布尔假"], "faithfulness": [True, False]})
+        app, _ = self.app(results=results)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.metric[0].value, "—")
+        self.assertTrue(any("0/2 题有得分" in item.value for item in app.caption))
+        self.assertEqual(app.dataframe[1].value["平均分"].tolist(), ["未评分", "未评分"])
+
+    def test_invalid_question_ids_use_result_rows_without_rewriting_identity(self):
+        import pandas as pd
+
+        for indices, displayed in (
+            ([2, None], ["未提供", "2.0"]),
+            ([2, 2], ["2", "2"]),
+            ([True, False], ["False", "True"]),
+            ([2.5, 3], ["3.0", "2.5"]),
+        ):
+            with self.subTest(indices=indices):
+                results = pd.DataFrame({"question": ["第一行", "第二行"],
+                                        "faithfulness": [0.8, 0.6], "question_index": indices})
+                original = results.copy(deep=True)
+                app, _ = self.app(results=results)
+                self.assertFalse(app.exception)
+                self.assertTrue(any("不能据此配对题目" in w.value for w in app.warning))
+                self.assertEqual(app.dataframe[0].value["题号"].tolist(), ["结果行1", "结果行2"])
+                detail = app.dataframe[1].value
+                self.assertEqual(detail["题号"].tolist(), ["结果行2", "结果行1"])
+                self.assertEqual(detail["原题号"].tolist(), displayed)
+                pd.testing.assert_frame_equal(results, original)
+
     def test_streaming_answer_sources_history_clear_and_defaults(self):
         engine = MagicMock()
 
