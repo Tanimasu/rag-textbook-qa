@@ -20,6 +20,7 @@ from rag_textbook_qa.diagnostics.doctor import (
     diagnostics_as_dict,
     render_diagnostics,
 )
+from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
     PROTOCOL_VERSION,
@@ -701,7 +702,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
                    if args.max_http_attempts is not None else None)
     arms = [parse_arm(spec) for spec in args.arm]
     cases_bytes = args.cases.read_bytes()
-    cases = generation_cases_from_payload(json.loads(cases_bytes.decode("utf-8")))
+    cases = generation_cases_from_payload(loads_strict(cases_bytes.decode("utf-8")))
     cases_sha256 = hashlib.sha256(cases_bytes).hexdigest()
     sample_keys(cases, arms, args.samples, args.seed)
     if args.dry_run:

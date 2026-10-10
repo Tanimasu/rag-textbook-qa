@@ -35,6 +35,29 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
+    def test_ambiguous_frozen_json_stops_before_clients_or_outputs(self):
+        for fragment, ambiguous in (
+            ('"question":', '"question":"先出现的问题","question":'),
+            ('"cases":', '"ignored":NaN,"cases":'),
+            ('"cases":', '"ignored":Infinity,"cases":'),
+            ('"cases":', '"ignored":1e400,"cases":'),
+        ):
+            with self.subTest(ambiguous=ambiguous), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = workspace(root)
+                original = path.read_text().replace(fragment, ambiguous, 1)
+                path.write_text(original)
+                with (
+                    patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env") as pair,
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                          "--arm", "hot=baseline@0.7", "--output-dir", str(root / "output")])
+                pair.assert_not_called()
+                self.assertFalse((root / "output").exists())
+                self.assertEqual(path.read_text(), original)
+
     def test_invalid_attempt_cap_stops_before_clients_or_output_creation(self):
         for value in ("0", "-1", "1.5"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
