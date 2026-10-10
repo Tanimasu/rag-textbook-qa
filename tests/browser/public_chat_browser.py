@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import unittest
 from collections import deque
@@ -230,6 +231,70 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#cancel")).to_be_hidden()
         self.expect(self.page.locator("#thread")).not_to_have_attribute("aria-busy", "true")
         self.expect(self.page.locator(focus)).to_be_focused()
+
+    def isolated_clipboard(self, *, api: bool, command: str) -> None:
+        # Never read or overwrite the user's system clipboard in this test.
+        config = json.dumps({"api": api, "command": command})
+        self.context.add_init_script("""(() => {
+          const config = CONFIG;
+          window.copyAttempts = [];
+          Object.defineProperty(navigator, 'clipboard', { configurable: true,
+            value: config.api ? { writeText: async () => {
+              throw new Error('isolated clipboard permission refusal');
+            } } : undefined });
+          document.execCommand = (command) => {
+            window.copyAttempts.push({ command, text: document.activeElement.value });
+            if (config.command === 'throw') throw new Error('isolated copy failure');
+            return config.command === 'success';
+          };
+        })();""".replace("CONFIG", config))
+
+    def test_copy_fallback_preserves_focus_and_next_question(self) -> None:
+        self.isolated_clipboard(api=False, command="success")
+        result = answer_result()
+        self.backend.enqueue(Reply(final=[("result", result)]))
+        self.open_page()
+        self.submit()
+        self.expect_ready()
+        self.page.locator("#input").fill("下一题草稿")
+        self.page.locator("#book").select_option("database")
+        copy = self.page.get_by_role("button", name=re.compile(r"^(复制答案|已复制)$"))
+        copy.focus()
+        copy.press("Enter")
+        self.expect(copy).to_have_text("已复制")
+        self.expect(copy).to_be_focused()
+        self.expect(self.page.locator("textarea[readonly]")).to_have_count(0)
+        self.expect(self.page.locator("#input")).to_have_value("下一题草稿")
+        self.expect(self.page.locator("#book")).to_have_value("database")
+        self.assertEqual(self.page.evaluate("window.copyAttempts"),
+                         [{"command": "copy", "text": result["answer"]}])
+        self.assertEqual(len(self.backend.asks), 1)
+        self.assertEqual(self.backend.feedback, [])
+
+    def test_clipboard_api_refusal_can_use_local_fallback(self) -> None:
+        self.isolated_clipboard(api=True, command="success")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.open_page()
+        self.submit()
+        copy = self.page.get_by_role("button", name=re.compile(r"^(复制答案|已复制|复制失败.*)$"))
+        copy.click()
+        self.expect(copy).to_have_text("已复制")
+        self.expect(copy).to_be_focused()
+        self.assertEqual(len(self.page.evaluate("window.copyAttempts")), 1)
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_copy_failure_removes_temporary_input_and_explains_recovery(self) -> None:
+        self.isolated_clipboard(api=False, command="throw")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.open_page()
+        self.submit()
+        copy = self.page.get_by_role("button", name=re.compile(r"^(复制答案|复制失败.*)$"))
+        copy.click()
+        self.expect(copy).to_have_text("复制失败，请手动复制")
+        self.expect(copy).to_be_focused()
+        self.expect(self.page.locator("textarea[readonly]")).to_have_count(0)
+        self.page.get_by_role("button", name="保存问答（含来源）").wait_for(state="visible")
+        self.assertEqual(len(self.backend.asks), 1)
 
     def test_submit_stream_final_sources_and_clear(self) -> None:
         gate = threading.Event()

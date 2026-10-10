@@ -340,19 +340,25 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function copyText(text) {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch { /* Try the local selection path when permission is refused. */ }
     }
+    const previousFocus = document.activeElement;
     const area = element("textarea");
     area.value = text;
     area.readOnly = true;
     area.style.position = "fixed";
     area.style.opacity = "0";
     document.body.append(area);
-    area.select();
-    const copied = document.execCommand("copy");
-    area.remove();
-    if (!copied) throw new Error("copy failed");
+    try {
+      area.select();
+      if (!document.execCommand("copy")) throw new Error("copy failed");
+    } finally {
+      area.remove();
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    }
   }
 
   async function saveFeedback(card, result, rating, reason, comment, buttons) {
@@ -428,7 +434,7 @@ footer details p { margin-top: 6px; text-align: left; }
           copy.textContent = "已复制";
           window.setTimeout(() => { copy.textContent = "复制答案"; }, 1500);
         } catch {
-          copy.textContent = "复制失败";
+          copy.textContent = "复制失败，请手动复制";
         }
       });
       actions.append(copy);

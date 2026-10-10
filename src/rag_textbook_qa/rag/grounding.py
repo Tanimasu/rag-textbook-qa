@@ -12,6 +12,21 @@ from rag_textbook_qa.llm.client import GenerationCancelled
 BLOCKED = "本次回答未能完成引用核对，请查看教材片段或稍后重试。"
 
 
+def _load_audit_json(raw: str) -> Any:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate_json_key")
+            value[key] = item
+        return value
+
+    def invalid_constant(value: str) -> Any:
+        raise ValueError("invalid_json_constant")
+
+    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+
+
 def verify_answer(
     query: str, draft: str, sources: list[dict[str, Any]], llm: Any,
     *, should_stop: Callable[[], bool] | None = None,
@@ -59,7 +74,7 @@ def verify_answer(
         check_stop()
         if not isinstance(raw, str) or len(raw) > 30000:
             raise ValueError("invalid_extraction")
-        data = json.loads(raw)
+        data = _load_audit_json(raw)
         claims = data.get("claims") if isinstance(data, dict) else None
         if not isinstance(claims, list) or not 1 <= len(claims) <= 12:
             raise ValueError("invalid_claims")
@@ -104,7 +119,7 @@ def verify_answer(
         check_stop()
         if not isinstance(raw, str) or len(raw) > 10000:
             raise ValueError("invalid_verdicts")
-        data = json.loads(raw)
+        data = _load_audit_json(raw)
         verdicts = data.get("verdicts") if isinstance(data, dict) else None
         if not isinstance(verdicts, list) or len(verdicts) != len(checked):
             raise ValueError("incomplete_verdicts")

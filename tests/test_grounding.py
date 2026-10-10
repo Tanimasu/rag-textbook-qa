@@ -156,6 +156,30 @@ class GroundingTests(unittest.TestCase):
         llm.audit_citations.side_effect = [json.dumps({'claims': [self.claim]}), '{"verdicts":[]}']
         self.assertEqual(verify_answer('q', 'draft', self.sources, llm)['status'], 'blocked')
 
+    def test_ambiguous_json_is_blocked_without_further_requests(self):
+        valid_claims = json.dumps({"claims": [self.claim]})
+        valid_verdicts = '{"verdicts":[{"id":1,"supported":true}]}'
+        ambiguous_claims = (
+            '{"claims":[],"claims":' + json.dumps([self.claim]) + '}',
+            valid_claims.replace('"id": 1', '"id": 2, "id": 1'),
+            valid_claims[:-1] + ',"extra":NaN}',
+        )
+        ambiguous_verdicts = (
+            '{"verdicts":[{"id":1,"supported":false,"supported":true}]}',
+            '{"verdicts":[],"verdicts":[{"id":1,"supported":true}]}',
+            '{"verdicts":[{"id":1,"supported":true}],"extra":Infinity}',
+        )
+        for first, second, calls in (
+            *((raw, valid_verdicts, 1) for raw in ambiguous_claims),
+            *((valid_claims, raw, 2) for raw in ambiguous_verdicts),
+        ):
+            with self.subTest(first=first, second=second):
+                llm = MagicMock(audit_citations=MagicMock(side_effect=[first, second]))
+                result = verify_answer("q", "draft", self.sources, llm)
+                self.assertEqual(result["status"], "blocked")
+                self.assertEqual(result["answer"], BLOCKED)
+                self.assertEqual(llm.audit_citations.call_count, calls)
+
     def test_audit_sdk_rejects_truncated_output_and_uses_no_retry(self):
         from types import SimpleNamespace
 
