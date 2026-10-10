@@ -205,6 +205,22 @@ class FeedbackStoreTests(unittest.TestCase):
         all_books = next(item for item in candidates if item["book_name"] == "all_books")
         self.assertEqual(all_books["suggested_checks"], ["manual_review"])
 
+    def test_summary_skips_overflowing_metadata_and_retains_real_zero_measurements(self):
+        values = [10**400, float("inf"), float("nan"), -1, True, "1.0", None, 0, 2.0]
+        records = [{"rating": "helpful", "timing": {"total_seconds": value}} for value in values]
+        summary = summarize_feedback(records)
+        self.assertEqual(summary["total"], len(values))
+        self.assertEqual(summary["latency_seconds"],
+                         {"samples": 2, "average": 1.0, "p50": 1.0, "p95": 1.9})
+        self.assertEqual(records[0]["timing"]["total_seconds"], 10**400)
+        json.dumps(summary, allow_nan=False)
+
+    def test_summary_mean_remains_finite_when_valid_duration_sum_overflows(self):
+        records = [{"rating": "helpful", "timing": {"total_seconds": 1e308}} for _ in range(2)]
+        latency = summarize_feedback(records)["latency_seconds"]
+        self.assertEqual(latency, {"samples": 2, "average": 1e308, "p50": 1e308, "p95": 1e308})
+        json.dumps(latency, allow_nan=False)
+
     def test_candidate_export_refuses_to_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
