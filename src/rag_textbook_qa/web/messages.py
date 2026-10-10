@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rag_textbook_qa.catalog import BOOK_LABELS
+from rag_textbook_qa.rag.references import render_source_sections
 
 
 def source_section_label(source: Mapping[str, Any]) -> str:
@@ -27,6 +28,7 @@ def answer_export_markdown(
     query: str, answer: str, sources: Sequence[Mapping[str, Any]],
 ) -> str:
     """Save the displayed answer and its actual excerpts, without internal metadata."""
+    answer = render_source_sections(answer, sources)
     lines = ["# 教材问答记录", "", "## 问题", "", _literal_block(query), "",
              "## 回答", "", answer, "", "## 参考教材片段", "",
              "以下为本次回答使用的片段；请按资料编号核对回答。", ""]
@@ -55,7 +57,7 @@ def answer_message(result: Mapping[str, Any]) -> str:
 
     answer = result.get("answer")
     if answer:
-        return str(answer)
+        return render_source_sections(str(answer), result.get("context_sources") or [])
     if error:
         return f"⚠️ 未能生成答案：{error}"
     return "抱歉，未能生成答案。"

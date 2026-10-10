@@ -389,7 +389,7 @@ footer details p { margin-top: 6px; text-align: left; }
     if (result.message) notices.push([result.message, result.status === "failed" ? "error" : "warn"]);
     const citation = result.citation_integrity || {};
     if (citation.status === "missing") {
-      notices.push(["这份回答没有标出对应的资料编号，请结合下方教材原文核对。", "warn"]);
+      notices.push(["回答正文没有标出对应的资料编号，请结合下方教材原文核对。", "warn"]);
     } else if (citation.status === "invalid") {
       notices.push([`回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn"]);
     }

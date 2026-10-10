@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.catalog import BOOK_LABELS
+from rag_textbook_qa.rag.references import render_source_sections
 from rag_textbook_qa.web.messages import compute_trace_items, source_section_label
 
 
@@ -88,7 +89,7 @@ def render_answer_block(
     execution: dict[str, Any] | None = None,
 ) -> None:
     render_answer_header()
-    st.markdown(answer)
+    st.markdown(render_source_sections(answer, sources))
     render_answer_details(sources, execution)
 
 

@@ -286,6 +286,24 @@ class PublicResultTests(unittest.TestCase):
             {"status": "invalid", "cited": [1, 9], "unknown": [9]},
         )
 
+    def test_public_chapter_list_uses_actual_source_and_keeps_raw_engine_answer(self):
+        result = FakeEngine().ask(query="q", use_llm=True)
+        raw = "正文【参考资料 1】\n\n## 参考章节\n错误章节【参考资料 9】"
+        result["answer"] = raw
+        payload = public_result(result, retrieval_only=None)
+        self.assertIn("第二章 > 2.1 进程", payload["answer"])
+        self.assertNotIn("错误章节", payload["answer"])
+        self.assertEqual(payload["citation_integrity"], {"status": "linked", "cited": [1], "unknown": []})
+        self.assertEqual(result["answer"], raw)
+        result["answer"] = "正文无编号。\n\n## 参考章节\n章节【参考资料 1】"
+        self.assertEqual(public_result(result, retrieval_only=None)["citation_integrity"]["status"], "missing")
+        result["answer"] = "## 参考章节\n章节【参考资料 1】"
+        empty = public_result(result, retrieval_only=None)
+        self.assertEqual(empty["status"], "failed")
+        self.assertIsNone(empty["answer"])
+        self.assertIsNone(empty["citation_integrity"])
+        self.assertEqual(empty["message"], PUBLIC_FAILURE)
+
     def test_retrieval_only_and_missing_evidence_are_not_failures(self):
         budget = public_result(FakeEngine().ask(query="q", use_llm=False), retrieval_only="budget")
         empty = public_result(FakeEngine(sources=()).ask(query="q", use_llm=True), retrieval_only=None)
@@ -339,7 +357,7 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("清空对话", page.text)
         self.assertIn("new AbortController()", page.text)
         self.assertIn('thread.setAttribute("aria-busy", "true")', page.text)
-        self.assertIn("这份回答没有标出对应的资料编号", page.text)
+        self.assertIn("回答正文没有标出对应的资料编号", page.text)
         self.assertIn("回答引用了下方不存在的资料编号", page.text)
         self.assertIn("trackScrollIntent", page.text)
         self.assertIn("window.setTimeout(paint, 125)", page.text)

@@ -13,6 +13,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
 class OrdinaryWebWorkflowTests(unittest.TestCase):
+    def test_chapter_only_response_shows_retry_without_automatic_model_call(self):
+        engine = MagicMock()
+        raw = {"success": True, "answer": "## 参考章节\n错误章节【参考资料 1】",
+               "context_sources": [{"citation_id": 1, "book_name": "os", "content": "原文。"}]}
+        engine.ask.return_value = raw
+        app, _ = self.app(engine=engine)
+        app.chat_input[0].set_value("问题").run(timeout=20)
+        self.assertFalse(app.exception)
+        self.assertTrue(any("未返回答案正文" in message.value for message in app.markdown))
+        self.assertTrue(any(button.label == "重试本题" for button in app.button))
+        self.assertFalse(any(button.label == "保存问答（含来源）" for button in app.get("download_button")))
+        engine.ask.assert_called_once()
+        self.assertTrue(raw["success"])
+
     def test_web_evaluations_keep_previous_runs_and_load_latest_completed_csv(self):
         import pandas as pd
 

@@ -4,6 +4,18 @@ from rag_textbook_qa.web.messages import answer_export_markdown, answer_message,
 
 
 class WebMessageTests(unittest.TestCase):
+    def test_display_and_export_reference_chapters_match_recorded_sources(self):
+        sources = [{"citation_id": 7, "book_name": "computer_network", "content": "原文。",
+                    "section_h3": "1.7.3 五层协议"}]
+        raw = "正文【参考资料 7】\n\n## 参考章节\n1.7.5 错误章节【参考资料 7】"
+        result = {"answer": raw, "success": True, "context_sources": sources}
+        displayed = answer_message(result)
+        exported = answer_export_markdown("问题", raw, sources)
+        self.assertIn("1.7.3 五层协议", displayed)
+        self.assertNotIn("错误章节", displayed)
+        self.assertIn(displayed, exported)
+        self.assertEqual(result["answer"], raw)
+
     def test_export_preserves_actual_source_numbers_full_text_and_fence_boundaries(self):
         excerpt = '正文前半\n```python\nprint("值")\n```\n末尾证据 <原样>'
         exported = answer_export_markdown('为什么？', '答案【参考资料 7】', [

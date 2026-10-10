@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from rag_textbook_qa.providers.base import ProviderError
+from rag_textbook_qa.rag.references import answer_body
 from rag_textbook_qa.web.helpers import (
     render_answer_block,
     render_answer_details,
@@ -158,6 +159,9 @@ def render_chat_tab(
                 "context_sources": [],
             }
 
+        if result.get("success") and not answer_body(str(result.get("answer") or "")).strip():
+            result = {**result, "success": False, "answer": None,
+                      "error": "模型未返回答案正文，请重试。"}
         answer = answer_message(result)
         progress_placeholder.empty()
         answer_placeholder.markdown(answer)

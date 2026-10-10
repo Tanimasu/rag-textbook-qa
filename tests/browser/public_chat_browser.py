@@ -18,6 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.rag.references import render_source_sections
+
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
 
@@ -400,6 +402,33 @@ class PublicChatBrowserTests(unittest.TestCase):
                 self.expect(self.page.locator("#input")).to_have_value("尚未发送的新问题")
                 self.expect(self.page.locator("#book")).to_have_value("database")
                 self.expect(card.get_by_role("button", name="保存问答（含来源）")).to_be_focused()
+
+    def test_completed_chapters_copy_export_and_source_navigation_agree(self) -> None:
+        self.isolated_clipboard(api=False, command="success")
+        raw = "正文【参考资料 1】\n\n## 参考章节\n第99章 错误章节【参考资料 1】"
+        source = {"citation_id": 1, "book_name": "os", "chapter": "第二章", "section_h2": "2.1 进程"}
+        result = answer_result()
+        result["answer"] = render_source_sections(raw, [source])
+        result["sources"][0]["section"] = "第二章 > 2.1 进程"
+        self.backend.enqueue(Reply(initial=[("chunk", {"text": raw})], final=[("result", result)]))
+        self.open_page()
+        self.submit()
+        self.expect_ready()
+        card = self.page.locator(".answer")
+        self.expect(card.locator(".body")).to_contain_text("第二章 > 2.1 进程")
+        self.expect(card.locator(".body")).not_to_contain_text("错误章节")
+        card.get_by_role("button", name="资料 1", exact=True).last.click()
+        self.expect(card.locator(".source")).to_be_focused()
+        self.expect(card.locator(".source .section")).to_have_text("第二章 > 2.1 进程")
+        card.get_by_role("button", name="复制答案", exact=True).click()
+        self.assertEqual(self.page.evaluate("window.copyAttempts[0].text"), result["answer"])
+        with self.page.expect_download(timeout=5000) as download_info:
+            card.get_by_role("button", name="保存问答（含来源）", exact=True).click()
+        saved = Path(download_info.value.path()).read_text(encoding="utf-8")
+        self.assertIn(result["answer"], saved)
+        self.assertNotIn("错误章节", saved)
+        self.assertEqual(len(self.backend.asks), 1)
+        self.assertEqual(self.backend.feedback, [])
 
     def test_book_loading_failure_recovers_without_losing_question_draft(self) -> None:
         self.backend.book_failures_remaining = 1

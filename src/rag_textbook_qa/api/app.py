@@ -38,6 +38,7 @@ from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError, MissingOptionalDependencyError
 from rag_textbook_qa.providers.config import is_loopback_host
+from rag_textbook_qa.rag.references import answer_body, render_source_sections
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -109,6 +110,10 @@ def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> d
     else:
         status, message = "failed", PUBLIC_FAILURE
     answer = result.get("answer") if status == "answered" else None
+    if answer:
+        answer = render_source_sections(str(answer), result.get("context_sources") or [])
+    if status == "answered" and not answer_body(str(answer or "")).strip():
+        status, message, answer = "failed", PUBLIC_FAILURE, None
     execution = result.get("execution") or {}
     compute = {
         name: stage
@@ -163,7 +168,7 @@ def _public_compute_stage(stage: Any) -> dict[str, Any] | None:
 def _citation_integrity(answer: str, sources: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Check citation links only; this deliberately makes no grounding claim."""
 
-    cited = sorted({int(match) for match in _CITATION_REFERENCE.findall(answer)})
+    cited = sorted({int(match) for match in _CITATION_REFERENCE.findall(answer_body(answer))})
     available = {
         source["citation_id"]
         for source in sources
