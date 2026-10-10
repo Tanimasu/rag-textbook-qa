@@ -67,6 +67,10 @@ def render_eval_tab(
         except Exception:  # noqa: BLE001 - Keep the previous report available after a failed run.
             st.error("本次评估未完成，已有结果保留。请检查模型服务后再试。")
 
+    if results is not None and results.attrs.get("unreadable_newer_results", 0):
+        st.warning("较新的评估结果暂时无法读取，当前显示此前可读取的结果；原文件保留。")
+        if st.button("重新读取结果", key="reload_eval_results"):
+            st.rerun()
     if results is None:
         return
 

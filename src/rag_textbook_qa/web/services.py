@@ -50,8 +50,18 @@ def load_ragas_results() -> Any | None:
         candidates.append(legacy)
     if not candidates:
         return None
-    results_path = max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
-    return pd.read_csv(results_path, encoding="utf-8-sig")
+    ordered = sorted(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)
+    last_error = None
+    for skipped, results_path in enumerate(ordered):
+        try:
+            results = pd.read_csv(results_path, encoding="utf-8-sig")
+        except (OSError, UnicodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as error:
+            last_error = error
+            continue
+        results.attrs["unreadable_newer_results"] = skipped
+        return results
+    # Let the page offer its existing reload action when no report is readable.
+    raise last_error
 
 
 def run_ragas_evaluation() -> Any | None:

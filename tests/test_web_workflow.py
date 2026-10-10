@@ -87,6 +87,71 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
             self.assertEqual(legacy.read_bytes(), original)
             self.assertTrue(all((path / "ragas_evaluation_results.csv").exists() for path in destinations))
 
+    def test_newer_unreadable_report_falls_back_and_reload_recovers_without_model_call(self):
+        from rag_textbook_qa.web import services
+
+        reader = services.load_ragas_results
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = root / "ragas_evaluation_results.csv"
+            previous.write_bytes(b"question,faithfulness\nprevious,0.8\n")
+            os.utime(previous, (1, 1))
+            newest = root / "ragas-runs" / "ragas-failed" / "ragas_evaluation_results.csv"
+            newest.parent.mkdir(parents=True)
+            malformed = b'question,faithfulness\n"unfinished,0.9\n'
+            newest.write_bytes(malformed)
+            with (
+                patch.object(services, "_settings", return_value=MagicMock(paths=MagicMock(evaluations=root))),
+                patch.object(services, "run_ragas_evaluation") as evaluate,
+            ):
+                frame = reader()
+                self.assertEqual(frame["question"].tolist(), ["previous"])
+                self.assertEqual(frame.attrs["unreadable_newer_results"], 1)
+                app, loader = self.app(result_reader=reader)
+                self.assertFalse(app.exception)
+                self.assertTrue(any("此前可读取" in item.value for item in app.warning))
+                self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["previous"])
+                self.assertEqual(newest.read_bytes(), malformed)
+                newest.write_bytes(b"question,faithfulness\nrecovered,0.9\n")
+                next(button for button in app.button if button.label == "重新读取结果").click().run(timeout=20)
+                self.assertFalse(app.exception)
+                self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["recovered"])
+                self.assertFalse(any("此前可读取" in item.value for item in app.warning))
+                self.assertEqual(previous.read_bytes(), b"question,faithfulness\nprevious,0.8\n")
+                evaluate.assert_not_called()
+                loader.assert_not_called()
+
+    def test_all_unreadable_reports_keep_the_existing_reload_error_path(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ragas_evaluation_results.csv").write_bytes(b"")
+            with (
+                patch.object(services, "_settings", return_value=MagicMock(paths=MagicMock(evaluations=root))),
+                self.assertRaises(pd.errors.EmptyDataError),
+            ):
+                services.load_ragas_results()
+
+    def test_successful_new_evaluation_replaces_the_fallback_notice(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        previous = pd.DataFrame({"question": ["previous"], "faithfulness": [.8]})
+        previous.attrs["unreadable_newer_results"] = 1
+        newest = pd.DataFrame({"question": ["newest"], "faithfulness": [.9]})
+        with patch.object(services, "run_ragas_evaluation", return_value=newest) as evaluate:
+            app, _ = self.app(results=previous)
+            self.assertTrue(any("此前可读取" in item.value for item in app.warning))
+            next(button for button in app.button if button.label == "运行评估").click().run(timeout=20)
+            self.assertFalse(app.exception)
+            self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["newest"])
+            self.assertFalse(any("此前可读取" in item.value for item in app.warning))
+            evaluate.assert_called_once()
+
     def app(self, engine=None, error=None, results=None, result_reader=None):
         from streamlit.testing.v1 import AppTest
 
