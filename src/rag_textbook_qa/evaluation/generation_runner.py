@@ -231,7 +231,7 @@ class JsonlLog:
 
     def append(self, record: dict[str, Any]) -> None:
         key = _key(record)
-        serialized = json.dumps(record, ensure_ascii=False) + "\n"
+        serialized = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
         with self._lock:
             with self.path.open("a", encoding="utf-8") as handle:
                 if self._needs_separator:
@@ -293,7 +293,7 @@ def generation_call_plan(
 
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
-    serialized = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    serialized = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(serialized, encoding="utf-8")

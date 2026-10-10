@@ -26,6 +26,17 @@ def response(finish_reason="stop", usage=None):
 
 
 class CallUsageTests(unittest.TestCase):
+    def test_invalid_numeric_metadata_never_poison_existing_usage_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calls.jsonl"
+            recorder = CallUsageLog(path)
+            recorder({"call_id": "previous", "tokens": None})
+            original = path.read_bytes()
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    recorder({"call_id": "bad", "seconds": value})
+                self.assertEqual(path.read_bytes(), original)
+
     def test_both_adapters_log_billable_usage_without_content_or_credentials(self):
         sdk = MagicMock()
         usage = SimpleNamespace(prompt_tokens=100, completion_tokens=30, total_tokens=130,

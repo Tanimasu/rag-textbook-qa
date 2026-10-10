@@ -14,6 +14,7 @@ from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, Generatio
 from rag_textbook_qa.evaluation.generation_runner import (
     JUDGE_VERSION,
     JsonlLog,
+    _write_json_atomic,
     freeze_protocol,
     generation_request,
     llm_pair_from_env,
@@ -509,6 +510,28 @@ class ExperimentTests(unittest.TestCase):
                 with self.assertRaisesRegex((TypeError, ValueError), "invalid_record_key"):
                     log.append(record)
                 self.assertFalse(empty.exists())
+
+    def test_nonstandard_numbers_are_rejected_before_appending_or_replacing_artifacts(self):
+        valid = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原始回答"}
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "generations.jsonl"
+                log = JsonlLog(path)
+                log.append(valid)
+                original = path.read_bytes()
+                bad = {**valid, "index": 1, "metadata": {"seconds": value}}
+                with self.assertRaises(ValueError):
+                    log.append(bad)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(log.lines, [valid])
+                self.assertEqual(JsonlLog(path).lines, [valid])
+                report = root / "report.json"
+                report.write_bytes(b'{"previous":"report"}\n')
+                with self.assertRaises(ValueError):
+                    _write_json_atomic(report, {"usage": {"mean_seconds": value}})
+                self.assertEqual(report.read_bytes(), b'{"previous":"report"}\n')
+                self.assertEqual(set(root.iterdir()), {path, report})
 
     def test_jsonl_recovers_good_records_around_invalid_utf8_without_rewriting_them(self):
         first = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原始中文回答"}

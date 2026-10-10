@@ -33,7 +33,7 @@ class CallUsageLog:
         self._lock = threading.Lock()
 
     def __call__(self, record: Mapping[str, Any]) -> None:
-        line = (json.dumps(dict(record), ensure_ascii=False) + "\n").encode("utf-8")
+        line = (json.dumps(dict(record), ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
         with self._lock, self.path.open("ab+") as handle:
             handle.seek(0, 2)
             if handle.tell():
