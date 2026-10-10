@@ -86,7 +86,7 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
             fallback_used=fallback_used,
         )
         device = str(stage.get("device") or "unknown")
-        device_label = device.upper() if device != "unknown" else "未知设备"
+        device_label = {"unknown": "未知设备", "mixed": "多设备"}.get(device, device.upper())
         elapsed = _duration_label(stage.get("elapsed_seconds"))
         calls = _positive_int(stage.get("calls"))
         call_suffix = f" · {calls} 次" if calls > 1 else ""
@@ -140,7 +140,7 @@ def _execution_location(*, backend: str, platform_name: str, fallback_used: bool
     if platform_label:
         location += f"（{platform_label}）"
     if fallback_used:
-        location = f"已回退到{location}"
+        location = f"{location} · 已发生回退" if backend == "mixed" else f"已回退到{location}"
     return location
 
 

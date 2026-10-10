@@ -524,10 +524,11 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function computeChip(label, stage) {
     const platform = { Windows: "Windows", Darwin: "macOS", Linux: "Linux", mixed: "多平台" }[stage.platform] || "";
-    let location = stage.backend === "remote" ? "远程 Worker" : stage.backend === "local" ? "本地" : "执行位置未知";
+    let location = {remote: "远程 Worker", local: "本地", mixed: "远程/本地混合"}[stage.backend] || "执行位置未知";
     if (platform) location += `（${platform}）`;
-    if (stage.fallback_used) location = "已回退到" + location;
-    const device = stage.device === "unknown" ? "未知设备" : stage.device.toUpperCase();
+    if (stage.fallback_used) location = stage.backend === "mixed"
+      ? location + " · 已发生回退" : "已回退到" + location;
+    const device = {unknown: "未知设备", mixed: "多设备"}[stage.device] || stage.device.toUpperCase();
     const elapsed = validSeconds(stage.elapsed_seconds)
       ? `${stage.elapsed_seconds.toFixed(3)} 秒` : "耗时未知";
     return `${label} · ${location} · ${device} · ${elapsed}`;
