@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.cli import main
@@ -34,6 +35,50 @@ def fake_client(model: str) -> MagicMock:
 
 
 class GenerationCliTests(unittest.TestCase):
+    def test_invalid_attempt_cap_stops_before_clients_or_output_creation(self):
+        for value in ("0", "-1", "1.5"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = workspace(root)
+                with (
+                    patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env") as pair,
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                          "--arm", "hot=baseline@0.7", "--max-http-attempts", value,
+                          "--output-dir", str(root / "output")])
+                pair.assert_not_called()
+                self.assertFalse((root / "output").exists())
+
+    def test_cli_shares_cap_preserves_partial_report_and_closes_clients(self):
+        generator, judge = fake_client("generator"), fake_client("judge")
+        generator.client.with_options.return_value.chat.completions.create.return_value = (
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="回答"), finish_reason="stop")]))
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = workspace(root)
+            with (
+                patch("rag_textbook_qa.evaluation.generation_runner.llm_pair_from_env",
+                      return_value=(generator, judge, {})),
+                contextlib.redirect_stdout(stdout),
+            ):
+                status = main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
+                    "--arm", "hot=baseline@0.7", "--samples", "1", "--concurrency", "1",
+                    "--max-http-attempts", "1", "--output-dir", str(root / "output")])
+            report = json.loads((root / "output" / "report.json").read_text())
+            self.assertEqual((report["generated"], report["judged"]), (1, 0))
+            self.assertEqual(report["http_attempt_budget"]["attempts_started"], 1)
+            self.assertEqual(len((root / "output" / "calls.jsonl").read_text().splitlines()), 1)
+        self.assertEqual(status, 2)
+        self.assertIn("续跑将重新计数", stdout.getvalue())
+        generator.client.with_options.return_value.chat.completions.create.assert_called_once()
+        judge.client.with_options.return_value.chat.completions.create.assert_not_called()
+        generator.close.assert_called_once_with()
+        judge.close.assert_called_once_with()
+
     def test_protocol_hash_describes_loaded_snapshot_if_file_changes_during_setup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -80,7 +125,8 @@ class GenerationCliTests(unittest.TestCase):
             ):
                 main(["--workspace", str(root), "evaluate-generation", "--cases", str(path),
                       "--arm", "hot=baseline@0.7", "--arm", "kept=baseline@stored",
-                      "--samples", "3", "--output-dir", str(destination), "--dry-run"])
+                      "--samples", "3", "--output-dir", str(destination),
+                      "--max-http-attempts", "17", "--dry-run"])
             plan = json.loads(stdout.getvalue())
             self.assertEqual(plan["models"], {"generator": "generator", "judge": "judge"})
             self.assertEqual(plan["planned_samples"], 5)
@@ -90,6 +136,8 @@ class GenerationCliTests(unittest.TestCase):
             self.assertEqual(plan["max_generation_http_attempts"], 12)
             self.assertEqual(plan["max_judge_http_attempts"], 120)
             self.assertEqual(plan["model_calls"], 0)
+            self.assertEqual(plan["http_attempt_budget"], {"scope": "invocation", "limit": 17,
+                                                         "attempts_started": 0, "blocked": False})
             self.assertIsNone(plan["cost_estimate"])
             self.assertNotIn(SECRET, stdout.getvalue())
             pair.assert_not_called()

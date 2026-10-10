@@ -27,6 +27,8 @@ from typing import Any
 from filelock import FileLock, Timeout
 
 from rag_textbook_qa.evaluation.call_usage import (
+    CallAttemptBudget,
+    CallAttemptLimitReached,
     CallUsageRecordingError,
     UsageObserver,
     completion_usage,
@@ -103,6 +105,7 @@ def generation_request(
 def openai_generator(
     sdk_client: Any, model: str, *, max_tokens: int, timeout: float = 180.0,
     on_call: UsageObserver | None = None,
+    call_budget: CallAttemptBudget | None = None,
 ) -> Generator:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
@@ -111,7 +114,7 @@ def openai_generator(
         response, attempts = with_retries(
             lambda: observed_completion(
                 client, generation_request(model, prompt, temperature, max_tokens),
-                role="generator", on_call=on_call,
+                role="generator", on_call=on_call, call_budget=call_budget,
             )
         )
         choice = response.choices[0]
@@ -139,6 +142,7 @@ def openai_judge(
     max_tokens: int = 4096,
     timeout: float = 180.0,
     on_call: UsageObserver | None = None,
+    call_budget: CallAttemptBudget | None = None,
 ) -> Judge:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
@@ -152,7 +156,7 @@ def openai_judge(
                     "max_tokens": max_tokens,
                     "stream": False,
                     **extra,
-                }, role="judge", on_call=on_call,
+                }, role="judge", on_call=on_call, call_budget=call_budget,
             )
         )
         if response.choices[0].finish_reason != "stop":
@@ -396,7 +400,7 @@ def _run_stage(
         if not cancelled.is_set():
             try:
                 work(key)
-            except CallUsageRecordingError:
+            except (CallUsageRecordingError, CallAttemptLimitReached):
                 cancelled.set()
                 raise
 
@@ -408,7 +412,7 @@ def _run_stage(
             try:
                 future.result()
                 status = "ok"
-            except CallUsageRecordingError:
+            except (CallUsageRecordingError, CallAttemptLimitReached):
                 cancelled.set()
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed sample must not end the run
@@ -484,6 +488,7 @@ def run_generation_experiment(
     seed: int,
     concurrency: int,
     protocol: Mapping[str, Any],
+    call_budget: CallAttemptBudget | None = None,
     prompt_builder: Callable[[str, str], str] | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -499,7 +504,7 @@ def run_generation_experiment(
         return _run_generation_experiment_locked(
             cases, arms, output_dir=output_dir, generator=generator, judge=judge,
             samples=samples, seed=seed, concurrency=concurrency, protocol=protocol,
-            prompt_builder=prompt_builder, log=log,
+            prompt_builder=prompt_builder, log=log, call_budget=call_budget,
         )
     finally:
         run_lock.release()
@@ -516,6 +521,7 @@ def _run_generation_experiment_locked(
     seed: int,
     concurrency: int,
     protocol: Mapping[str, Any],
+    call_budget: CallAttemptBudget | None,
     prompt_builder: Callable[[str, str], str] | None,
     log: Callable[[str], None],
 ) -> dict[str, Any]:
@@ -608,14 +614,20 @@ def _run_generation_experiment_locked(
         )
 
     options = {"failures": failures, "concurrency": concurrency, "log": log}
-    _run_stage("generate", [k for k in keys if k not in generations.records], generate, **options)
-    ungraded = [
-        k for k in keys
-        if k in generations.records
-        and generation_is_complete(generations.records[k])
-        and k not in judgments.records
-    ]
-    _run_stage("judge", ungraded, grade, **options)
+    stop_reason = None
+    try:
+        _run_stage("generate", [k for k in keys if k not in generations.records], generate, **options)
+        ungraded = [
+            k for k in keys
+            if k in generations.records
+            and generation_is_complete(generations.records[k])
+            and k not in judgments.records
+        ]
+        _run_stage("judge", ungraded, grade, **options)
+    except CallAttemptLimitReached:
+        # The stage has waited for in-flight workers to save their output.
+        # Keep partial results; an ungraded answer has no quality score.
+        stop_reason = "http_attempt_limit"
 
     records = [
         {
@@ -632,6 +644,8 @@ def _run_generation_experiment_locked(
     report = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "settings": settings,
+        "stop_reason": stop_reason,
+        "http_attempt_budget": call_budget.snapshot() if call_budget is not None else None,
         "planned": len(keys),
         "generated": len(records),
         "judged": sum(record["score"] is not None for record in records),

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from filelock import FileLock
 
+from rag_textbook_qa.evaluation.call_usage import CallAttemptBudget, CallUsageLog
 from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, GenerationCase
 from rag_textbook_qa.evaluation.generation_runner import (
     JUDGE_VERSION,
@@ -19,6 +20,7 @@ from rag_textbook_qa.evaluation.generation_runner import (
     generation_request,
     llm_pair_from_env,
     openai_generator,
+    openai_judge,
     run_generation_experiment,
     sample_keys,
     with_retries,
@@ -80,6 +82,83 @@ def run(output: Path, arms: list[Arm], **overrides) -> dict:
 
 
 class ClientTests(unittest.TestCase):
+    def test_attempt_limit_saves_partial_results_and_resumes_with_a_new_allowance(self):
+        sdk = MagicMock()
+
+        def completion(**request):
+            text = (fake_judge(request["messages"][0]["content"])
+                    if request["model"] == "judge" else "回答")
+            return SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content=text), finish_reason="stop")])
+
+        sdk.with_options.return_value.chat.completions.create.side_effect = completion
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            usage = CallUsageLog(output / "calls.jsonl")
+
+            def bounded(limit):
+                budget = CallAttemptBudget(limit)
+                return run(output, [Arm("hot", "baseline", .7)], concurrency=1,
+                    generator=openai_generator(sdk, "generator", max_tokens=20,
+                                               on_call=usage, call_budget=budget),
+                    judge=openai_judge(sdk, "judge", extra={}, on_call=usage, call_budget=budget),
+                    call_budget=budget)
+
+            partial = bounded(1)
+            generations = (output / "generations.jsonl").read_bytes()
+            protocol = (output / "protocol.json").read_bytes()
+            self.assertEqual((partial["generated"], partial["judged"]), (1, 0))
+            self.assertEqual(partial["stop_reason"], "http_attempt_limit")
+            self.assertIsNone(partial["arms"]["hot"]["problem_rate"])
+            self.assertEqual(partial["failures_logged"], 0)
+            self.assertEqual(json.loads((output / "report.json").read_text())["stop_reason"],
+                             "http_attempt_limit")
+            resumed = bounded(5)
+            self.assertEqual((resumed["generated"], resumed["judged"]), (2, 2))
+            self.assertIsNone(resumed["stop_reason"])
+            self.assertFalse(resumed["http_attempt_budget"]["blocked"])
+            self.assertEqual(resumed["http_attempt_budget"]["attempts_started"], 5)
+            self.assertTrue((output / "generations.jsonl").read_bytes().startswith(generations))
+            self.assertEqual((output / "protocol.json").read_bytes(), protocol)
+            again = bounded(1)
+            self.assertEqual(again["http_attempt_budget"]["attempts_started"], 0)
+            self.assertEqual(again["judged"], 2)
+            self.assertEqual(len((output / "calls.jsonl").read_text().splitlines()), 6)
+
+    def test_attempt_limit_preserves_inflight_results_and_cancels_queued_work(self):
+        sdk = MagicMock()
+        started = threading.Barrier(2)
+
+        def completion(**request):
+            started.wait(timeout=5)
+            return SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="回答"), finish_reason="stop")])
+
+        sdk.with_options.return_value.chat.completions.create.side_effect = completion
+        budget = CallAttemptBudget(2)
+        with tempfile.TemporaryDirectory() as directory:
+            report = run(Path(directory), [Arm("hot", "baseline", .7)], samples=20,
+                concurrency=3, call_budget=budget,
+                generator=openai_generator(sdk, "generator", max_tokens=20, call_budget=budget))
+        self.assertEqual(sdk.with_options.return_value.chat.completions.create.call_count, 2)
+        self.assertEqual((report["generated"], report["judged"]), (2, 0))
+        self.assertEqual(report["stop_reason"], "http_attempt_limit")
+
+    def test_judge_format_repair_is_also_bounded_without_a_quality_score(self):
+        sdk = MagicMock()
+        sdk.with_options.return_value.chat.completions.create.return_value = SimpleNamespace(
+            usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="不是 JSON"), finish_reason="stop")])
+        budget = CallAttemptBudget(2)
+        with tempfile.TemporaryDirectory() as directory:
+            report = run(Path(directory), [Arm("kept", "baseline", None)],
+                call_budget=budget,
+                judge=openai_judge(sdk, "judge", extra={}, call_budget=budget))
+        self.assertEqual(sdk.with_options.return_value.chat.completions.create.call_count, 2)
+        self.assertEqual((report["generated"], report["judged"], report["failures_logged"]), (1, 0, 0))
+        self.assertIsNone(report["arms"]["kept"]["problem_rate"])
+        self.assertEqual(report["stop_reason"], "http_attempt_limit")
+
     def test_invalid_direct_cases_stop_before_generator_judge_or_protocol_write(self):
         invalid_cases = [[], [CASE, CASE], [replace(CASE, question=" ")],
                          [replace(CASE, variants={"baseline": replace(CASE.variants["baseline"], answers="答案")})]]

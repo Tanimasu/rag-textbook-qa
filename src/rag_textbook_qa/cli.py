@@ -214,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     generation_evaluate.add_argument("--seed", type=int, default=0)
     generation_evaluate.add_argument("--max-tokens", type=int, default=2000)
     generation_evaluate.add_argument(
+        "--max-http-attempts", type=int,
+        help="本次运行的生成、评判及重试共用请求次数上限；续跑重新计数，不是费用上限",
+    )
+    generation_evaluate.add_argument(
         "--dry-run", action="store_true", help="校验题集并显示完整调用计划，不创建客户端或结果目录",
     )
 
@@ -691,6 +695,10 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     ):
         if value <= 0:
             raise ValueError(f"{option} 必须大于 0")
+    from rag_textbook_qa.evaluation.call_usage import CallAttemptBudget, CallUsageLog
+
+    call_budget = (CallAttemptBudget(args.max_http_attempts)
+                   if args.max_http_attempts is not None else None)
     arms = [parse_arm(spec) for spec in args.arm]
     cases_bytes = args.cases.read_bytes()
     cases = generation_cases_from_payload(json.loads(cases_bytes.decode("utf-8")))
@@ -711,6 +719,7 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
             "models": {"generator": generator_model, "judge": judge_model},
             "cases_sha256": cases_sha256,
             "max_tokens": args.max_tokens,
+            "http_attempt_budget": call_budget.snapshot() if call_budget is not None else None,
             **generation_call_plan(cases, arms, args.samples, args.seed),
             "model_calls": 0,
             "cost_estimate": None,
@@ -718,8 +727,6 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
         }, ensure_ascii=False, indent=2))
         return 0
     generator_llm, judge_llm, extra = llm_pair_from_env()
-    from rag_textbook_qa.evaluation.call_usage import CallUsageLog
-
     call_usage = CallUsageLog(args.output_dir / "calls.jsonl")
     with ExitStack() as cleanup:
         cleanup.callback(generator_llm.close)
@@ -743,15 +750,17 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
             output_dir=args.output_dir,
             generator=openai_generator(
                 generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens,
-                on_call=call_usage,
+                on_call=call_usage, call_budget=call_budget,
             ),
             judge=openai_judge(
                 judge_llm.client, judge_llm.default_model, extra=extra, on_call=call_usage,
+                call_budget=call_budget,
             ),
             samples=args.samples,
             seed=args.seed,
             concurrency=args.concurrency,
             protocol=protocol,
+            call_budget=call_budget,
         )
 
     def shown(value: float | None) -> str:
@@ -783,6 +792,9 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
                 f"{primary['cases']} 题）"
             )
     print(f"报告: {args.output_dir / 'report.json'}")
+    if report.get("stop_reason") == "http_attempt_limit":
+        print("已达到本次请求次数上限；已有结果已保存，未评判回答不计质量分。续跑将重新计数。")
+        return 2
     return 0
 
 

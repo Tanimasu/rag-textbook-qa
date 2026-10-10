@@ -21,6 +21,38 @@ class CallUsageRecordingError(RuntimeError):
     """A paid call finished but its accounting record could not be saved."""
 
 
+class CallAttemptLimitReached(RuntimeError):
+    """The invocation's shared allowance has no remaining HTTP attempts."""
+
+
+class CallAttemptBudget:
+    """Reserve attempts before sending, shared by generators, judges and retries.
+
+    Reservations are conservative: SDK validation failures also consume a slot.
+    This is an invocation limit, not a currency or cumulative experiment limit.
+    """
+
+    def __init__(self, limit: int) -> None:
+        if type(limit) is not int or limit < 1:
+            raise ValueError("请求次数上限必须为正整数")
+        self._limit = limit
+        self._started = 0
+        self._blocked = False
+        self._lock = threading.Lock()
+
+    def reserve(self) -> None:
+        with self._lock:
+            if self._started >= self._limit:
+                self._blocked = True
+                raise CallAttemptLimitReached("已达到本次运行的请求次数上限")
+            self._started += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"scope": "invocation", "limit": self._limit,
+                    "attempts_started": self._started, "blocked": self._blocked}
+
+
 class CallUsageLog:
     """Append usage without prompts, answers, reasoning text or provider errors.
 
@@ -46,10 +78,13 @@ class CallUsageLog:
 def observed_completion(
     client: Any, request: Mapping[str, Any], *, role: str,
     on_call: UsageObserver | None,
+    call_budget: CallAttemptBudget | None = None,
 ) -> Any:
     """Observe one attempt; retry owners invoke this again for each HTTP call."""
 
     if on_call is None:
+        if call_budget is not None:
+            call_budget.reserve()
         return client.chat.completions.create(**request)
     started = time.monotonic()
     record: dict[str, Any] = {
@@ -63,6 +98,9 @@ def observed_completion(
         "status": "error",
         "tokens": None,
     }
+    # A refused attempt never reaches the SDK or receives a usage record.
+    if call_budget is not None:
+        call_budget.reserve()
     try:
         response = client.chat.completions.create(**request)
         record["tokens"] = completion_usage(response)

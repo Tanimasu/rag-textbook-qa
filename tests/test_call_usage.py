@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.evaluation.call_usage import (
+    CallAttemptBudget,
+    CallAttemptLimitReached,
     CallUsageLog,
     CallUsageRecordingError,
 )
@@ -26,6 +28,59 @@ def response(finish_reason="stop", usage=None):
 
 
 class CallUsageTests(unittest.TestCase):
+    def test_concurrent_attempts_share_a_strict_cap_with_or_without_usage_observer(self):
+        for observed in (False, True):
+            with self.subTest(observed=observed):
+                sdk = MagicMock()
+                sdk.with_options.return_value.chat.completions.create.return_value = response()
+                records = []
+                budget = CallAttemptBudget(7)
+                generator = openai_generator(sdk, "model", max_tokens=20,
+                    on_call=records.append if observed else None, call_budget=budget)
+
+                def request(_, generate=generator):
+                    try:
+                        generate("private prompt", .7)
+                        return True
+                    except CallAttemptLimitReached:
+                        return False
+
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    sent = list(pool.map(request, range(40)))
+                self.assertEqual(sum(sent), 7)
+                self.assertEqual(sdk.with_options.return_value.chat.completions.create.call_count, 7)
+                self.assertEqual(len(records), 7 if observed else 0)
+                self.assertEqual(budget.snapshot(), {"scope": "invocation", "limit": 7,
+                                                    "attempts_started": 7, "blocked": True})
+
+    def test_generator_retry_and_judge_consume_the_same_attempt_budget(self):
+        class RateLimitError(Exception):
+            pass
+
+        sdk = MagicMock()
+        sdk.with_options.return_value.chat.completions.create.side_effect = [
+            RateLimitError("private failure"), response(), response(),
+        ]
+        records = []
+        budget = CallAttemptBudget(3)
+        generator = openai_generator(sdk, "generator", max_tokens=20,
+                                     on_call=records.append, call_budget=budget)
+        judge = openai_judge(sdk, "judge", extra={}, on_call=records.append, call_budget=budget)
+        with patch("rag_textbook_qa.evaluation.generation_runner.with_retries",
+                   side_effect=lambda call: with_retries(call, sleep=lambda _: None)):
+            generator("prompt", .7)
+            judge("prompt")
+            with self.assertRaises(CallAttemptLimitReached):
+                judge("prompt")
+        self.assertEqual([row["role"] for row in records], ["generator", "generator", "judge"])
+        self.assertEqual([row["status"] for row in records], ["error", "response", "response"])
+        self.assertEqual(sdk.with_options.return_value.chat.completions.create.call_count, 3)
+
+    def test_invalid_attempt_limit_is_rejected(self):
+        for value in (True, 0, -1, 1.5, "2", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                CallAttemptBudget(value)
+
     def test_invalid_numeric_metadata_never_poison_existing_usage_log(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calls.jsonl"
