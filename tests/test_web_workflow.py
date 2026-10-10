@@ -140,6 +140,7 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
 
         reader = services.load_ragas_results
         stat = Path.stat
+        glob = Path.glob
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             previous = root / "ragas_evaluation_results.csv"
@@ -154,11 +155,18 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
                     raise FileNotFoundError("fixture disappeared after listing")
                 return stat(path, *args, **kwargs)
 
+            def discovered(path, pattern):
+                if path == root / "ragas-runs" and pattern == "ragas-*/ragas_evaluation_results.csv":
+                    # Freeze discovery before simulating the subsequent stat
+                    # failure, independently of pathlib's platform internals.
+                    return iter([newest])
+                return glob(path, pattern)
+
             with (
                 patch.object(services, "_settings", return_value=MagicMock(paths=MagicMock(evaluations=root))),
                 patch.object(services, "run_ragas_evaluation") as evaluate,
             ):
-                with patch.object(Path, "stat", metadata):
+                with patch.object(Path, "stat", metadata), patch.object(Path, "glob", discovered):
                     frame = reader()
                     self.assertEqual(frame["question"].tolist(), ["previous"])
                     self.assertEqual(frame.attrs["unavailable_result_candidates"], 1)
