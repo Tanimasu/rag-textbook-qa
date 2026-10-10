@@ -11,7 +11,6 @@ returned, because it can carry upstream detail.
 import asyncio
 import contextlib
 import json
-import math
 import re
 import sys
 import threading
@@ -39,6 +38,7 @@ from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError, MissingOptionalDependencyError
 from rag_textbook_qa.providers.config import is_loopback_host
 from rag_textbook_qa.rag.references import answer_body, render_source_sections
+from rag_textbook_qa.timing import finite_seconds
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -126,7 +126,10 @@ def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> d
         "message": message,
         "sources": sources,
         "conflicts": [conflict.get("topic") for conflict in result.get("source_conflicts") or []],
-        "timing": {field: execution[field] for field in _TIMING_FIELDS if field in execution},
+        "timing": {
+            field: seconds for field in _TIMING_FIELDS
+            if (seconds := finite_seconds(execution.get(field))) is not None
+        },
         "compute": compute,
         "citation_integrity": _citation_integrity(str(answer or ""), sources)
         if status == "answered"
@@ -150,17 +153,12 @@ def _public_compute_stage(stage: Any) -> dict[str, Any] | None:
     platform = str(stage.get("platform") or "unknown")
     if platform not in {"Windows", "Darwin", "Linux", "mixed"}:
         platform = "unknown"
-    try:
-        elapsed = float(stage.get("elapsed_seconds", 0))
-    except (TypeError, ValueError):
-        elapsed = 0.0
-    if not math.isfinite(elapsed) or elapsed < 0:
-        elapsed = 0.0
+    elapsed = finite_seconds(stage.get("elapsed_seconds"))
     return {
         "backend": backend,
         "device": device,
         "platform": platform,
-        "elapsed_seconds": round(elapsed, 3),
+        "elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
         "fallback_used": bool(stage.get("fallback_used")),
     }
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.rag.references import render_source_sections
+from rag_textbook_qa.timing import finite_seconds
 
 
 def source_section_label(source: Mapping[str, Any]) -> str:
@@ -86,7 +87,7 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
         )
         device = str(stage.get("device") or "unknown")
         device_label = device.upper() if device != "unknown" else "未知设备"
-        elapsed = _seconds(stage.get("elapsed_seconds"))
+        elapsed = _duration_label(stage.get("elapsed_seconds"))
         calls = _positive_int(stage.get("calls"))
         call_suffix = f" · {calls} 次" if calls > 1 else ""
         items.append(
@@ -94,17 +95,17 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
                 "kind": "fallback" if fallback_used else backend,
                 "text": (
                     f"{icon} {label} · {location} · {device_label} · "
-                    f"{elapsed:.3f} 秒{call_suffix}"
+                    f"{elapsed}{call_suffix}"
                 ),
             }
         )
 
-    retrieval = _seconds(execution.get("retrieval_seconds"))
-    generation = _seconds(execution.get("generation_seconds"))
-    total = _seconds(execution.get("total_seconds"))
+    retrieval = _duration_label(execution.get("retrieval_seconds"))
+    generation = _duration_label(execution.get("generation_seconds"))
+    total = _duration_label(execution.get("total_seconds"))
     first_token = execution.get("first_token_seconds")
     first_token_suffix = (
-        f"（首字 {_seconds(first_token):.3f} 秒）"
+        f"（首字 {_duration_label(first_token)}）"
         if first_token is not None
         else ""
     )
@@ -112,9 +113,9 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
         {
             "kind": "timing",
             "text": (
-                f"⏱️ 检索 {retrieval:.3f} 秒 · "
-                f"回答 {generation:.3f} 秒{first_token_suffix} · "
-                f"总计 {total:.3f} 秒"
+                f"⏱️ 检索 {retrieval} · "
+                f"回答 {generation}{first_token_suffix} · "
+                f"总计 {total}"
             ),
         }
     )
@@ -143,15 +144,11 @@ def _execution_location(*, backend: str, platform_name: str, fallback_used: bool
     return location
 
 
-def _seconds(value: Any) -> float:
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 0.0
+def _duration_label(value: Any) -> str:
+    seconds = finite_seconds(value)
+    return f"{seconds:.3f} 秒" if seconds is not None else "耗时未知"
 
 
 def _positive_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    count = finite_seconds(value)
+    return int(count) if count is not None and count.is_integer() else 0

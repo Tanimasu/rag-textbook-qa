@@ -13,6 +13,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(STREAMLIT_AVAILABLE, "Streamlit UI extra is not installed")
 class OrdinaryWebWorkflowTests(unittest.TestCase):
+    def test_bad_execution_metadata_preserves_answer_and_history_without_rerunning_model(self):
+        engine = MagicMock()
+        raw = {"success": True, "answer": "答案【参考资料 1】",
+               "context_sources": [{"citation_id": 1, "book_name": "os", "content": "原文。"}],
+               "execution": {"embedding": {"elapsed_seconds": float("inf"), "calls": float("inf")},
+                             "total_seconds": True}}
+        engine.ask.return_value = raw
+        app, _ = self.app(engine=engine)
+        app.chat_input[0].set_value("问题").run(timeout=20)
+        app.run(timeout=20)
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state["messages"][-1]["content"], "答案【参考资料 1】")
+        self.assertTrue(any("耗时未知" in item.value for item in app.markdown))
+        self.assertFalse(any(button.label == "重试本题" for button in app.button))
+        engine.ask.assert_called_once()
+        self.assertIs(raw["execution"]["total_seconds"], True)
+
     def test_chapter_only_response_shows_retry_without_automatic_model_call(self):
         engine = MagicMock()
         raw = {"success": True, "answer": "## 参考章节\n错误章节【参考资料 1】",

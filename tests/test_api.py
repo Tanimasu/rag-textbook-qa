@@ -228,6 +228,25 @@ class GuardTests(unittest.TestCase):
 
 
 class PublicResultTests(unittest.TestCase):
+    def test_invalid_times_do_not_break_json_or_invent_measurements(self):
+        for value in (float("inf"), float("-inf"), float("nan"), True, -1, None, "bad", 10**400):
+            with self.subTest(value=value):
+                raw = FakeEngine().ask(query="q", use_llm=True)
+                raw["execution"]["total_seconds"] = value
+                raw["execution"]["embedding"]["elapsed_seconds"] = value
+                payload = public_result(raw, retrieval_only=None)
+                json.dumps(payload, allow_nan=False)
+                self.assertEqual(payload["status"], "answered")
+                self.assertNotIn("total_seconds", payload["timing"])
+                self.assertIsNone(payload["compute"]["embedding"]["elapsed_seconds"])
+                self.assertIs(raw["execution"]["total_seconds"], value)
+                self.assertEqual(payload["timing"]["retrieval_seconds"], .1)
+        raw["execution"]["total_seconds"] = 0
+        raw["execution"]["embedding"]["elapsed_seconds"] = "1.25"
+        payload = public_result(raw, retrieval_only=None)
+        self.assertEqual(payload["timing"]["total_seconds"], 0)
+        self.assertEqual(payload["compute"]["embedding"]["elapsed_seconds"], 1.25)
+
     def test_indexed_cuda_devices_keep_the_public_device_family(self):
         raw = FakeEngine().ask(query="q", use_llm=True)
         for device, expected in (
@@ -555,6 +574,34 @@ class ApiAppTests(unittest.TestCase):
         )
         self.assertEqual(events[-1][1]["status"], "answered")
         self.assertRegex(events[-1][1]["answer_id"], r"^[0-9a-f]{32}$")
+
+    def test_bad_execution_metadata_does_not_fail_a_completed_answer_on_either_route(self):
+        engine = FakeEngine()
+        original_ask = engine.ask
+
+        def ask(**kwargs):
+            result = original_ask(**kwargs)
+            result["execution"]["total_seconds"] = float("inf")
+            result["execution"]["embedding"]["elapsed_seconds"] = True
+            return result
+
+        engine.ask = ask
+        client = self.client(engine=engine)
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                response = client.post(route, json={"query": "问题"})
+                self.assertEqual(response.status_code, 200)
+                if route.endswith("/stream"):
+                    events = sse_events(response.text)
+                    self.assertEqual(events[-1][0], "result")
+                    payload = events[-1][1]
+                else:
+                    payload = response.json()
+                self.assertEqual(payload["status"], "answered")
+                self.assertEqual(payload["answer"], "进程是程序的执行【参考资料 1】")
+                self.assertNotIn("total_seconds", payload["timing"])
+                self.assertIsNone(payload["compute"]["embedding"]["elapsed_seconds"])
+        self.assertEqual(len(engine.calls), 2)
 
     def test_engine_failures_return_generic_errors_on_both_routes(self):
         client = self.client(engine=FakeEngine(raises=RuntimeError(SECRET)))

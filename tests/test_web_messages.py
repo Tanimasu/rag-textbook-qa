@@ -98,6 +98,25 @@ class WebMessageTests(unittest.TestCase):
     def test_compute_trace_is_empty_for_legacy_messages(self):
         self.assertEqual(compute_trace_items(None), [])
 
+    def test_invalid_measurements_are_unknown_and_cannot_crash_trace(self):
+        for value in (float("inf"), float("-inf"), float("nan"), True, -1, None, "bad", 10**400):
+            with self.subTest(value=value):
+                execution = {"embedding": {"elapsed_seconds": value, "calls": value},
+                             "retrieval_seconds": value, "generation_seconds": value,
+                             "first_token_seconds": value, "total_seconds": value}
+                items = compute_trace_items(execution)
+                self.assertIn("耗时未知", items[0]["text"])
+                self.assertNotIn(" 次", items[0]["text"])
+                self.assertIn("总计 耗时未知", items[-1]["text"])
+                self.assertNotIn("0.000 秒", items[-1]["text"])
+                self.assertIs(execution["total_seconds"], value)
+        valid = compute_trace_items({"embedding": {"elapsed_seconds": 0, "calls": 3},
+                                     "total_seconds": "1.25"})
+        self.assertIn("0.000 秒 · 3 次", valid[0]["text"])
+        self.assertIn("总计 1.250 秒", valid[-1]["text"])
+        fractional = compute_trace_items({"embedding": {"elapsed_seconds": 0, "calls": 2.5}})
+        self.assertNotIn("2 次", fractional[0]["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

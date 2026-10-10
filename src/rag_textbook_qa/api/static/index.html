@@ -528,7 +528,13 @@ footer details p { margin-top: 6px; text-align: left; }
     if (platform) location += `（${platform}）`;
     if (stage.fallback_used) location = "已回退到" + location;
     const device = stage.device === "unknown" ? "未知设备" : stage.device.toUpperCase();
-    return `${label} · ${location} · ${device} · ${stage.elapsed_seconds.toFixed(3)} 秒`;
+    const elapsed = validSeconds(stage.elapsed_seconds)
+      ? `${stage.elapsed_seconds.toFixed(3)} 秒` : "耗时未知";
+    return `${label} · ${location} · ${device} · ${elapsed}`;
+  }
+
+  function validSeconds(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
   }
 
   function finish(card, result, query) {
@@ -540,7 +546,7 @@ footer details p { margin-top: 6px; text-align: left; }
     const compute = result.compute || {};
     const chips = [
       ["retrieval_seconds", "检索"], ["first_token_seconds", "首字"], ["total_seconds", "总计"],
-    ].map(([key, label]) => typeof timing[key] === "number"
+    ].map(([key, label]) => validSeconds(timing[key])
       ? `${label} ${timing[key].toFixed(2)} 秒` : null)
       .filter(Boolean);
     if (chips.length) {

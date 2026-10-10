@@ -249,6 +249,25 @@ class PublicChatBrowserTests(unittest.TestCase):
           };
         })();""".replace("CONFIG", config))
 
+    def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
+        result = answer_result()
+        result["compute"] = {
+            "embedding": {"backend": "local", "platform": "Darwin", "device": "mps",
+                          "fallback_used": False, "elapsed_seconds": None},
+        }
+        result["timing"] = {"total_seconds": True, "retrieval_seconds": -1,
+                            "first_token_seconds": 0}
+        self.backend.enqueue(Reply(final=[("result", result)]))
+        self.open_page()
+        self.submit()
+        self.expect_ready()
+        card = self.page.locator(".answer")
+        self.expect(card).to_contain_text("Embedding · 本地（macOS） · MPS · 耗时未知")
+        self.expect(card.locator(".body")).to_contain_text("进程")
+        self.expect(card.locator(":scope > .meta")).to_have_text("首字 0.00 秒")
+        self.expect(card.get_by_role("button", name="保存问答（含来源）")).to_be_enabled()
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_copy_fallback_preserves_focus_and_next_question(self) -> None:
         self.isolated_clipboard(api=False, command="success")
         result = answer_result()
