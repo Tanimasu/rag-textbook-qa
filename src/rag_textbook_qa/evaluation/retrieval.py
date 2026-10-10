@@ -14,6 +14,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.json_utils import loads_strict
+
 RETRIEVAL_SPLITS = ("dev", "holdout")
 DEFAULT_SPLIT = "dev"
 
@@ -114,7 +116,7 @@ def load_retrieval_questions(path: str | Path) -> list[RetrievalQuestion]:
     """Load and validate retrieval annotations without importing model dependencies."""
 
     source = Path(path)
-    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload = loads_strict(source.read_text(encoding="utf-8"))
     if not isinstance(payload, list) or not payload:
         raise ValueError("检索评估集必须是非空 JSON 数组")
 

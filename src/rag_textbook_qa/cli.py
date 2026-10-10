@@ -611,7 +611,6 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
         save_retrieval_report,
         select_split,
     )
-    from rag_textbook_qa.rag import RAGEngine
 
     if args.top_k <= 0:
         raise ValueError("--top-k 必须大于 0")
@@ -620,6 +619,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
     )
     questions = select_split(load_retrieval_questions(questions_path), args.split)
     strategies = RETRIEVAL_STRATEGIES if args.strategy == "all" else (args.strategy,)
+    from rag_textbook_qa.rag import RAGEngine
 
     # A benchmark must fail visibly instead of silently mixing remote and local results.
     compute = replace(

@@ -24,6 +24,16 @@ from rag_textbook_qa.evaluation.ragas import (
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_question_json_rejects_duplicate_references_and_nonstandard_numbers(self):
+        for extra in ('"ground_truth":"原参考答案",', '"extra":Infinity,', '"extra":1e400,'):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "questions.json"
+                original = '[{"question":"什么是进程？",' + extra + '"ground_truth":"另一个答案"}]'
+                path.write_text(original, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_test_questions(path)
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+
     def test_csv_is_visible_only_after_serialization_completes(self):
         import pandas as pd
 

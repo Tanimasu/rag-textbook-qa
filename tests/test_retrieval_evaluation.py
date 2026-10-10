@@ -67,6 +67,17 @@ class FakeRetrievalEngine:
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_ambiguous_json_cannot_silently_change_a_holdout_into_dev(self):
+        for extra in ('"split":"holdout",', '"extra":NaN,', '"extra":1e400,'):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "questions.json"
+                original = ('[{"question":"什么是进程？","book_name":"os",'
+                            '"relevant_sections":["1.1"],' + extra + '"split":"dev"}]')
+                path.write_text(original, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_retrieval_questions(path)
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+
     def test_section_number_markers_do_not_match_other_numbers_as_substrings(self):
         for marker, heading, chapter, expected_grade in (
             ("3.5", "13.5 调度", "第13章", 0),

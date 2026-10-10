@@ -17,6 +17,7 @@ from typing import Any, Self
 
 import httpx
 
+from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.llm import create_llm_client
 from rag_textbook_qa.providers import ComputeSettings
 
@@ -858,7 +859,7 @@ def load_test_questions(path: str | Path) -> list[dict[str, Any]]:
     """Load and minimally validate an evaluation question JSON file."""
 
     questions_path = Path(path)
-    questions = json.loads(questions_path.read_text(encoding="utf-8"))
+    questions = loads_strict(questions_path.read_text(encoding="utf-8"))
     if not isinstance(questions, list) or not questions:
         raise ValueError(f"评估问题必须是非空 JSON 数组: {questions_path}")
     _validate_test_questions(questions)
