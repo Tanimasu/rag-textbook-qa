@@ -12,6 +12,7 @@ from filelock import FileLock
 
 from rag_textbook_qa.evaluation.generation import Arm, ContextVariant, GenerationCase
 from rag_textbook_qa.evaluation.generation_runner import (
+    JUDGE_VERSION,
     JsonlLog,
     freeze_protocol,
     generation_request,
@@ -246,7 +247,7 @@ class ProtocolPersistenceTests(unittest.TestCase):
             run(output, arms)
             protocol = output / "protocol.json"
             payload = json.loads(protocol.read_text(encoding="utf-8"))
-            payload["settings"]["judge_version"] = 3
+            payload["settings"]["judge_version"] = JUDGE_VERSION - 1
             protocol.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             originals = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
             generator, judge = MagicMock(), MagicMock()
@@ -670,7 +671,7 @@ class ExperimentTests(unittest.TestCase):
             self.assertEqual(report["usage"]["hot"]["completion_tokens"], 1)
             self.assertEqual(report["summary_version"], 2)
             self.assertEqual(report["quality_sample_policy"], "completed_answers_only")
-            self.assertEqual(report["settings"]["judge_version"], 5)
+            self.assertEqual(report["settings"]["judge_version"], JUDGE_VERSION)
             self.assertIsNone(report["arms"]["hot"]["problem_claims"])
             self.assertTrue(all(value is None for value in report["comparisons"]["cool"].values()))
 

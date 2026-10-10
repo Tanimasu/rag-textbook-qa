@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rag_textbook_qa.json_utils import loads_strict
+
 VERDICT_LABELS = ("supported", "minor", "unsupported", "contradicted")
 QUOTED_LABELS = ("supported", "minor")
 PROBLEM_STATUSES = ("unsupported", "contradicted", "unverified")
@@ -156,7 +158,7 @@ def validate_generation_cases(cases: Sequence[GenerationCase]) -> None:
 def load_generation_cases(path: str | Path) -> list[GenerationCase]:
     """Load frozen cases, refusing sources that are not part of their context."""
 
-    return generation_cases_from_payload(json.loads(Path(path).read_text(encoding="utf-8")))
+    return generation_cases_from_payload(loads_strict(Path(path).read_text(encoding="utf-8")))
 
 
 def generation_cases_from_payload(payload: Any) -> list[GenerationCase]:
@@ -250,7 +252,7 @@ def parse_json_object(raw: str) -> dict[str, Any]:
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("no_json_object")
-    payload = json.loads(raw[start : end + 1])
+    payload = loads_strict(raw[start : end + 1])
     if not isinstance(payload, dict):
         raise TypeError("no_json_object")
     return payload

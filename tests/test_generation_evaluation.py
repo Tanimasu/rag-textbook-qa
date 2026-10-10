@@ -34,6 +34,18 @@ def write_cases(directory: str, cases: list[dict]) -> Path:
 
 
 class ArmAndCaseTests(unittest.TestCase):
+    def test_frozen_json_rejects_duplicate_fields_and_nonstandard_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            for raw, reason in (
+                ('{"cases":[],"cases":[]}', "duplicate_json_key"),
+                ('{"cases":[],"metadata":NaN}', "invalid_json_constant"),
+            ):
+                with self.subTest(raw=raw):
+                    path.write_text(raw, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, reason):
+                        load_generation_cases(path)
+
     def test_frozen_case_fields_are_validated_without_coercing_text_or_arrays(self):
         valid = {"id": "01", "question": "问题", "requirements": ["要求"],
                  "variants": {"baseline": {"context": SOURCE["content"],
@@ -106,6 +118,25 @@ class QuoteTests(unittest.TestCase):
 
 
 class JudgeOutputTests(unittest.TestCase):
+    def test_rejects_ambiguous_keys_and_nonstandard_numbers(self):
+        examples = (
+            '{"verdicts":[],"verdicts":[]}',
+            '{"coverage":[{"id":1,"addressed":false,"addressed":true}]}',
+            '{"verdicts":[{"id":1,"label":"unsupported","label":"supported"}]}',
+            '{"evidence":[{"source_id":2,"source_id":1,"quote":"原文"}]}',
+            '{"id":1,"\\u0069d":2}',
+        )
+        for raw in examples:
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "duplicate_json_key"):
+                parse_json_object(raw)
+        for token in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, "invalid_json_constant"):
+                parse_json_object('{"ignored":' + token + '}')
+        for token in ("1e999", "-1e999"):
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, "nonfinite_json_number"):
+                parse_json_object('{"ignored":' + token + '}')
+        self.assertEqual(parse_json_object('{"number":0.125}'), {"number": 0.125})
+
     def test_parses_fenced_json(self):
         self.assertEqual(parse_json_object('```json\n{"claims": []}\n```'), {"claims": []})
         with self.assertRaises(ValueError):

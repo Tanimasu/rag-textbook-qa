@@ -58,7 +58,7 @@ JUDGE_ATTEMPTS = 3
 PROVIDER_ATTEMPTS = 4
 # Bump whenever what the judge sees or how its output is scored changes, so a
 # directory judged under older rules refuses to resume under newer ones.
-JUDGE_VERSION = 5
+JUDGE_VERSION = 6
 TRANSIENT_ERRORS = frozenset(
     {"APITimeoutError", "APIConnectionError", "RateLimitError", "InternalServerError"}
 )

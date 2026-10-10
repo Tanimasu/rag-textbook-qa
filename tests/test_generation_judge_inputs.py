@@ -67,6 +67,52 @@ class FormattingTolerantQuoteTests(unittest.TestCase):
 
 
 class JudgeInputTests(unittest.TestCase):
+    def test_persistently_ambiguous_judgment_does_not_publish_a_score(self):
+        calls = []
+
+        def judge(prompt: str) -> str:
+            calls.append(prompt)
+            return (EXTRACTION if "任务一" in prompt else
+                    VERDICTS.replace('"label": "supported"',
+                                     '"label": "unsupported", "label": "supported"'))
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = run_generation_experiment(
+                [CASE], [Arm("kept", "baseline", None)], output_dir=Path(directory),
+                generator=lambda prompt, temperature: self.fail("存档答案不应重新生成"),
+                judge=judge, samples=1, seed=0, concurrency=1, protocol={},
+                prompt_builder=lambda question, context: question, log=lambda line: None,
+            )
+            failure = json.loads((Path(directory) / "failures.jsonl").read_text())
+        self.assertEqual(report["judged"], 0)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("duplicate_json_key", failure["detail"])
+        self.assertIsNone(report["arms"]["kept"]["problem_claims"])
+
+    def test_duplicate_fields_retry_extraction_and_verification_without_counting_them(self):
+        prompts = []
+        counts = {"extraction": 0, "verification": 0}
+
+        def judge(prompt: str) -> str:
+            prompts.append(prompt)
+            stage = "extraction" if "任务一" in prompt else "verification"
+            counts[stage] += 1
+            if stage == "extraction":
+                return (EXTRACTION.replace('"addressed": true',
+                                          '"addressed": false, "addressed": true')
+                        if counts[stage] == 1 else EXTRACTION)
+            return (VERDICTS.replace('"label": "supported"',
+                                     '"label": "unsupported", "label": "supported"')
+                    if counts[stage] == 1 else VERDICTS)
+
+        result = judge_answer(CASE, Arm("kept", "baseline", None), "答", judge)
+
+        self.assertEqual(counts, {"extraction": 2, "verification": 2})
+        self.assertIn("duplicate_json_key", prompts[1])
+        self.assertIn("duplicate_json_key", prompts[3])
+        self.assertEqual(result["score"]["supported"], 1)
+        self.assertEqual(result["score"]["coverage"], 1)
+
     def test_blocks_keep_each_citations_own_heading(self):
         context = (
             "【参考资料 1】\n章节: 5.9.1 TCP 的连接建立\n内容:\n三次握手。\n---\n"
