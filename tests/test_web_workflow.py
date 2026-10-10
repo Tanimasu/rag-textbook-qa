@@ -135,6 +135,45 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
             ):
                 services.load_ragas_results()
 
+    def test_report_metadata_failure_keeps_another_report_available_and_reload_recovers(self):
+        from rag_textbook_qa.web import services
+
+        reader = services.load_ragas_results
+        stat = Path.stat
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = root / "ragas_evaluation_results.csv"
+            previous.write_bytes(b"question,faithfulness\nprevious,0.8\n")
+            os.utime(previous, (1, 1))
+            newest = root / "ragas-runs" / "ragas-newest" / "ragas_evaluation_results.csv"
+            newest.parent.mkdir(parents=True)
+            newest.write_bytes(b"question,faithfulness\nnewest,0.9\n")
+
+            def metadata(path, *args, **kwargs):
+                if path == newest:
+                    raise FileNotFoundError("fixture disappeared after listing")
+                return stat(path, *args, **kwargs)
+
+            with (
+                patch.object(services, "_settings", return_value=MagicMock(paths=MagicMock(evaluations=root))),
+                patch.object(services, "run_ragas_evaluation") as evaluate,
+            ):
+                with patch.object(Path, "stat", metadata):
+                    frame = reader()
+                    self.assertEqual(frame["question"].tolist(), ["previous"])
+                    self.assertEqual(frame.attrs["unavailable_result_candidates"], 1)
+                    app, loader = self.app(result_reader=reader)
+                    self.assertFalse(app.exception)
+                    self.assertTrue(any("部分结果文件无法访问" in item.value for item in app.warning))
+                next(w for w in app.button if w.label == "重新读取结果").click().run(timeout=20)
+                self.assertFalse(app.exception)
+                self.assertEqual(app.dataframe[1].value["问题"].tolist(), ["newest"])
+                self.assertFalse(any("部分结果文件无法访问" in item.value for item in app.warning))
+                evaluate.assert_not_called()
+                loader.assert_not_called()
+                self.assertEqual(previous.read_bytes(), b"question,faithfulness\nprevious,0.8\n")
+                self.assertEqual(newest.read_bytes(), b"question,faithfulness\nnewest,0.9\n")
+
     def test_duplicate_metric_question_or_index_headers_cannot_silently_select_one_column(self):
         import pandas as pd
 

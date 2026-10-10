@@ -51,8 +51,18 @@ def load_ragas_results() -> Any | None:
         candidates.append(legacy)
     if not candidates:
         return None
-    ordered = sorted(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)
     last_error = None
+    available = []
+    unavailable = 0
+    for path in candidates:
+        try:
+            available.append((path.stat().st_mtime_ns, str(path), path))
+        except OSError as error:
+            # A file can disappear between discovery and sorting. Its age is
+            # unknown, so keep this separate from unreadable newer reports.
+            unavailable += 1
+            last_error = error
+    ordered = [row[2] for row in sorted(available, reverse=True)]
     for skipped, results_path in enumerate(ordered):
         try:
             with results_path.open(encoding="utf-8-sig", newline="") as handle:
@@ -65,6 +75,7 @@ def load_ragas_results() -> Any | None:
             last_error = error
             continue
         results.attrs["unreadable_newer_results"] = skipped
+        results.attrs["unavailable_result_candidates"] = unavailable
         return results
     # Let the page offer its existing reload action when no report is readable.
     raise last_error

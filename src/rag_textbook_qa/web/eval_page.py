@@ -71,8 +71,13 @@ def render_eval_tab(
     else:
         result_info.caption("尚无评估结果，点击「运行评估」开始（需要几分钟）。")
 
-    if results is not None and results.attrs.get("unreadable_newer_results", 0):
-        st.warning("较新的评估结果暂时无法读取，当前显示此前可读取的结果；原文件保留。")
+    unavailable = results.attrs.get("unavailable_result_candidates", 0) if results is not None else 0
+    skipped_newer = results.attrs.get("unreadable_newer_results", 0) if results is not None else 0
+    if unavailable or skipped_newer:
+        if unavailable:
+            st.warning("部分结果文件无法访问，当前显示可读取的评估报告；可以重新读取，原文件保留。")
+        else:
+            st.warning("较新的评估结果暂时无法读取，当前显示此前可读取的结果；原文件保留。")
         if st.button("重新读取结果", key="reload_eval_results"):
             st.rerun()
     if results is None:
