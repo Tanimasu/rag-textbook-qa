@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import tempfile
 from typing import Any
 
@@ -54,8 +55,13 @@ def load_ragas_results() -> Any | None:
     last_error = None
     for skipped, results_path in enumerate(ordered):
         try:
-            results = pd.read_csv(results_path, encoding="utf-8-sig")
-        except (OSError, UnicodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as error:
+            with results_path.open(encoding="utf-8-sig", newline="") as handle:
+                headers = next(csv.reader(handle, strict=True), [])
+                if len(headers) != len(set(headers)):
+                    raise pd.errors.ParserError("评估 CSV 表头存在重复字段")
+                handle.seek(0)
+                results = pd.read_csv(handle)
+        except (OSError, UnicodeError, csv.Error, pd.errors.ParserError, pd.errors.EmptyDataError) as error:
             last_error = error
             continue
         results.attrs["unreadable_newer_results"] = skipped

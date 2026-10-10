@@ -135,6 +135,37 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
             ):
                 services.load_ragas_results()
 
+    def test_duplicate_metric_question_or_index_headers_cannot_silently_select_one_column(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        for header, row in (
+            ("question,faithfulness,faithfulness", "ambiguous,0.9,0.1"),
+            ("question,question,faithfulness", "original,other,0.9"),
+            ("question,question_index,question_index,faithfulness", "ambiguous,1,2,0.9"),
+        ):
+            with self.subTest(header=header), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                previous = root / "ragas_evaluation_results.csv"
+                original = b"question,faithfulness\nprevious,0.8\n"
+                previous.write_bytes(original)
+                os.utime(previous, (1, 1))
+                ambiguous = root / "ragas-runs" / "ragas-ambiguous" / "ragas_evaluation_results.csv"
+                ambiguous.parent.mkdir(parents=True)
+                saved = (header + "\n" + row + "\n").encode()
+                ambiguous.write_bytes(saved)
+                with patch.object(services, "_settings", return_value=MagicMock(paths=MagicMock(evaluations=root))):
+                    results = services.load_ragas_results()
+                    self.assertEqual(results["question"].tolist(), ["previous"])
+                    self.assertEqual(results["faithfulness"].tolist(), [.8])
+                    self.assertEqual(results.attrs["unreadable_newer_results"], 1)
+                    self.assertEqual(ambiguous.read_bytes(), saved)
+                    self.assertEqual(previous.read_bytes(), original)
+                    previous.unlink()
+                    with self.assertRaisesRegex(pd.errors.ParserError, "重复字段"):
+                        services.load_ragas_results()
+
     def test_successful_new_evaluation_replaces_the_fallback_notice(self):
         import pandas as pd
 
