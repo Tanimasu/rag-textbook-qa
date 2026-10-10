@@ -676,6 +676,46 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(panel).to_have_count(0)
         self.expect(self.page.locator("[data-feedback]")).to_have_count(0)
 
+    def test_feedback_retry_replaces_its_error_and_preserves_answer_warnings(self) -> None:
+        result = answer_result()
+        result["citation_integrity"] = {"status": "missing"}
+        self.backend.enqueue(Reply(final=[("result", result)]))
+        requests = []
+
+        def feedback(route: Any) -> None:
+            requests.append(route.request.post_data_json)
+            if len(requests) == 1:
+                route.fulfill(status=422, content_type="application/json",
+                              body=json.dumps({"detail": [{"type": "invalid"}]}))
+            elif len(requests) == 2:
+                route.fulfill(status=503, content_type="application/json",
+                              body=json.dumps({"detail": "反馈暂时无法保存，请稍后再试"}))
+            else:
+                route.fulfill(status=200, content_type="application/json", body='{"status":"saved"}')
+
+        self.page.route("**/v1/feedback", feedback)
+        self.open_page()
+        self.submit()
+        self.page.get_by_role("button", name="👎 需要改进").click()
+        panel = self.page.locator(".feedback-panel")
+        panel.locator("select").select_option("other")
+        panel.locator("textarea").fill("需要补充例子")
+        panel.get_by_role("button", name="提交反馈").click()
+        self.expect(self.page.locator(".feedback-notice")).to_contain_text("反馈格式不正确")
+        self.expect(panel.locator("textarea")).to_have_value("需要补充例子")
+        self.expect(panel.get_by_role("button", name="提交反馈")).to_be_enabled()
+        panel.get_by_role("button", name="提交反馈").click()
+        self.expect(self.page.locator(".feedback-notice")).to_contain_text("反馈暂时无法保存")
+        self.expect(self.page.locator(".feedback-notice")).to_have_count(1)
+        self.expect(self.page.locator(".answer")).not_to_contain_text("反馈格式不正确")
+        panel.get_by_role("button", name="提交反馈").click()
+        self.expect(self.page.locator(".feedback-status")).to_have_text("感谢反馈，已经记录。")
+        self.expect(self.page.locator(".feedback-notice")).to_have_count(0)
+        self.expect(self.page.locator(".answer")).not_to_contain_text("反馈暂时无法保存")
+        self.expect(self.page.locator(".answer .notice.warn")).to_have_count(1)
+        self.assertEqual([row["comment"] for row in requests], ["需要补充例子"] * 3)
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_helpful_feedback_and_keyboard_submission(self) -> None:
         self.backend.enqueue(Reply(final=[("result", answer_result())]))
         self.open_page(book_id="")

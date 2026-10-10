@@ -383,7 +383,6 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("👍 有帮助", page.text)
         self.assertIn("👎 需要改进", page.text)
         self.assertIn("/v1/feedback", page.text)
-        self.assertIn('explainRefusal(card, response, "反馈提交")', page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)

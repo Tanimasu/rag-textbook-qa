@@ -92,6 +92,7 @@ main { flex: 1; padding: 16px 0; }
 .action:hover { color: var(--accent); border-color: var(--accent); }
 .action:disabled { opacity: .55; cursor: default; }
 .feedback-status { color: var(--muted); font-size: 13px; }
+.feedback-notice { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .feedback-panel {
   margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--bg); display: grid; gap: 8px;
@@ -363,6 +364,10 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function saveFeedback(card, result, rating, reason, comment, buttons) {
     for (const button of buttons) button.disabled = true;
+    card.querySelector(".feedback-notice")?.remove();
+    const notice = element("div", "feedback-notice", "正在保存反馈…");
+    notice.setAttribute("role", "status");
+    card.append(notice);
     try {
       const response = await fetch("/v1/feedback", {
         method: "POST",
@@ -370,17 +375,22 @@ footer details p { margin-top: 6px; text-align: left; }
         body: JSON.stringify({ answer_id: result.answer_id, rating, reason, comment }),
       });
       if (!response.ok) {
-        for (const button of buttons) button.disabled = false;
-        await explainRefusal(card, response, "反馈提交");
+        notice.replaceChildren();
+        await explainRefusal(notice, response, "反馈提交");
         return;
       }
+      notice.remove();
       card.querySelector(".feedback-panel")?.remove();
       const actions = card.querySelector(".actions");
       for (const button of actions.querySelectorAll("[data-feedback]")) button.remove();
-      actions.append(element("span", "feedback-status", "感谢反馈，已经记录。"));
+      const saved = element("span", "feedback-status", "感谢反馈，已经记录。");
+      saved.setAttribute("role", "status");
+      actions.append(saved);
     } catch {
+      notice.replaceChildren();
+      addNotice(notice, "反馈暂时没有保存成功，请稍后再试。", "error");
+    } finally {
       for (const button of buttons) button.disabled = false;
-      addNotice(card, "反馈暂时没有保存成功，请稍后再试。", "error");
     }
   }
 
@@ -604,7 +614,10 @@ footer details p { margin-top: 6px; text-align: left; }
     } else if (typeof detail === "string" && detail) {
       addNotice(card, detail, "error");
     } else {
-      addNotice(card, response.status === 422 ? "问题格式不正确，最多 500 字。" : "暂时无法完成回答，请稍后再试。", "error");
+      const message = activity === "反馈提交"
+        ? (response.status === 422 ? "反馈格式不正确，请检查原因和补充说明（最多 500 字）。" : "反馈暂时没有保存成功，请稍后再试。")
+        : (response.status === 422 ? "问题格式不正确，最多 500 字。" : "暂时无法完成回答，请稍后再试。");
+      addNotice(card, message, "error");
     }
   }
 
