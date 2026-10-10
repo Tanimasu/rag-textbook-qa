@@ -41,19 +41,11 @@ def render_eval_tab(
         results = load_ragas_results()
     except Exception:  # noqa: BLE001 - A partial or unreadable CSV must not break chat.
         results, load_failed = None, True
-        st.warning("评估结果暂时无法读取，文件可能尚未写完。可以重新读取，原记录会保留。")
-        if st.button("重新读取结果", key="reload_eval_results"):
-            st.rerun()
     col_btn, col_info = st.columns([1, 3])
     with col_btn:
         run_eval = st.button("运行评估", width="stretch")
     with col_info:
-        if results is not None:
-            st.caption(f"已有评估结果（{len(results)} 条），点击「运行评估」重新生成。")
-        elif load_failed:
-            st.caption("重新读取不调用模型；「运行评估」会发起一批新的评估。")
-        else:
-            st.caption("尚无评估结果，点击「运行评估」开始（需要几分钟）。")
+        result_info = st.empty()
 
     if run_eval:
         try:
@@ -66,6 +58,18 @@ def render_eval_tab(
                 st.error("本次评估未生成结果文件；已有结果保留。")
         except Exception:  # noqa: BLE001 - Keep the previous report available after a failed run.
             st.error("本次评估未完成，已有结果保留。请检查模型服务后再试。")
+
+    # Resolve the current result before showing read errors or the caption.
+    # A successful new run must not retain the failed historical read's notice.
+    if results is not None:
+        result_info.caption(f"已有评估结果（{len(results)} 条），点击「运行评估」重新生成。")
+    elif load_failed:
+        result_info.caption("重新读取不调用模型；「运行评估」会发起一批新的评估。")
+        st.warning("评估结果暂时无法读取，文件可能尚未写完。可以重新读取，原记录会保留。")
+        if st.button("重新读取结果", key="reload_eval_results"):
+            st.rerun()
+    else:
+        result_info.caption("尚无评估结果，点击「运行评估」开始（需要几分钟）。")
 
     if results is not None and results.attrs.get("unreadable_newer_results", 0):
         st.warning("较新的评估结果暂时无法读取，当前显示此前可读取的结果；原文件保留。")

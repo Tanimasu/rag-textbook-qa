@@ -258,6 +258,24 @@ class OrdinaryWebWorkflowTests(unittest.TestCase):
             evaluate.assert_not_called()
             loader.assert_not_called()
 
+    def test_successful_new_evaluation_clears_a_previous_load_error(self):
+        import pandas as pd
+
+        from rag_textbook_qa.web import services
+
+        read = MagicMock(side_effect=pd.errors.EmptyDataError("fixture private path"))
+        newest = pd.DataFrame({"question": ["本次结果"], "faithfulness": [0.8]})
+        with patch.object(services, "run_ragas_evaluation", return_value=newest) as evaluate:
+            app, _ = self.app(result_reader=read)
+            self.assertTrue(any("暂时无法读取" in item.value for item in app.warning))
+            next(w for w in app.button if w.label == "运行评估").click().run(timeout=20)
+            self.assertFalse(app.exception)
+            self.assertTrue(app.success)
+            self.assertFalse(any("暂时无法读取" in item.value for item in app.warning))
+            self.assertFalse(any(item.key == "reload_eval_results" for item in app.button))
+            self.assertEqual(app.metric[0].value, "0.800")
+            evaluate.assert_called_once()
+
     def test_failed_evaluation_keeps_previous_report_without_automatic_retry(self):
         import pandas as pd
 
