@@ -1,4 +1,6 @@
 import importlib.util
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -10,6 +12,15 @@ STREAMLIT_AVAILABLE = importlib.util.find_spec("streamlit") is not None
 
 
 class WebPackageTests(unittest.TestCase):
+    def test_browser_suite_loads_without_installed_project_or_site_packages(self):
+        suite = REPOSITORY_ROOT / "tests" / "browser" / "public_chat_browser.py"
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-c",
+             "import runpy, sys; runpy.run_path(sys.argv[1])", str(suite)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_web_labels_reuse_the_package_catalog(self):
         self.assertEqual(BOOK_LABELS["database"], "数据库原理及应用")
         self.assertEqual(RAGAS_METRIC_LABELS["faithfulness"], "忠实度")

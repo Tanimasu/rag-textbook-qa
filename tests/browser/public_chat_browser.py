@@ -18,8 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from rag_textbook_qa.rag.references import render_source_sections
-
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
 
@@ -406,9 +404,10 @@ class PublicChatBrowserTests(unittest.TestCase):
     def test_completed_chapters_copy_export_and_source_navigation_agree(self) -> None:
         self.isolated_clipboard(api=False, command="success")
         raw = "正文【参考资料 1】\n\n## 参考章节\n第99章 错误章节【参考资料 1】"
-        source = {"citation_id": 1, "book_name": "os", "chapter": "第二章", "section_h2": "2.1 进程"}
         result = answer_result()
-        result["answer"] = render_source_sections(raw, [source])
+        # API chapter mapping has its own unit tests. Keep this fixture independent
+        # of the project package, which the browser-only CI environment omits.
+        result["answer"] = "正文【参考资料 1】\n\n## 本次来源章节\n\n- 【参考资料 1】操作系统：第二章 > 2.1 进程"
         result["sources"][0]["section"] = "第二章 > 2.1 进程"
         self.backend.enqueue(Reply(initial=[("chunk", {"text": raw})], final=[("result", result)]))
         self.open_page()
