@@ -362,6 +362,41 @@ class ProtocolPersistenceTests(unittest.TestCase):
 
 
 class ExperimentTests(unittest.TestCase):
+    def test_duplicate_sample_append_preserves_saved_bytes_and_failure_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generations.jsonl"
+            log = JsonlLog(path, unique_keys=True)
+            record = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原回答"}
+            log.append(record)
+            original = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "duplicate_record_key"):
+                log.append({**record, "answer": "另一回答"})
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(log.lines, [record])
+            self.assertEqual(log.records[("01", "hot", 0)], record)
+            failures = JsonlLog(Path(directory) / "failures.jsonl")
+            failures.append({**record, "error_type": "FirstError"})
+            failures.append({**record, "error_type": "SecondError"})
+            self.assertEqual(len(JsonlLog(failures.path).lines), 2)
+
+    def test_duplicate_saved_sample_keys_stop_resume_before_any_requests(self):
+        for filename in ("generations.jsonl", "judgments.jsonl"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                arms = [Arm("hot", "baseline", .7)]
+                run(output, arms)
+                path = output / filename
+                raw = path.read_bytes()
+                path.write_bytes(raw + raw.splitlines(keepends=True)[0])
+                original = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+                generator, judge = MagicMock(), MagicMock()
+                with self.assertRaisesRegex(ValueError, "duplicate_record_key"):
+                    run(output, arms, generator=generator, judge=judge)
+                generator.assert_not_called()
+                judge.assert_not_called()
+                for file, content in original.items():
+                    self.assertEqual(file.read_bytes(), content)
+
     def test_accounting_failure_stops_queued_paid_samples_and_judging(self):
         from rag_textbook_qa.evaluation.call_usage import CallUsageRecordingError
 

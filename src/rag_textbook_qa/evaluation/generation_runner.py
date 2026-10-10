@@ -215,10 +215,11 @@ def _key(record: Mapping[str, Any]) -> Key:
 class JsonlLog:
     """Append-only JSONL keyed by (case, arm, sample index), shared by worker threads."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, unique_keys: bool = False) -> None:
         self.path = path
         self.lines: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._unique_keys = unique_keys
         self._needs_separator = False
         if path.exists():
             raw = path.read_bytes()
@@ -231,12 +232,19 @@ class JsonlLog:
                     # Decode each row strictly: never alter a saved answer by
                     # substituting replacement characters into corrupt bytes.
                     continue
-        self.records = {_key(line): line for line in self.lines}
+        self.records = {}
+        for line in self.lines:
+            key = _key(line)
+            if unique_keys and key in self.records:
+                raise ValueError(f"{path.name} 存在重复样本编号（duplicate_record_key）；请保留原文件并核查")
+            self.records[key] = line
 
     def append(self, record: dict[str, Any]) -> None:
         key = _key(record)
         serialized = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
         with self._lock:
+            if self._unique_keys and key in self.records:
+                raise ValueError(f"{self.path.name} 存在重复样本编号（duplicate_record_key）；请保留原文件并核查")
             with self.path.open("a", encoding="utf-8") as handle:
                 if self._needs_separator:
                     # Keep a damaged tail separate from the next paid result.
@@ -588,8 +596,8 @@ def _run_generation_experiment_locked(
         "judge_version": JUDGE_VERSION,
     }
     freeze_protocol(output_dir / "protocol.json", settings)
-    generations = JsonlLog(output_dir / "generations.jsonl")
-    judgments = JsonlLog(output_dir / "judgments.jsonl")
+    generations = JsonlLog(output_dir / "generations.jsonl", unique_keys=True)
+    judgments = JsonlLog(output_dir / "judgments.jsonl", unique_keys=True)
     failures = JsonlLog(output_dir / "failures.jsonl")
     cases_by_id = {case.case_id: case for case in cases}
     arms_by_name = {arm.name: arm for arm in arms}
