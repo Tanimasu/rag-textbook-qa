@@ -379,6 +379,8 @@ footer details p { margin-top: 6px; text-align: left; }
         await explainRefusal(notice, response, "反馈提交");
         return;
       }
+      const confirmation = await response.json();
+      if (confirmation?.status !== "saved") throw new Error("feedback not confirmed");
       notice.remove();
       card.querySelector(".feedback-panel")?.remove();
       const actions = card.querySelector(".actions");

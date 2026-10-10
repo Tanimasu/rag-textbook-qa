@@ -690,6 +690,10 @@ class PublicChatBrowserTests(unittest.TestCase):
             elif len(requests) == 2:
                 route.fulfill(status=503, content_type="application/json",
                               body=json.dumps({"detail": "反馈暂时无法保存，请稍后再试"}))
+            elif len(requests) == 3:
+                route.fulfill(status=200, content_type="application/json", body='{"status":"failed"}')
+            elif len(requests) == 4:
+                route.fulfill(status=200, content_type="text/html", body="<h1>Unavailable</h1>")
             else:
                 route.fulfill(status=200, content_type="application/json", body='{"status":"saved"}')
 
@@ -708,12 +712,17 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".feedback-notice")).to_contain_text("反馈暂时无法保存")
         self.expect(self.page.locator(".feedback-notice")).to_have_count(1)
         self.expect(self.page.locator(".answer")).not_to_contain_text("反馈格式不正确")
+        for _ in range(2):
+            panel.get_by_role("button", name="提交反馈").click()
+            self.expect(self.page.locator(".feedback-notice")).to_contain_text("反馈暂时没有保存成功")
+            self.expect(panel.locator("textarea")).to_have_value("需要补充例子")
+            self.expect(self.page.locator(".feedback-status")).to_have_count(0)
         panel.get_by_role("button", name="提交反馈").click()
         self.expect(self.page.locator(".feedback-status")).to_have_text("感谢反馈，已经记录。")
         self.expect(self.page.locator(".feedback-notice")).to_have_count(0)
         self.expect(self.page.locator(".answer")).not_to_contain_text("反馈暂时无法保存")
         self.expect(self.page.locator(".answer .notice.warn")).to_have_count(1)
-        self.assertEqual([row["comment"] for row in requests], ["需要补充例子"] * 3)
+        self.assertEqual([row["comment"] for row in requests], ["需要补充例子"] * 5)
         self.assertEqual(len(self.backend.asks), 1)
 
     def test_helpful_feedback_and_keyboard_submission(self) -> None:
