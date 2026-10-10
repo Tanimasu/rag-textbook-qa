@@ -49,6 +49,7 @@ from rag_textbook_qa.evaluation.generation import (
     validate_verification,
     verification_prompt,
 )
+from rag_textbook_qa.json_utils import loads_strict
 
 Generator = Callable[[str, float], Mapping[str, Any]]
 Judge = Callable[[str], str]
@@ -197,7 +198,14 @@ def llm_pair_from_env() -> tuple[Any, Any, dict[str, Any]]:
 
 
 def _key(record: Mapping[str, Any]) -> Key:
-    return record["case_id"], record["arm"], record["index"]
+    if not isinstance(record, Mapping):
+        raise TypeError("invalid_record_key")
+    case_id, arm, index = record.get("case_id"), record.get("arm"), record.get("index")
+    if (not isinstance(case_id, str) or not case_id.strip()
+            or not isinstance(arm, str) or not arm.strip()
+            or type(index) is not int or index < 0):
+        raise ValueError("invalid_record_key")
+    return case_id, arm, index
 
 
 class JsonlLog:
@@ -213,7 +221,7 @@ class JsonlLog:
             self._needs_separator = bool(raw and not raw.endswith(b"\n"))
             for line in raw.split(b"\n"):
                 try:
-                    self.lines.append(json.loads(line.decode("utf-8")))
+                    self.lines.append(loads_strict(line.decode("utf-8")))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     # A crash can cut a Chinese character as well as JSON syntax.
                     # Decode each row strictly: never alter a saved answer by
@@ -295,9 +303,9 @@ def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def freeze_protocol(path: Path, settings: Mapping[str, Any]) -> None:
-    normalized = json.loads(json.dumps(settings, ensure_ascii=False))
+    normalized = loads_strict(json.dumps(settings, ensure_ascii=False))
     if path.exists():
-        if json.loads(path.read_text(encoding="utf-8"))["settings"] != normalized:
+        if loads_strict(path.read_text(encoding="utf-8"))["settings"] != normalized:
             raise ValueError("该输出目录的实验协议已冻结；参数不同请换一个输出目录")
         return
     frozen = {"frozen_at_utc": datetime.now(UTC).isoformat(), "settings": normalized}

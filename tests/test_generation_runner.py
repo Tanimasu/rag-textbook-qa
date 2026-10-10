@@ -471,6 +471,45 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(log.records[("01", "hot", 0)], record)
         self.assertEqual(reloaded.records[("01", "hot", 0)], record)
 
+    def test_ambiguous_saved_json_stops_resume_without_requests_or_file_changes(self):
+        for filename in ("protocol.json", "generations.jsonl", "judgments.jsonl"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                arms = [Arm("hot", "baseline", 0.7)]
+                run(output, arms)
+                path = output / filename
+                if filename == "protocol.json":
+                    original = json.loads(path.read_text())
+                    path.write_text('{"settings":{},"settings":' + json.dumps(original["settings"]) + '}')
+                else:
+                    path.write_text(path.read_text().replace('"index": 0', '"index": 1, "index": 0', 1))
+                originals = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+                generator, judge = MagicMock(), MagicMock()
+                with self.assertRaisesRegex(ValueError, "duplicate_json_key"):
+                    run(output, arms, generator=generator, judge=judge)
+                generator.assert_not_called()
+                judge.assert_not_called()
+                for file, original in originals.items():
+                    self.assertEqual(file.read_bytes(), original)
+
+    def test_invalid_saved_record_keys_are_not_coerced_or_appended(self):
+        valid = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原始回答"}
+        broken = [{**valid, "index": value} for value in (False, -1, "0")]
+        broken += [{**valid, "case_id": True}, {**valid, "arm": " "}, [valid]]
+        for record in broken:
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "generations.jsonl"
+                original = (json.dumps(record, ensure_ascii=False) + "\n").encode()
+                path.write_bytes(original)
+                with self.assertRaisesRegex((TypeError, ValueError), "invalid_record_key"):
+                    JsonlLog(path)
+                self.assertEqual(path.read_bytes(), original)
+                empty = Path(directory) / "empty.jsonl"
+                log = JsonlLog(empty)
+                with self.assertRaisesRegex((TypeError, ValueError), "invalid_record_key"):
+                    log.append(record)
+                self.assertFalse(empty.exists())
+
     def test_jsonl_recovers_good_records_around_invalid_utf8_without_rewriting_them(self):
         first = {"case_id": "01", "arm": "hot", "index": 0, "answer": "原始中文回答"}
         following = {"case_id": "01", "arm": "hot", "index": 2, "answer": "后续回答"}
