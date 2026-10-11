@@ -13,6 +13,20 @@ UNRELATED = {"chunk_id": "c", "chapter": "第9章", "section_h3": "9.1 文件", 
 
 
 class ContextRetentionTests(unittest.TestCase):
+    def test_same_chunk_id_in_another_book_does_not_count_as_retained(self):
+        result = {**EXACT, "book_name": "os"}
+        other_book = {**EXACT, "book_name": "database", "truncated": True}
+        score = score_context_retention([result], [other_book], ["3.5.3 避免"])
+        self.assertEqual(score["relevant_retained"], 0)
+        self.assertEqual(score["exact_retained"], 0)
+        self.assertEqual(score["relevant_truncated"], 0)
+
+    def test_unidentified_chunks_cannot_establish_retention(self):
+        result = {key: value for key, value in EXACT.items() if key != "chunk_id"}
+        score = score_context_retention([result], [result], ["3.5.3 避免"])
+        self.assertEqual(score["relevant_retrieved"], 1)
+        self.assertEqual(score["relevant_retained"], 0)
+
     def test_counts_relevant_evidence_the_budget_dropped(self):
         packed = [{"chunk_id": "a", "content": "甲" * 60, "truncated": True}]
         score = score_context_retention([EXACT, SIBLING, UNRELATED], packed, ["3.5.3 避免"])

@@ -24,6 +24,7 @@ class WorkerCliTests(unittest.TestCase):
                     f"RAG_QA_WORKER_TOKEN={token}",
                     "RAG_QA_EMBEDDING_MODEL=embedding-model",
                     "RAG_QA_RERANKER_MODEL=reranker-model",
+                    "RAG_QA_RERANK_BATCH_SIZE=8",
                 ]
             ),
             encoding="utf-8",
@@ -136,6 +137,7 @@ class WorkerCliTests(unittest.TestCase):
                 reranker_model="reranker-model",
                 device="cuda",
                 token="cli-test-secret",
+                reranker_batch_size=8,
                 warmup=True,
             )
 

@@ -15,13 +15,25 @@ import random
 import statistics
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
+
+from rag_textbook_qa.evaluation.call_usage import (
+    CallAttemptBudget,
+    CallAttemptLimitReached,
+    CallUsageRecordingError,
+    UsageObserver,
+    completion_usage,
+    observed_completion,
+)
 from rag_textbook_qa.evaluation.generation import (
     EXTRACTION_PROMPT,
     VERIFICATION_PROMPT,
@@ -29,22 +41,27 @@ from rag_textbook_qa.evaluation.generation import (
     GenerationCase,
     context_blocks,
     extraction_prompt,
+    generation_is_complete,
     parse_json_object,
     score_answer,
     summarize,
     validate_extraction,
+    validate_generation_arms,
+    validate_generation_cases,
     validate_verification,
     verification_prompt,
 )
+from rag_textbook_qa.json_utils import loads_strict
 
 Generator = Callable[[str, float], Mapping[str, Any]]
 Judge = Callable[[str], str]
 Key = tuple[str, str, int]
 
 JUDGE_ATTEMPTS = 3
+PROVIDER_ATTEMPTS = 4
 # Bump whenever what the judge sees or how its output is scored changes, so a
 # directory judged under older rules refuses to resume under newer ones.
-JUDGE_VERSION = 3
+JUDGE_VERSION = 6
 TRANSIENT_ERRORS = frozenset(
     {"APITimeoutError", "APIConnectionError", "RateLimitError", "InternalServerError"}
 )
@@ -53,7 +70,7 @@ TRANSIENT_ERRORS = frozenset(
 def with_retries(
     call: Callable[[], Any],
     *,
-    attempts: int = 4,
+    attempts: int = PROVIDER_ATTEMPTS,
     delay: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[Any, int]:
@@ -86,28 +103,30 @@ def generation_request(
 
 
 def openai_generator(
-    sdk_client: Any, model: str, *, max_tokens: int, timeout: float = 180.0
+    sdk_client: Any, model: str, *, max_tokens: int, timeout: float = 180.0,
+    on_call: UsageObserver | None = None,
+    call_budget: CallAttemptBudget | None = None,
 ) -> Generator:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
     def generate(prompt: str, temperature: float) -> dict[str, Any]:
         started = time.monotonic()
         response, attempts = with_retries(
-            lambda: client.chat.completions.create(
-                **generation_request(model, prompt, temperature, max_tokens)
+            lambda: observed_completion(
+                client, generation_request(model, prompt, temperature, max_tokens),
+                role="generator", on_call=on_call, call_budget=call_budget,
             )
         )
         choice = response.choices[0]
-        usage = getattr(response, "usage", None)
+        usage = completion_usage(response)
         return {
             "answer": choice.message.content or "",
             "finish_reason": choice.finish_reason,
             # Only the length is kept; reasoning text is never stored.
             "reasoning_chars": len(getattr(choice.message, "reasoning_content", None) or ""),
-            "tokens": {
-                "prompt": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion": int(getattr(usage, "completion_tokens", 0) or 0),
-            },
+            "tokens": ({key: usage[key] for key in ("prompt", "completion")}
+                       if usage is not None else None),
+            "usage_record_version": 1,
             "seconds": round(time.monotonic() - started, 3),
             "attempts": attempts,
         }
@@ -122,20 +141,28 @@ def openai_judge(
     extra: Mapping[str, Any],
     max_tokens: int = 4096,
     timeout: float = 180.0,
+    on_call: UsageObserver | None = None,
+    call_budget: CallAttemptBudget | None = None,
 ) -> Judge:
     client = sdk_client.with_options(timeout=timeout, max_retries=0)
 
     def judge(prompt: str) -> str:
         response, _ = with_retries(
-            lambda: client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=max_tokens,
-                stream=False,
-                **extra,
+            lambda: observed_completion(
+                client, {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                    **extra,
+                }, role="judge", on_call=on_call, call_budget=call_budget,
             )
         )
+        if response.choices[0].finish_reason != "stop":
+            from rag_textbook_qa.llm.client import LLMGenerationIncompleteError
+
+            raise LLMGenerationIncompleteError("评判模型未正常结束，不能使用这份评判")
         return response.choices[0].message.content or ""
 
     return judge
@@ -151,55 +178,84 @@ def llm_pair_from_env() -> tuple[Any, Any, dict[str, Any]]:
     from rag_textbook_qa.evaluation.ragas import judge_model_kwargs
     from rag_textbook_qa.llm.client import create_llm_client
 
-    generator = create_llm_client(
-        api_key=os.getenv("RAG_API_KEY") or None,
-        base_url=os.getenv("RAG_API_BASE") or None,
-        model=os.getenv("RAG_MODEL") or None,
-        verbose=False,
-    )
-    judge = create_llm_client(
-        api_key=os.getenv("RAGAS_API_KEY") or None,
-        base_url=os.getenv("RAGAS_API_BASE") or None,
-        model=os.getenv("RAGAS_MODEL") or None,
-        verbose=False,
-    )
-    if judge.default_model == generator.default_model:
-        raise ValueError("评判模型与生成模型相同，会带来自我偏好偏差；请设置 RAGAS_MODEL")
-    return generator, judge, judge_model_kwargs()
+    with ExitStack() as cleanup:
+        generator = create_llm_client(
+            api_key=os.getenv("RAG_API_KEY") or None,
+            base_url=os.getenv("RAG_API_BASE") or None,
+            model=os.getenv("RAG_MODEL") or None,
+            verbose=False,
+        )
+        cleanup.callback(generator.close)
+        judge = create_llm_client(
+            api_key=os.getenv("RAGAS_API_KEY") or None,
+            base_url=os.getenv("RAGAS_API_BASE") or None,
+            model=os.getenv("RAGAS_MODEL") or None,
+            verbose=False,
+        )
+        cleanup.callback(judge.close)
+        if judge.default_model == generator.default_model:
+            raise ValueError("评判模型与生成模型相同，会带来自我偏好偏差；请设置 RAGAS_MODEL")
+        extra = judge_model_kwargs()
+        # A complete pair transfers ownership to the experiment caller.
+        cleanup.pop_all()
+        return generator, judge, extra
 
 
 def _key(record: Mapping[str, Any]) -> Key:
-    return record["case_id"], record["arm"], record["index"]
+    if not isinstance(record, Mapping):
+        raise TypeError("invalid_record_key")
+    case_id, arm, index = record.get("case_id"), record.get("arm"), record.get("index")
+    if (not isinstance(case_id, str) or not case_id.strip()
+            or not isinstance(arm, str) or not arm.strip()
+            or type(index) is not int or index < 0):
+        raise ValueError("invalid_record_key")
+    return case_id, arm, index
 
 
 class JsonlLog:
     """Append-only JSONL keyed by (case, arm, sample index), shared by worker threads."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, unique_keys: bool = False) -> None:
         self.path = path
         self.lines: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._unique_keys = unique_keys
         self._needs_separator = False
         if path.exists():
-            raw = path.read_text(encoding="utf-8")
-            self._needs_separator = bool(raw and not raw.endswith("\n"))
-            for line in raw.splitlines():
+            raw = path.read_bytes()
+            self._needs_separator = bool(raw and not raw.endswith(b"\n"))
+            for line in raw.split(b"\n"):
                 try:
-                    self.lines.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue  # a line cut off by a crash is simply redone
-        self.records = {_key(line): line for line in self.lines}
+                    self.lines.append(loads_strict(line.decode("utf-8")))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    # A crash can cut a Chinese character as well as JSON syntax.
+                    # Decode each row strictly: never alter a saved answer by
+                    # substituting replacement characters into corrupt bytes.
+                    continue
+        self.records = {}
+        for line in self.lines:
+            key = _key(line)
+            if unique_keys and key in self.records:
+                raise ValueError(f"{path.name} 存在重复样本编号（duplicate_record_key）；请保留原文件并核查")
+            self.records[key] = line
 
     def append(self, record: dict[str, Any]) -> None:
-        with self._lock, self.path.open("a", encoding="utf-8") as handle:
-            if self._needs_separator:
-                # Preserve a crash-truncated tail as its own invalid line instead of
-                # gluing the next paid result to it and losing both on the next resume.
-                handle.write("\n")
-                self._needs_separator = False
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        key = _key(record)
+        serialized = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+        with self._lock:
+            if self._unique_keys and key in self.records:
+                raise ValueError(f"{self.path.name} 存在重复样本编号（duplicate_record_key）；请保留原文件并核查")
+            with self.path.open("a", encoding="utf-8") as handle:
+                if self._needs_separator:
+                    # Keep a damaged tail separate from the next paid result.
+                    handle.write("\n")
+                # A failed write or buffered close may leave a new partial tail.
+                # Keep this flag until closing the file confirms a complete row.
+                self._needs_separator = True
+                handle.write(serialized)
+            self._needs_separator = False
             self.lines.append(record)
-            self.records[_key(record)] = record
+            self.records[key] = record
 
 
 def sample_keys(
@@ -209,6 +265,8 @@ def sample_keys(
 
     if samples < 1:
         raise ValueError("每个方案至少采样 1 次")
+    validate_generation_cases(cases)
+    validate_generation_arms(arms)
     keys: list[Key] = []
     for case in cases:
         for arm in arms:
@@ -223,14 +281,47 @@ def sample_keys(
     return keys
 
 
+def generation_call_plan(
+    cases: Sequence[GenerationCase], arms: Sequence[Arm], samples: int, seed: int,
+) -> dict[str, Any]:
+    """Count a complete CLI plan without clients, outputs or paid requests.
+
+    Existing completed outputs are not deducted. Verification may be skipped
+    when extraction finds no facts; failed/incomplete samples are not judged.
+    """
+
+    keys = sample_keys(cases, arms, samples, seed)
+    generated_arms = {arm.name for arm in arms if arm.temperature is not None}
+    generated = sum(arm_name in generated_arms for _, arm_name, _ in keys)
+    return {
+        "planned_samples": len(keys),
+        "new_generation_samples": generated,
+        "stored_samples": len(keys) - generated,
+        "nominal_judge_calls_if_all_complete": 2 * len(keys),
+        "max_generation_http_attempts": PROVIDER_ATTEMPTS * generated,
+        "max_judge_http_attempts": 2 * JUDGE_ATTEMPTS * PROVIDER_ATTEMPTS * len(keys),
+        "resume_outputs_deducted": False,
+    }
+
+
+def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
+    serialized = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def freeze_protocol(path: Path, settings: Mapping[str, Any]) -> None:
-    normalized = json.loads(json.dumps(settings, ensure_ascii=False))
+    normalized = loads_strict(json.dumps(settings, ensure_ascii=False))
     if path.exists():
-        if json.loads(path.read_text(encoding="utf-8"))["settings"] != normalized:
+        if loads_strict(path.read_text(encoding="utf-8"))["settings"] != normalized:
             raise ValueError("该输出目录的实验协议已冻结；参数不同请换一个输出目录")
         return
     frozen = {"frozen_at_utc": datetime.now(UTC).isoformat(), "settings": normalized}
-    path.write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_json_atomic(path, frozen)
 
 
 def _ask(judge: Judge, prompt: str, validate: Callable[[dict[str, Any]], Any]) -> Any:
@@ -311,13 +402,27 @@ def _run_stage(
 ) -> None:
     if not pending:
         return
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(work, key): key for key in pending}
+    cancelled = threading.Event()
+
+    def work_if_active(key: Key) -> None:
+        if not cancelled.is_set():
+            try:
+                work(key)
+            except (CallUsageRecordingError, CallAttemptLimitReached):
+                cancelled.set()
+                raise
+
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    try:
+        futures = {pool.submit(work_if_active, key): key for key in pending}
         for done, future in enumerate(as_completed(futures), 1):
             key = futures[future]
             try:
                 future.result()
                 status = "ok"
+            except (CallUsageRecordingError, CallAttemptLimitReached):
+                cancelled.set()
+                raise
             except Exception as exc:  # noqa: BLE001 - one failed sample must not end the run
                 message = str(exc)
                 failures.append(
@@ -334,15 +439,43 @@ def _run_stage(
                 )
                 status = type(exc).__name__
             log(f"[{stage}] {done}/{len(pending)} {key[0]} {key[1]} #{key[2]} {status}")
+    except BaseException:
+        # Interrupting iteration used to enter the executor's default shutdown,
+        # which ran every queued paid sample. Let in-flight work save its output,
+        # but stop new samples before waiting for those workers to finish.
+        cancelled.set()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _usage(records: Sequence[Mapping[str, Any]], arms: Sequence[Arm]) -> dict[str, Any]:
     usage = {}
     for arm in arms:
         rows = [r for r in records if r["arm"] == arm.name and arm.temperature is not None]
+        # The older adapter encoded missing provider usage as two zeroes. That
+        # history cannot prove a free request; preserve it and report ambiguity.
+        legacy_zero = [not r.get("usage_record_version")
+                       and r.get("tokens") == {"prompt": 0, "completion": 0} for r in rows]
+        counts: dict[str, list[int | None]] = {}
+        for key in ("prompt", "completion"):
+            counts[key] = []
+            for row, ambiguous in zip(rows, legacy_zero, strict=True):
+                tokens = row.get("tokens")
+                value = tokens.get(key) if isinstance(tokens, Mapping) else None
+                counts[key].append(value if type(value) is int and value >= 0
+                                   and not ambiguous else None)
         usage[arm.name] = {
-            "prompt_tokens": sum(r["tokens"]["prompt"] for r in rows),
-            "completion_tokens": sum(r["tokens"]["completion"] for r in rows),
+            **{f"{key}_tokens": (sum(values) if all(v is not None for v in values) else None)
+               for key, values in counts.items()},
+            **{f"known_{key}_tokens": sum(v for v in values if v is not None)
+               for key, values in counts.items()},
+            "responses": len(rows),
+            "unknown_usage_responses": sum(
+                prompt is None or completion is None
+                for prompt, completion in zip(counts["prompt"], counts["completion"], strict=True)
+            ),
+            "legacy_zero_usage_responses": sum(legacy_zero),
             "mean_seconds": statistics.fmean(r["seconds"] for r in rows) if rows else None,
             "mean_reasoning_chars": (
                 statistics.fmean(r["reasoning_chars"] for r in rows) if rows else None
@@ -363,8 +496,42 @@ def run_generation_experiment(
     seed: int,
     concurrency: int,
     protocol: Mapping[str, Any],
+    call_budget: CallAttemptBudget | None = None,
     prompt_builder: Callable[[str, str], str] | None = None,
     log: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Own the output directory for the whole run, including resume and reporting."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_lock = FileLock(output_dir / ".run.lock", timeout=0)
+    try:
+        run_lock.acquire()
+    except Timeout as exc:
+        raise ValueError("该输出目录的实验正在运行；请等待结束或使用其他输出目录") from exc
+    try:
+        return _run_generation_experiment_locked(
+            cases, arms, output_dir=output_dir, generator=generator, judge=judge,
+            samples=samples, seed=seed, concurrency=concurrency, protocol=protocol,
+            prompt_builder=prompt_builder, log=log, call_budget=call_budget,
+        )
+    finally:
+        run_lock.release()
+
+
+def _run_generation_experiment_locked(
+    cases: Sequence[GenerationCase],
+    arms: Sequence[Arm],
+    *,
+    output_dir: Path,
+    generator: Generator,
+    judge: Judge,
+    samples: int,
+    seed: int,
+    concurrency: int,
+    protocol: Mapping[str, Any],
+    call_budget: CallAttemptBudget | None,
+    prompt_builder: Callable[[str, str], str] | None,
+    log: Callable[[str], None],
 ) -> dict[str, Any]:
     if len({arm.name for arm in arms}) != len(arms):
         raise ValueError("方案名称重复")
@@ -392,20 +559,45 @@ def run_generation_experiment(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    output_dir.mkdir(parents=True, exist_ok=True)
     judge_prompts = (EXTRACTION_PROMPT + VERIFICATION_PROMPT).encode("utf-8")
+    # CLI file hashes are optional caller metadata. Bind the validated inputs
+    # here too: stored arms render no generation prompt, and requirements only
+    # reach the judge, so a prompt hash alone cannot protect resumed judgments.
+    frozen_cases = [
+        {
+            "case_id": case.case_id,
+            "question": case.question,
+            "requirements": list(case.requirements),
+            "variants": {
+                name: {
+                    "context": variant.context,
+                    "sources": [
+                        {"citation_id": source["citation_id"], "content": source["content"]}
+                        for source in variant.sources
+                    ],
+                    "answers": list(variant.answers),
+                }
+                for name, variant in case.variants.items()
+            },
+        }
+        for case in cases
+    ]
+    case_bytes = json.dumps(
+        frozen_cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
     settings = {
         **protocol,
         "arms": [asdict(arm) for arm in arms],
         "samples": samples,
         "seed": seed,
+        "frozen_cases_sha256": hashlib.sha256(case_bytes).hexdigest(),
         "generation_prompts_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
         "judge_prompts_sha256": hashlib.sha256(judge_prompts).hexdigest(),
         "judge_version": JUDGE_VERSION,
     }
     freeze_protocol(output_dir / "protocol.json", settings)
-    generations = JsonlLog(output_dir / "generations.jsonl")
-    judgments = JsonlLog(output_dir / "judgments.jsonl")
+    generations = JsonlLog(output_dir / "generations.jsonl", unique_keys=True)
+    judgments = JsonlLog(output_dir / "judgments.jsonl", unique_keys=True)
     failures = JsonlLog(output_dir / "failures.jsonl")
     cases_by_id = {case.case_id: case for case in cases}
     arms_by_name = {arm.name: arm for arm in arms}
@@ -430,26 +622,54 @@ def run_generation_experiment(
         )
 
     options = {"failures": failures, "concurrency": concurrency, "log": log}
-    _run_stage("generate", [k for k in keys if k not in generations.records], generate, **options)
-    ungraded = [k for k in keys if k in generations.records and k not in judgments.records]
-    _run_stage("judge", ungraded, grade, **options)
+    stop_reason = None
+    try:
+        _run_stage("generate", [k for k in keys if k not in generations.records], generate, **options)
+        ungraded = [
+            k for k in keys
+            if k in generations.records
+            and generation_is_complete(generations.records[k])
+            and k not in judgments.records
+        ]
+        _run_stage("judge", ungraded, grade, **options)
+    except CallAttemptLimitReached:
+        # The stage has waited for in-flight workers to save their output.
+        # Keep partial results; an ungraded answer has no quality score.
+        stop_reason = "http_attempt_limit"
 
     records = [
-        {**generations.records[k], "score": judgments.records.get(k, {}).get("score")}
+        {
+            **generations.records[k],
+            "score": (
+                judgments.records.get(k, {}).get("score")
+                if generation_is_complete(generations.records[k]) else None
+            ),
+        }
         for k in keys
         if k in generations.records
     ]
+    summary = summarize(records, cases, arms, seed=seed)
     report = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "settings": settings,
+        "stop_reason": stop_reason,
+        "http_attempt_budget": call_budget.snapshot() if call_budget is not None else None,
         "planned": len(keys),
         "generated": len(records),
         "judged": sum(record["score"] is not None for record in records),
+        **{
+            metric: sum(arm[metric] for arm in summary["arms"].values())
+            for metric in ("completed", "incomplete", "empty_answers", "truncated")
+        },
         "failures_logged": len(failures.lines),
+        "usage_version": 2,
+        "usage_scope": (
+            "Saved generation responses only; excludes failed/retried HTTP attempts, "
+            "judge calls and original generation of stored answers. "
+            "Use calls.jsonl for all observed attempts."
+        ),
         "usage": _usage(records, arms),
-        **summarize(records, cases, arms, seed=seed),
+        **summary,
     }
-    (output_dir / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_json_atomic(output_dir / "report.json", report)
     return report

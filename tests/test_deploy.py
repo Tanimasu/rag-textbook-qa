@@ -4,7 +4,10 @@ import shlex
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from rag_textbook_qa.api.app import _client_address
+from rag_textbook_qa.api.guard import GuardSettings
 from rag_textbook_qa.cli import build_parser
 from rag_textbook_qa.providers.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANKER_MODEL
 from scripts.fetch_models import MODELS
@@ -62,6 +65,25 @@ def allowed_by_dockerignore(path):
 
 
 class DockerImageContractTests(unittest.TestCase):
+    def test_direct_container_keeps_the_real_peer_when_a_client_forges_proxy_headers(self):
+        environment = {}
+        for instruction, argument in dockerfile_instructions():
+            if instruction == "ENV":
+                for assignment in shlex.split(argument):
+                    name, separator, value = assignment.partition("=")
+                    self.assertEqual(separator, "=")
+                    environment[name] = value
+        settings = GuardSettings.from_env(environment)
+        request = SimpleNamespace(
+            headers={"x-forwarded-for": "198.51.100.123"},
+            client=SimpleNamespace(host="192.0.2.10"),
+        )
+
+        self.assertEqual(
+            _client_address(request, trust_proxy=settings.trust_proxy),
+            "192.0.2.10",
+        )
+
     def test_the_container_command_is_a_valid_public_serve_on_the_space_port(self):
         commands = [argument for name, argument in dockerfile_instructions() if name == "CMD"]
         self.assertEqual(len(commands), 1)

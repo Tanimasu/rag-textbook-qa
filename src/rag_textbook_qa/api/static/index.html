@@ -92,6 +92,7 @@ main { flex: 1; padding: 16px 0; }
 .action:hover { color: var(--accent); border-color: var(--accent); }
 .action:disabled { opacity: .55; cursor: default; }
 .feedback-status { color: var(--muted); font-size: 13px; }
+.feedback-notice { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .feedback-panel {
   margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--bg); display: grid; gap: 8px;
@@ -107,9 +108,12 @@ details.sources { margin-top: 10px; border-top: 1px solid var(--line); padding-t
 details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .source { margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); transition: box-shadow .2s, border-color .2s; }
 .source.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.source:focus-visible, .source .excerpt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .source .title { font-size: 13px; font-weight: 600; }
 .source .section { font-size: 12px; color: var(--muted); }
 .source .excerpt { font-size: 13px; margin-top: 4px; white-space: pre-wrap; max-height: 12em; overflow: auto; }
+.runtime { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.runtime summary { cursor: pointer; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 14px; }
 .composer form {
   display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line);
@@ -119,11 +123,22 @@ details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted);
   flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent;
   color: var(--text); font: inherit; max-height: 160px; padding: 6px;
 }
+.composer form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer-hint { margin: 5px 8px 0; font-size: 12px; color: var(--muted); }
+.mobile-hint { display: none; }
 .composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
 .composer .cancel { background: transparent; color: var(--err-text); border: 1px solid var(--line); }
 footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
-@media (max-width: 520px) { .bubble { max-width: 92%; } .quota { margin-left: 0; width: 100%; } }
+footer p { margin: 0 0 4px; }
+footer summary { cursor: pointer; }
+footer details p { margin-top: 6px; text-align: left; }
+@media (max-width: 520px) {
+  .bubble { max-width: 92%; }
+  .quota { margin-left: 0; width: 100%; }
+  .desktop-hint { display: none; }
+  .mobile-hint { display: inline; }
+}
 </style>
 </head>
 <body>
@@ -141,6 +156,8 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   <div class="toolbar">
     <label>教材 <select id="book" required><option value="" selected disabled>请选择教材</option></select></label>
+    <span id="book-status" role="status" class="quota" hidden></span>
+    <button class="toolbar-button" id="reload-books" type="button" hidden>重新加载教材</button>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
     <button class="toolbar-button" id="clear" type="button" hidden>清空对话</button>
     <span class="quota" id="quota"></span>
@@ -161,12 +178,16 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   <div class="composer">
     <form id="form">
-      <textarea id="input" rows="1" maxlength="500" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+      <textarea id="input" rows="1" maxlength="500" placeholder="输入教材问题…" aria-label="输入教材问题" aria-describedby="composer-hint"></textarea>
       <button class="cancel" id="cancel" type="button" hidden>停止生成</button>
       <button id="send" type="submit">发送</button>
     </form>
+    <p class="composer-hint" id="composer-hint"><span class="desktop-hint">Enter 发送 · Shift+Enter 换行 · </span><span class="mobile-hint">点击发送提问 · </span>最多 500 字</p>
   </div>
-  <footer>回答由大模型依据检索到的教材片段生成，可能出错，请以原文为准。回答会短暂保留在进程内存中；只有主动提交反馈时，本次问题、回答、引用和耗时才会持久保存，反馈数据不包含 IP 或凭据。未通过验收的实验功能在公开版中关闭。</footer>
+  <footer>
+    <p>回答由大模型依据教材片段生成，可能出错，请以原文为准。</p>
+    <details><summary>对话与反馈如何保存</summary><p>对话会在服务中短暂保留。只有主动提交反馈时，本次问题、回答、引用、耗时和反馈内容才会持久保存，不保存 IP 或访问口令。未通过验收的实验功能在公开版中关闭。</p></details>
+  </footer>
 </div>
 <script>
 (() => {
@@ -175,6 +196,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   const thread = $("thread"), empty = $("empty"), form = $("form"), input = $("input");
   const send = $("send"), bookSelect = $("book"), codeField = $("code-field");
   const codeInput = $("code"), quota = $("quota"), cancel = $("cancel"), clear = $("clear");
+  const bookStatus = $("book-status"), reloadBooks = $("reload-books");
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
   let busy = false, activeController = null;
@@ -258,9 +280,12 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     const retry = element("button", "action", "重试本题");
     retry.type = "button";
     retry.dataset.retry = "true";
+    retry.disabled = busy;
     retry.addEventListener("click", () => {
+      if (busy) return;
       input.value = query;
       bookSelect.value = bookId;
+      sessionSet(BOOK_KEY, bookId);
       autosize();
       ask();
     });
@@ -295,10 +320,19 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     for (const source of sources) {
       const item = element("div", "source");
       item.dataset.citation = String(source.citation_id);
+      item.tabIndex = -1;
+      item.setAttribute("role", "region");
+      item.setAttribute("aria-label", `资料 ${source.citation_id} · ${source.book}`);
+      const excerpt = element("div", "excerpt", source.excerpt);
+      excerpt.tabIndex = 0;
+      excerpt.setAttribute("role", "region");
+      excerpt.setAttribute("aria-label", `资料 ${source.citation_id} 原文`);
       item.append(
         element("div", "title", `资料 ${source.citation_id} · ${source.book}`),
-        element("div", "section", (source.section || "未标注章节") + (source.truncated ? " · 片段已截断" : "")),
-        element("div", "excerpt", source.excerpt),
+        element("div", "section", (source.section || "未标注章节")
+          + (source.truncated ? " · 片段已截断" : "")
+          + (source.table_compacted ? " · 表格按行整理" : "")),
+        excerpt,
       );
       details.append(item);
     }
@@ -307,23 +341,33 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   async function copyText(text) {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch { /* Try the local selection path when permission is refused. */ }
     }
+    const previousFocus = document.activeElement;
     const area = element("textarea");
     area.value = text;
     area.readOnly = true;
     area.style.position = "fixed";
     area.style.opacity = "0";
     document.body.append(area);
-    area.select();
-    const copied = document.execCommand("copy");
-    area.remove();
-    if (!copied) throw new Error("copy failed");
+    try {
+      area.select();
+      if (!document.execCommand("copy")) throw new Error("copy failed");
+    } finally {
+      area.remove();
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    }
   }
 
   async function saveFeedback(card, result, rating, reason, comment, buttons) {
     for (const button of buttons) button.disabled = true;
+    card.querySelector(".feedback-notice")?.remove();
+    const notice = element("div", "feedback-notice", "正在保存反馈…");
+    notice.setAttribute("role", "status");
+    card.append(notice);
     try {
       const response = await fetch("/v1/feedback", {
         method: "POST",
@@ -331,21 +375,67 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
         body: JSON.stringify({ answer_id: result.answer_id, rating, reason, comment }),
       });
       if (!response.ok) {
-        for (const button of buttons) button.disabled = false;
-        await explainRefusal(card, response, "反馈提交");
+        notice.replaceChildren();
+        await explainRefusal(notice, response, "反馈提交");
         return;
       }
+      const confirmation = await response.json();
+      if (confirmation?.status !== "saved") throw new Error("feedback not confirmed");
+      notice.remove();
       card.querySelector(".feedback-panel")?.remove();
       const actions = card.querySelector(".actions");
       for (const button of actions.querySelectorAll("[data-feedback]")) button.remove();
-      actions.append(element("span", "feedback-status", "感谢反馈，已经记录。"));
+      const saved = element("span", "feedback-status", "感谢反馈，已经记录。");
+      saved.setAttribute("role", "status");
+      actions.append(saved);
     } catch {
+      notice.replaceChildren();
+      addNotice(notice, "反馈暂时没有保存成功，请稍后再试。", "error");
+    } finally {
       for (const button of buttons) button.disabled = false;
-      addNotice(card, "反馈暂时没有保存成功，请稍后再试。", "error");
     }
   }
 
-  function renderActions(card, result) {
+  function answerNotices(result) {
+    const notices = [];
+    if (result.message) notices.push([result.message, result.status === "failed" ? "error" : "warn"]);
+    const citation = result.citation_integrity || {};
+    if (citation.status === "missing") {
+      notices.push(["回答正文没有标出对应的资料编号，请结合下方教材原文核对。", "warn"]);
+    } else if (citation.status === "invalid") {
+      notices.push([`回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn"]);
+    }
+    if (result.conflicts && result.conflicts.length) {
+      notices.push([`检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn"]);
+    }
+    return notices;
+  }
+
+  function literalBlock(text) {
+    const value = String(text || "");
+    const runs = value.match(/`+/g) || [];
+    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    return `${fence}text\n${value}\n${fence}`;
+  }
+
+  function answerRecord(query, result) {
+    const lines = ["# 教材问答记录", "", "## 问题", "", literalBlock(query), "",
+      "## 回答", "", result.answer, "", "## 核对提示", "",
+      "资料编号用于定位原文，请结合教材片段核对回答。", ""];
+    for (const [message] of answerNotices(result)) lines.push(message, "");
+    lines.push("## 参考教材片段", "");
+    for (const source of result.sources || []) {
+      lines.push(`### 参考资料 ${source.citation_id} · ${source.book}`, "",
+        source.section || "未标注章节", "");
+      if (source.truncated) lines.push("片段已截断。", "");
+      if (source.table_compacted) lines.push("表格按行整理。", "");
+      lines.push(literalBlock(source.excerpt), "");
+    }
+    if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");
+    return lines.join("\n");
+  }
+
+  function renderActions(card, result, query) {
     const actions = element("div", "actions");
     if (result.answer) {
       const copy = element("button", "action", "复制答案");
@@ -356,10 +446,27 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
           copy.textContent = "已复制";
           window.setTimeout(() => { copy.textContent = "复制答案"; }, 1500);
         } catch {
-          copy.textContent = "复制失败";
+          copy.textContent = "复制失败，请手动复制";
         }
       });
       actions.append(copy);
+    }
+    if (result.status === "answered" && result.answer) {
+      const save = element("button", "action", "保存问答（含来源）");
+      save.type = "button";
+      save.addEventListener("click", () => {
+        const blob = new Blob([answerRecord(query, result)], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = element("a");
+        link.href = url;
+        link.download = "教材问答.md";
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+      actions.append(save);
     }
     if (!result.answer_id) {
       if (actions.children.length) card.append(actions);
@@ -379,6 +486,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     panel.hidden = true;
     const reason = element("select");
     reason.required = true;
+    reason.setAttribute("aria-label", "需要改进的原因");
     for (const [value, label] of [
       ["", "请选择需要改进的原因"],
       ["not_answered", "没有回答问题"],
@@ -394,6 +502,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       reason.append(option);
     }
     const comment = element("textarea");
+    comment.setAttribute("aria-label", "反馈补充说明");
     comment.maxLength = 500;
     comment.placeholder = "可以补充说明（选择“其他”时必填，最多 500 字）";
     const submitRow = element("div", "submit-row");
@@ -427,46 +536,53 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
 
   function computeChip(label, stage) {
     const platform = { Windows: "Windows", Darwin: "macOS", Linux: "Linux", mixed: "多平台" }[stage.platform] || "";
-    let location = stage.backend === "remote" ? "远程 Worker" : stage.backend === "local" ? "本地" : "执行位置未知";
+    let location = {remote: "远程 Worker", local: "本地", mixed: "远程/本地混合"}[stage.backend] || "执行位置未知";
     if (platform) location += `（${platform}）`;
-    if (stage.fallback_used) location = "已回退到" + location;
-    const device = stage.device === "unknown" ? "未知设备" : stage.device.toUpperCase();
-    return `${label} · ${location} · ${device} · ${stage.elapsed_seconds.toFixed(3)} 秒`;
+    if (stage.fallback_used) location = stage.backend === "mixed"
+      ? location + " · 已发生回退" : "已回退到" + location;
+    const device = {unknown: "未知设备", mixed: "多设备"}[stage.device] || stage.device.toUpperCase();
+    const elapsed = validSeconds(stage.elapsed_seconds)
+      ? `${stage.elapsed_seconds.toFixed(3)} 秒` : "耗时未知";
+    return `${label} · ${location} · ${device} · ${elapsed}`;
   }
 
-  function finish(card, result) {
+  function validSeconds(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  }
+
+  function finish(card, result, query) {
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
-    if (result.message) addNotice(card, result.message, result.status === "failed" ? "error" : "warn");
-    const citation = result.citation_integrity || {};
-    if (citation.status === "missing") {
-      addNotice(card, "这份回答没有标出对应的资料编号，请结合下方教材原文核对。", "warn");
-    } else if (citation.status === "invalid") {
-      addNotice(card, `回答引用了下方不存在的资料编号（${citation.unknown.join("、")}），这些编号不能作为有效依据。`, "warn");
-    }
-    if (result.conflicts && result.conflicts.length) {
-      addNotice(card, `检索到的教材在「${result.conflicts.join("、")}」上说法不一致，回答里应当并列给出两种说法。`, "warn");
-    }
+    for (const [message, kind] of answerNotices(result)) addNotice(card, message, kind);
     const timing = result.timing || {};
     const compute = result.compute || {};
     const chips = [
-      ...(compute.embedding ? [["embedding", "Embedding"]] : []),
-      ...(compute.reranker ? [["reranker", "Reranker"]] : []),
       ["retrieval_seconds", "检索"], ["first_token_seconds", "首字"], ["total_seconds", "总计"],
-    ].map(([key, label]) => compute[key]
-      ? computeChip(label, compute[key])
-      : (typeof timing[key] === "number" ? `${label} ${timing[key].toFixed(2)} 秒` : null))
+    ].map(([key, label]) => validSeconds(timing[key])
+      ? `${label} ${timing[key].toFixed(2)} 秒` : null)
       .filter(Boolean);
     if (chips.length) {
       const meta = element("div", "meta");
       for (const chip of chips) meta.append(element("span", "chip", chip));
       card.append(meta);
     }
+    const stages = [["embedding", "Embedding"], ["reranker", "Reranker"]]
+      .filter(([key]) => compute[key]);
+    if (stages.length) {
+      const runtime = element("details", "runtime");
+      runtime.append(element("summary", "", "运行详情"));
+      const meta = element("div", "meta");
+      for (const [key, label] of stages) {
+        meta.append(element("span", "chip", computeChip(label, compute[key])));
+      }
+      runtime.append(meta);
+      card.append(runtime);
+    }
     if (result.sources && result.sources.length) {
       card.append(renderSources(result.sources, result.status !== "answered"));
     }
-    renderActions(card, result);
+    renderActions(card, result, query);
   }
 
   function parseEvent(frame) {
@@ -500,13 +616,16 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     } else if (typeof detail === "string" && detail) {
       addNotice(card, detail, "error");
     } else {
-      addNotice(card, response.status === 422 ? "问题格式不正确，最多 500 字。" : "暂时无法完成回答，请稍后再试。", "error");
+      const message = activity === "反馈提交"
+        ? (response.status === 422 ? "反馈格式不正确，请检查原因和补充说明（最多 500 字）。" : "反馈暂时没有保存成功，请稍后再试。")
+        : (response.status === 422 ? "问题格式不正确，最多 500 字。" : "暂时无法完成回答，请稍后再试。");
+      addNotice(card, message, "error");
     }
   }
 
   async function ask() {
     const query = input.value.trim();
-    if (!query || busy) return;
+    if (!query || busy || bookSelect.disabled) return;
     const bookId = bookSelect.value;
     if (!bookId) {
       bookSelect.setCustomValidity("请先选择一本教材");
@@ -516,6 +635,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     }
     bookSelect.setCustomValidity("");
     busy = true;
+    for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = true;
     send.disabled = true;
     clear.disabled = true;
     cancel.hidden = false;
@@ -569,11 +689,18 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       body.textContent = "正在组织答案…";
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
+      let buffer = "", skipLF = false;
+      readEvents: for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const part = decoder.decode(value, { stream: true });
+        if (part) {
+          // SSE accepts LF, CRLF and CR. A CR at a chunk boundary already ends
+          // the line; consume its optional LF without creating a second line.
+          const next = skipLF ? part.replace(/^\n/, "") : part;
+          skipLF = part.endsWith("\r");
+          buffer += next.replace(/\r\n?/g, "\n");
+        }
         let boundary;
         while ((boundary = buffer.indexOf("\n\n")) !== -1) {
           const event = parseEvent(buffer.slice(0, boundary));
@@ -583,18 +710,23 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
             text += event.data.text;
             schedulePaint();
           } else if (event.name === "result") {
-            settled = true;
             cancelPaint();
-            finish(card, event.data);
+            finish(card, event.data, query);
             if (event.data.status === "failed") addRetry(card, query, bookId);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
-            settled = true;
             cancelPaint();
             body.classList.remove("cursor", "progress");
             body.innerHTML = text ? renderMarkdown(text) : "";
             addNotice(card, event.data.message, event.data.status === "busy" ? "warn" : "error");
             addRetry(card, query, bookId);
+          }
+          if (event.name === "result" || event.name === "error") {
+            settled = true;
+            // The terminal event completes the application response. Do not let
+            // a lingering connection, later chunk or socket error alter it.
+            reader.cancel().catch(() => {});
+            break readEvents;
           }
         }
       }
@@ -617,9 +749,15 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
       activeController = null;
       send.disabled = false;
       clear.disabled = false;
+      for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = false;
       cancel.hidden = true;
       thread.removeAttribute("aria-busy");
-      input.focus();
+      // Restore the composer after sending or stopping. If the reader has
+      // moved to another control (including a requested access code), keep it.
+      if ([document.body, input, send, cancel].includes(document.activeElement)
+          || document.activeElement?.matches("[data-retry]")) {
+        input.focus({ preventScroll: !autoFollow });
+      }
       refreshStatus();
     }
   }
@@ -639,22 +777,47 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
   }
 
   async function loadBooks() {
+    const previous = bookSelect.value || sessionGet(BOOK_KEY);
+    bookSelect.disabled = true;
+    send.disabled = true;
+    reloadBooks.disabled = true;
+    bookStatus.textContent = "正在加载教材…";
+    bookStatus.hidden = false;
     try {
-      const books = await (await fetch("/v1/books")).json();
-      if (!books.length) bookSelect.options[0].textContent = "暂无可用教材";
+      const response = await fetch("/v1/books");
+      if (!response.ok) throw new Error("books unavailable");
+      const books = await response.json();
+      if (!Array.isArray(books) || books.some(book => !book || typeof book.book_id !== "string"
+          || !book.book_id || typeof book.label !== "string")) throw new Error("invalid books");
+      const placeholder = element("option", "", books.length ? "请选择教材" : "暂无可用教材");
+      placeholder.value = "";
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      const options = [placeholder];
       for (const book of books) {
         const option = element("option", "", book.label);
         option.value = book.book_id;
-        bookSelect.append(option);
+        options.push(option);
       }
+      bookSelect.replaceChildren(...options);
       const available = new Set(books.map((book) => book.book_id));
-      const selected = sessionGet(BOOK_KEY);
-      if (available.has(selected)) bookSelect.value = selected;
+      if (available.has(previous)) bookSelect.value = previous;
       for (const example of document.querySelectorAll(".examples button")) {
         example.disabled = !available.has(example.dataset.book);
         if (example.disabled) example.title = "这本教材当前没有可用索引";
+        else example.removeAttribute("title");
       }
-    } catch { bookSelect.options[0].textContent = "教材加载失败"; }
+      bookSelect.disabled = !books.length;
+      send.disabled = busy || !books.length;
+      reloadBooks.hidden = !!books.length;
+      bookStatus.textContent = books.length ? "" : "暂无可用教材，请稍后重新加载。";
+      bookStatus.hidden = !!books.length;
+    } catch {
+      bookStatus.textContent = "教材暂时加载失败，请重试。";
+      reloadBooks.hidden = false;
+    } finally {
+      reloadBooks.disabled = false;
+    }
   }
 
   function autosize() {
@@ -678,6 +841,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     if (!target) return;
     details.open = true;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
     target.classList.add("flash");
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
@@ -699,6 +863,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 
     clear.hidden = true;
     input.focus();
   });
+  reloadBooks.addEventListener("click", loadBooks);
   loadBooks();
   refreshStatus();
 })();

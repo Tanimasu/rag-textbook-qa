@@ -3,10 +3,44 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rag_textbook_qa.ingestion.quality import analyze_chunks, analyze_markdown
+from rag_textbook_qa.ingestion.quality import analyze_chunks, analyze_markdown, render_chunks_report
 
 
 class QualityAnalysisTests(unittest.TestCase):
+    def test_affected_rows_and_issue_occurrences_remain_distinct_even_with_duplicate_ids(self):
+        chunks = [
+            {"chunk_id": "same-id", "chapter": "第3章", "section_h2": "3.4 栈",
+             "section_h3": "3.5.2 队列", "content": "短正文", "char_count": 3, "has_code": False},
+            {"chunk_id": "same-id", "chapter": "第3章", "section_h2": "3.5 队列",
+             "section_h3": "3.5.2 队列", "content": "短正文", "char_count": 3, "has_code": False},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chunks.json"
+            original = json.dumps(chunks, ensure_ascii=False).encode()
+            path.write_bytes(original)
+            report = analyze_chunks(path)
+            self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(report["total_issues"], 4)
+        self.assertEqual(report["issue_rate"], 200)
+        self.assertEqual(report["issue_rate_basis"], "issue_occurrences_per_100_chunks")
+        self.assertEqual(report["affected_chunks"], 2)
+        self.assertEqual(report["affected_chunk_rate"], 100)
+        text = render_chunks_report(report)
+        self.assertIn("涉及分块: 2/2 个（100.0%）", text)
+        self.assertIn("规则命中: 4 项", text)
+        self.assertNotIn("问题率", text)
+        self.assertNotIn("可以直接使用", text)
+
+    def test_empty_corpus_is_reported_as_no_chunks_to_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chunks.json"
+            path.write_text("[]")
+            report = analyze_chunks(path)
+        self.assertEqual(report["affected_chunks"], 0)
+        self.assertEqual(report["affected_chunk_rate"], 0)
+        self.assertIn("没有分块可供检查", render_chunks_report(report))
+        self.assertNotIn("质量优秀", render_chunks_report(report))
+
     def test_markdown_analysis_returns_legacy_statistics_and_issues(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "教材.md"

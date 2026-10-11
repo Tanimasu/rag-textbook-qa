@@ -145,12 +145,29 @@ class DecompositionTests(unittest.TestCase):
         client.default_model = "fake"
         client.client = MagicMock()
         client.client.with_options.return_value.chat.completions.create.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content='{"decompose":false}'))])
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content='{"decompose":false}'))])
         self.assertEqual(client.plan_queries("prompt"), '{"decompose":false}')
         client.client.with_options.assert_called_once_with(timeout=20.0, max_retries=0)
         call = client.client.with_options.return_value.chat.completions.create.call_args
         self.assertEqual(call.kwargs["max_tokens"], 500)
         self.assertEqual(call.kwargs["temperature"], 0)
+
+    def test_sdk_incomplete_json_plan_falls_back_without_using_partial_queries(self):
+        for reason in ("length", None, "content_filter"):
+            with self.subTest(finish_reason=reason):
+                client = object.__new__(LLMClient)
+                client.default_model, client.client = "fake", MagicMock()
+                # A syntactically valid JSON object still needs a normal terminal marker.
+                payload = {"decompose": True, "independent": True,
+                           "queries": ["什么是进程？", "什么是线程？"]}
+                create = client.client.with_options.return_value.chat.completions.create
+                create.return_value = SimpleNamespace(choices=[SimpleNamespace(
+                    finish_reason=reason, message=SimpleNamespace(content=json.dumps(payload)))])
+                result = plan_queries("比较进程和线程", client, 5)
+                self.assertEqual(result["status"], "fallback")
+                self.assertEqual(result["queries"], [])
+                self.assertEqual(result["reason"], "LLMGenerationIncompleteError")
+                create.assert_called_once()
 
 
 class EvidenceAllocationTests(unittest.TestCase):
@@ -232,7 +249,7 @@ class PlannerProviderOptionsTests(unittest.TestCase):
             client = object.__new__(LLMClient)
             client.base_url, client.default_model, client.client = host, model, MagicMock()
             client.client.with_options.return_value.chat.completions.create.return_value = SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content='{"decompose":false}'))])
+                choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content='{"decompose":false}'))])
             client.plan_queries("prompt")
             kwargs = client.client.with_options.return_value.chat.completions.create.call_args.kwargs
             self.assertEqual(kwargs.get("extra_body"), {"enable_thinking": False} if expected else None)

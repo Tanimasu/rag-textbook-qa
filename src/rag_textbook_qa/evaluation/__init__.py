@@ -7,6 +7,7 @@ from rag_textbook_qa.evaluation.ragas import (
     load_test_questions,
     render_evaluation_plan,
     run_evaluation,
+    validate_evaluation_output_dir,
 )
 from rag_textbook_qa.evaluation.retrieval import (
     RETRIEVAL_STRATEGIES,
@@ -42,4 +43,5 @@ __all__ = [
     "score_source_evidence_coverage",
     "search_with_strategy",
     "select_split",
+    "validate_evaluation_output_dir",
 ]

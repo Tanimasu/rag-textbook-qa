@@ -21,4 +21,8 @@ short_description: 基于五本计算机教材的检索增强问答，回答标�
 回答由大模型生成，可能出错，请以原文为准。为控制费用，每个 IP 有提问频率限制，每天的生成次数也有
 上限；额度用完后只返回检索到的教材原文。
 
+部署者需在 Space 的 Settings → Variables and secrets 中设置 `RAG_QA_TRUST_PROXY=true`，
+让每 IP 限流使用 Space 可信代理追加的真实访客地址。直接映射 Docker 端口时保持镜像默认的
+`false`；只有前面恰有一层可信代理并追加真实客户端地址时才开启。
+
 源码、评测方法和已知局限见 GitHub：<https://github.com/Tanimasu/rag-textbook-qa>

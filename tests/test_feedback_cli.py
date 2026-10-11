@@ -161,6 +161,30 @@ class FeedbackCliTests(unittest.TestCase):
             self.assertEqual(payload["candidates"][0]["ground_truth"], "")
             self.assertIn("待人工审核候选", stdout.getvalue())
 
+    def test_summary_recovers_overflowing_metadata_without_rewriting_stored_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_workspace(root)
+            store = FeedbackStore(root / "artifacts" / "product" / "feedback.sqlite3")
+            registry = AnswerRegistry()
+            for duration in (10**400, 2.0):
+                identifier = registry.remember(
+                    query="不输出到摘要的原问题", book_id="os",
+                    result={"status": "answered", "answer": "原回答",
+                            "timing": {"total_seconds": duration}},
+                )
+                store.save(registry.resolve(identifier), rating="helpful", reason=None, comment="")
+            original = store.records()
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["--workspace", str(root), "feedback", "summary", "--json"]), 0)
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["total"], 2)
+            self.assertEqual(summary["latency_seconds"],
+                             {"samples": 1, "average": 2.0, "p50": 2.0, "p95": 2.0})
+            self.assertNotIn("原问题", stdout.getvalue())
+            self.assertEqual(store.records(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

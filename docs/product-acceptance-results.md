@@ -3,6 +3,9 @@
 这里记录冻结产品验收集的阶段性结果。协议和复现命令见
 [产品验收基线](product-acceptance.md)。结果与运行环境绑定，未完成的策略不得推断为通过或失败。
 
+最新的 2026-10-07 Windows CUDA 四策略检索与正文覆盖结果见
+[远程验收记录](iteration-20261007-remote.md)。该轮未运行付费生成或 RAGAS，下面的历史回答质量结果不代表当前版本。
+
 ## 2026-09-17：BM25 初始基线
 
 - 题集：`data/evaluation/product_acceptance_v1.json`，15 题，每本教材 3 题；

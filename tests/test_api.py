@@ -61,6 +61,8 @@ class FakeEngine:
         if self.raises is not None:
             raise self.raises
         generating = kwargs["use_llm"] and bool(self.sources)
+        if generating and (started := kwargs.get("on_generation_start")) is not None:
+            started()
         sink = kwargs.get("on_answer_chunk")
         if generating and sink is not None:
             for piece in ("进程是", "程序的执行【参考资料 1】"):
@@ -163,10 +165,24 @@ class GuardTests(unittest.TestCase):
         day = [date(2026, 9, 15)]
         guard = AccessGuard(GuardSettings(daily_generations=2), today=lambda: day[0])
 
-        self.assertEqual([guard.reserve_generation() for _ in range(3)], [True, True, False])
+        self.assertEqual(
+            [guard.reserve_generation() for _ in range(3)], [day[0], day[0], None]
+        )
         self.assertEqual(guard.status()["generations_remaining_today"], 0)
         day[0] = date(2026, 9, 16)
         self.assertTrue(guard.reserve_generation())
+
+    def test_refund_from_yesterday_does_not_release_todays_budget(self):
+        day = [date(2026, 9, 15)]
+        guard = AccessGuard(GuardSettings(daily_generations=2), today=lambda: day[0])
+        yesterday = guard.reserve_generation()
+        day[0] = date(2026, 9, 16)
+        today = guard.reserve_generation()
+
+        guard.refund_generation(yesterday)
+        self.assertEqual(guard.status()["generations_remaining_today"], 1)
+        guard.refund_generation(today)
+        self.assertEqual(guard.status()["generations_remaining_today"], 2)
 
     def test_a_held_generation_slot_times_out_as_busy(self):
         guard = AccessGuard(GuardSettings(queue_timeout_seconds=0.05))
@@ -212,8 +228,39 @@ class GuardTests(unittest.TestCase):
 
 
 class PublicResultTests(unittest.TestCase):
+    def test_invalid_times_do_not_break_json_or_invent_measurements(self):
+        for value in (float("inf"), float("-inf"), float("nan"), True, -1, None, "bad", 10**400):
+            with self.subTest(value=value):
+                raw = FakeEngine().ask(query="q", use_llm=True)
+                raw["execution"]["total_seconds"] = value
+                raw["execution"]["embedding"]["elapsed_seconds"] = value
+                payload = public_result(raw, retrieval_only=None)
+                json.dumps(payload, allow_nan=False)
+                self.assertEqual(payload["status"], "answered")
+                self.assertNotIn("total_seconds", payload["timing"])
+                self.assertIsNone(payload["compute"]["embedding"]["elapsed_seconds"])
+                self.assertIs(raw["execution"]["total_seconds"], value)
+                self.assertEqual(payload["timing"]["retrieval_seconds"], .1)
+        raw["execution"]["total_seconds"] = 0
+        raw["execution"]["embedding"]["elapsed_seconds"] = "1.25"
+        payload = public_result(raw, retrieval_only=None)
+        self.assertEqual(payload["timing"]["total_seconds"], 0)
+        self.assertEqual(payload["compute"]["embedding"]["elapsed_seconds"], 1.25)
+
+    def test_indexed_cuda_devices_keep_the_public_device_family(self):
+        raw = FakeEngine().ask(query="q", use_llm=True)
+        for device, expected in (
+            ("cuda:0", "cuda"), ("CUDA:12", "cuda"), (" mps ", "mps"),
+            ("cuda:private-worker", "unknown"), ("cuda:-1", "unknown"),
+        ):
+            with self.subTest(device=device):
+                raw["execution"]["embedding"]["device"] = device
+                stage = public_result(raw, retrieval_only=None)["compute"]["embedding"]
+                self.assertEqual(stage["device"], expected)
+
     def test_internals_and_provider_error_text_never_leave(self):
         raw = FakeEngine(success=False, error=SECRET).ask(query="q", use_llm=True)
+        raw["context_sources"][0]["table_compacted"] = True
         payload = public_result(raw, retrieval_only=None)
 
         self.assertEqual(payload["status"], "failed")
@@ -223,6 +270,7 @@ class PublicResultTests(unittest.TestCase):
             self.assertNotIn(leaked, rendered)
         self.assertEqual(payload["sources"][0]["book"], "操作系统")
         self.assertEqual(payload["sources"][0]["section"], "第二章 > 2.1 进程")
+        self.assertIs(payload["sources"][0]["table_compacted"], True)
         self.assertEqual(
             payload["compute"]["embedding"],
             {
@@ -256,6 +304,24 @@ class PublicResultTests(unittest.TestCase):
             public_result(invalid, retrieval_only=None)["citation_integrity"],
             {"status": "invalid", "cited": [1, 9], "unknown": [9]},
         )
+
+    def test_public_chapter_list_uses_actual_source_and_keeps_raw_engine_answer(self):
+        result = FakeEngine().ask(query="q", use_llm=True)
+        raw = "正文【参考资料 1】\n\n## 参考章节\n错误章节【参考资料 9】"
+        result["answer"] = raw
+        payload = public_result(result, retrieval_only=None)
+        self.assertIn("第二章 > 2.1 进程", payload["answer"])
+        self.assertNotIn("错误章节", payload["answer"])
+        self.assertEqual(payload["citation_integrity"], {"status": "linked", "cited": [1], "unknown": []})
+        self.assertEqual(result["answer"], raw)
+        result["answer"] = "正文无编号。\n\n## 参考章节\n章节【参考资料 1】"
+        self.assertEqual(public_result(result, retrieval_only=None)["citation_integrity"]["status"], "missing")
+        result["answer"] = "## 参考章节\n章节【参考资料 1】"
+        empty = public_result(result, retrieval_only=None)
+        self.assertEqual(empty["status"], "failed")
+        self.assertIsNone(empty["answer"])
+        self.assertIsNone(empty["citation_integrity"])
+        self.assertEqual(empty["message"], PUBLIC_FAILURE)
 
     def test_retrieval_only_and_missing_evidence_are_not_failures(self):
         budget = public_result(FakeEngine().ask(query="q", use_llm=False), retrieval_only="budget")
@@ -310,14 +376,13 @@ class ApiAppTests(unittest.TestCase):
         self.assertIn("清空对话", page.text)
         self.assertIn("new AbortController()", page.text)
         self.assertIn('thread.setAttribute("aria-busy", "true")', page.text)
-        self.assertIn("这份回答没有标出对应的资料编号", page.text)
+        self.assertIn("回答正文没有标出对应的资料编号", page.text)
         self.assertIn("回答引用了下方不存在的资料编号", page.text)
         self.assertIn("trackScrollIntent", page.text)
         self.assertIn("window.setTimeout(paint, 125)", page.text)
         self.assertIn("👍 有帮助", page.text)
         self.assertIn("👎 需要改进", page.text)
         self.assertIn("/v1/feedback", page.text)
-        self.assertIn('explainRefusal(card, response, "反馈提交")', page.text)
         self.assertEqual(client.head("/").status_code, 200)
         self.assertEqual(client.get("/v1/books").json(), BOOKS)
         self.assertEqual(client.get("/docs").status_code, 200)
@@ -509,6 +574,34 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(events[-1][1]["status"], "answered")
         self.assertRegex(events[-1][1]["answer_id"], r"^[0-9a-f]{32}$")
 
+    def test_bad_execution_metadata_does_not_fail_a_completed_answer_on_either_route(self):
+        engine = FakeEngine()
+        original_ask = engine.ask
+
+        def ask(**kwargs):
+            result = original_ask(**kwargs)
+            result["execution"]["total_seconds"] = float("inf")
+            result["execution"]["embedding"]["elapsed_seconds"] = True
+            return result
+
+        engine.ask = ask
+        client = self.client(engine=engine)
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                response = client.post(route, json={"query": "问题"})
+                self.assertEqual(response.status_code, 200)
+                if route.endswith("/stream"):
+                    events = sse_events(response.text)
+                    self.assertEqual(events[-1][0], "result")
+                    payload = events[-1][1]
+                else:
+                    payload = response.json()
+                self.assertEqual(payload["status"], "answered")
+                self.assertEqual(payload["answer"], "进程是程序的执行【参考资料 1】")
+                self.assertNotIn("total_seconds", payload["timing"])
+                self.assertIsNone(payload["compute"]["embedding"]["elapsed_seconds"])
+        self.assertEqual(len(engine.calls), 2)
+
     def test_engine_failures_return_generic_errors_on_both_routes(self):
         client = self.client(engine=FakeEngine(raises=RuntimeError(SECRET)))
         with patch("sys.stderr"):
@@ -522,6 +615,34 @@ class ApiAppTests(unittest.TestCase):
             [("error", {"status": "failed", "message": PUBLIC_FAILURE})],
         )
         self.assertNotIn(SECRET, streamed.text)
+
+    def test_retrieval_failures_refund_the_budget_on_both_routes(self):
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                client = self.client(
+                    engine=FakeEngine(raises=RuntimeError("retrieval failed")),
+                    daily_generations=5,
+                )
+                with patch("sys.stderr"):
+                    client.post(route, json={"query": "问题"})
+                self.assertEqual(
+                    client.get("/health").json()["generations_remaining_today"], 5
+                )
+
+    def test_failures_after_generation_starts_keep_the_budget_claim(self):
+        class GenerationFailureEngine(FakeEngine):
+            def ask(self, **kwargs):
+                kwargs["on_generation_start"]()
+                raise RuntimeError("generation failed")
+
+        for route in ("/v1/ask", "/v1/ask/stream"):
+            with self.subTest(route=route):
+                client = self.client(engine=GenerationFailureEngine(), daily_generations=5)
+                with patch("sys.stderr"):
+                    client.post(route, json={"query": "问题"})
+                self.assertEqual(
+                    client.get("/health").json()["generations_remaining_today"], 4
+                )
 
     def test_stopping_before_the_model_is_called_refunds_the_budget(self):
         for request_sent, remaining in ((False, 5), (True, 4)):

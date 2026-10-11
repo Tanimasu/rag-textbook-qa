@@ -2,8 +2,51 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any
+
+from rag_textbook_qa.catalog import BOOK_LABELS
+from rag_textbook_qa.rag.references import render_source_sections
+from rag_textbook_qa.timing import finite_seconds
+
+
+def source_section_label(source: Mapping[str, Any]) -> str:
+    parts = [str(source.get(field) or "").strip()
+             for field in ("chapter", "section_h2", "section_h3", "section_h4")]
+    return " > ".join(part for part in parts if part) or "未标注章节"
+
+
+def _literal_block(text: str) -> str:
+    # Textbook code can contain fences itself. Preserve it as literal evidence,
+    # without letting a shorter fence reinterpret the following source as Markdown.
+    longest = max((len(match[0]) for match in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def answer_export_markdown(
+    query: str, answer: str, sources: Sequence[Mapping[str, Any]],
+) -> str:
+    """Save the displayed answer and its actual excerpts, without internal metadata."""
+    answer = render_source_sections(answer, sources)
+    lines = ["# 教材问答记录", "", "## 问题", "", _literal_block(query), "",
+             "## 回答", "", answer, "", "## 参考教材片段", "",
+             "以下为本次回答使用的片段；请按资料编号核对回答。", ""]
+    for index, source in enumerate(sources, 1):
+        book_id = str(source.get("book_name") or "未知教材")
+        book = BOOK_LABELS.get(book_id, book_id.replace("_", " ").title())
+        citation = source.get("citation_id", index)
+        lines.extend([f"### 参考资料 {citation} · {book}", "",
+                      source_section_label(source), ""])
+        if source.get("truncated"):
+            lines.extend(["片段已截断。", ""])
+        if source.get("table_compacted"):
+            lines.extend(["表格按行整理。", ""])
+        lines.extend([_literal_block(str(source.get("content") or "")), ""])
+    if not sources:
+        lines.extend(["本次记录未包含教材片段。", ""])
+    return "\n".join(lines)
 
 
 def answer_message(result: Mapping[str, Any]) -> str:
@@ -15,7 +58,7 @@ def answer_message(result: Mapping[str, Any]) -> str:
 
     answer = result.get("answer")
     if answer:
-        return str(answer)
+        return render_source_sections(str(answer), result.get("context_sources") or [])
     if error:
         return f"⚠️ 未能生成答案：{error}"
     return "抱歉，未能生成答案。"
@@ -43,8 +86,8 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
             fallback_used=fallback_used,
         )
         device = str(stage.get("device") or "unknown")
-        device_label = device.upper() if device != "unknown" else "未知设备"
-        elapsed = _seconds(stage.get("elapsed_seconds"))
+        device_label = {"unknown": "未知设备", "mixed": "多设备"}.get(device, device.upper())
+        elapsed = _duration_label(stage.get("elapsed_seconds"))
         calls = _positive_int(stage.get("calls"))
         call_suffix = f" · {calls} 次" if calls > 1 else ""
         items.append(
@@ -52,17 +95,17 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
                 "kind": "fallback" if fallback_used else backend,
                 "text": (
                     f"{icon} {label} · {location} · {device_label} · "
-                    f"{elapsed:.3f} 秒{call_suffix}"
+                    f"{elapsed}{call_suffix}"
                 ),
             }
         )
 
-    retrieval = _seconds(execution.get("retrieval_seconds"))
-    generation = _seconds(execution.get("generation_seconds"))
-    total = _seconds(execution.get("total_seconds"))
+    retrieval = _duration_label(execution.get("retrieval_seconds"))
+    generation = _duration_label(execution.get("generation_seconds"))
+    total = _duration_label(execution.get("total_seconds"))
     first_token = execution.get("first_token_seconds")
     first_token_suffix = (
-        f"（首字 {_seconds(first_token):.3f} 秒）"
+        f"（首字 {_duration_label(first_token)}）"
         if first_token is not None
         else ""
     )
@@ -70,9 +113,9 @@ def compute_trace_items(execution: Mapping[str, Any] | None) -> list[dict[str, s
         {
             "kind": "timing",
             "text": (
-                f"⏱️ 检索 {retrieval:.3f} 秒 · "
-                f"回答 {generation:.3f} 秒{first_token_suffix} · "
-                f"总计 {total:.3f} 秒"
+                f"⏱️ 检索 {retrieval} · "
+                f"回答 {generation}{first_token_suffix} · "
+                f"总计 {total}"
             ),
         }
     )
@@ -97,19 +140,15 @@ def _execution_location(*, backend: str, platform_name: str, fallback_used: bool
     if platform_label:
         location += f"（{platform_label}）"
     if fallback_used:
-        location = f"已回退到{location}"
+        location = f"{location} · 已发生回退" if backend == "mixed" else f"已回退到{location}"
     return location
 
 
-def _seconds(value: Any) -> float:
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 0.0
+def _duration_label(value: Any) -> str:
+    seconds = finite_seconds(value)
+    return f"{seconds:.3f} 秒" if seconds is not None else "耗时未知"
 
 
 def _positive_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    count = finite_seconds(value)
+    return int(count) if count is not None and count.is_integer() else 0

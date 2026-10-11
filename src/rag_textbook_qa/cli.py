@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from rag_textbook_qa.diagnostics.doctor import (
     diagnostics_as_dict,
     render_diagnostics,
 )
+from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
     PROTOCOL_VERSION,
@@ -26,6 +28,7 @@ from rag_textbook_qa.providers.base import (
     ModelMismatchError,
     ProviderError,
     ProviderProtocolError,
+    validate_worker_health_status,
 )
 from rag_textbook_qa.providers.config import ComputeSettings
 
@@ -211,6 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
     generation_evaluate.add_argument("--concurrency", type=int, default=3)
     generation_evaluate.add_argument("--seed", type=int, default=0)
     generation_evaluate.add_argument("--max-tokens", type=int, default=2000)
+    generation_evaluate.add_argument(
+        "--max-http-attempts", type=int,
+        help="本次运行的生成、评判及重试共用请求次数上限；续跑重新计数，不是费用上限",
+    )
+    generation_evaluate.add_argument(
+        "--dry-run", action="store_true", help="校验题集并显示完整调用计划，不创建客户端或结果目录",
+    )
 
     app = commands.add_parser("app", help="启动 Streamlit 教材问答界面")
     app.add_argument(
@@ -550,6 +560,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         load_test_questions,
         render_evaluation_plan,
         run_evaluation,
+        validate_evaluation_output_dir,
     )
 
     questions_path = args.questions or (
@@ -571,6 +582,7 @@ def _run_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         )
         print(render_evaluation_plan(plan))
         return 0
+    validate_evaluation_output_dir(args.output_dir or settings.paths.evaluations)
     from rag_textbook_qa.rag import RAGEngine
 
     with RAGEngine(
@@ -599,7 +611,6 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
         save_retrieval_report,
         select_split,
     )
-    from rag_textbook_qa.rag import RAGEngine
 
     if args.top_k <= 0:
         raise ValueError("--top-k 必须大于 0")
@@ -608,6 +619,7 @@ def _run_retrieval_evaluate(args: argparse.Namespace, settings: Settings) -> int
     )
     questions = select_split(load_retrieval_questions(questions_path), args.split)
     strategies = RETRIEVAL_STRATEGIES if args.strategy == "all" else (args.strategy,)
+    from rag_textbook_qa.rag import RAGEngine
 
     # A benchmark must fail visibly instead of silently mixing remote and local results.
     compute = replace(
@@ -667,12 +679,14 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     import hashlib
     from urllib.parse import urlsplit
 
-    from rag_textbook_qa.evaluation.generation import load_generation_cases, parse_arm
+    from rag_textbook_qa.evaluation.generation import generation_cases_from_payload, parse_arm
     from rag_textbook_qa.evaluation.generation_runner import (
+        generation_call_plan,
         llm_pair_from_env,
         openai_generator,
         openai_judge,
         run_generation_experiment,
+        sample_keys,
     )
 
     for option, value in (
@@ -682,46 +696,89 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
     ):
         if value <= 0:
             raise ValueError(f"{option} 必须大于 0")
+    from rag_textbook_qa.evaluation.call_usage import CallAttemptBudget, CallUsageLog
+
+    call_budget = (CallAttemptBudget(args.max_http_attempts)
+                   if args.max_http_attempts is not None else None)
     arms = [parse_arm(spec) for spec in args.arm]
-    cases = load_generation_cases(args.cases)
-    generator_llm, judge_llm, extra = llm_pair_from_env()
-    protocol = {
-        "cases_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
-        "generator": {
-            "host": urlsplit(generator_llm.base_url).hostname,
-            "model": generator_llm.default_model,
+    cases_bytes = args.cases.read_bytes()
+    cases = generation_cases_from_payload(loads_strict(cases_bytes.decode("utf-8")))
+    cases_sha256 = hashlib.sha256(cases_bytes).hexdigest()
+    sample_keys(cases, arms, args.samples, args.seed)
+    if args.dry_run:
+        from rag_textbook_qa.llm.client import LLMSettings
+
+        shared_model = LLMSettings.from_env().model
+        generator_model = (os.getenv("RAG_MODEL") or shared_model).strip()
+        judge_model = (os.getenv("RAGAS_MODEL") or shared_model).strip()
+        if not generator_model or not judge_model:
+            raise ValueError("生成 / 评判模型不能为空")
+        if generator_model == judge_model:
+            raise ValueError("评判模型与生成模型相同；请设置 RAGAS_MODEL")
+        print(json.dumps({
+            "mode": "dry_run",
+            "models": {"generator": generator_model, "judge": judge_model},
+            "cases_sha256": cases_sha256,
             "max_tokens": args.max_tokens,
-        },
-        "judge": {
-            "host": urlsplit(judge_llm.base_url).hostname,
-            "model": judge_llm.default_model,
-            "extra": extra,
-        },
-    }
-    report = run_generation_experiment(
-        cases,
-        arms,
-        output_dir=args.output_dir,
-        generator=openai_generator(
-            generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens
-        ),
-        judge=openai_judge(judge_llm.client, judge_llm.default_model, extra=extra),
-        samples=args.samples,
-        seed=args.seed,
-        concurrency=args.concurrency,
-        protocol=protocol,
-    )
+            "http_attempt_budget": call_budget.snapshot() if call_budget is not None else None,
+            **generation_call_plan(cases, arms, args.samples, args.seed),
+            "model_calls": 0,
+            "cost_estimate": None,
+            "scope": "完整计划，未扣除续跑结果；请求次数不是计费 token 或费用上限。",
+        }, ensure_ascii=False, indent=2))
+        return 0
+    generator_llm, judge_llm, extra = llm_pair_from_env()
+    call_usage = CallUsageLog(args.output_dir / "calls.jsonl")
+    with ExitStack() as cleanup:
+        cleanup.callback(generator_llm.close)
+        cleanup.callback(judge_llm.close)
+        protocol = {
+            "cases_sha256": cases_sha256,
+            "generator": {
+                "host": urlsplit(generator_llm.base_url).hostname,
+                "model": generator_llm.default_model,
+                "max_tokens": args.max_tokens,
+            },
+            "judge": {
+                "host": urlsplit(judge_llm.base_url).hostname,
+                "model": judge_llm.default_model,
+                "extra": extra,
+            },
+        }
+        report = run_generation_experiment(
+            cases,
+            arms,
+            output_dir=args.output_dir,
+            generator=openai_generator(
+                generator_llm.client, generator_llm.default_model, max_tokens=args.max_tokens,
+                on_call=call_usage, call_budget=call_budget,
+            ),
+            judge=openai_judge(
+                judge_llm.client, judge_llm.default_model, extra=extra, on_call=call_usage,
+                call_budget=call_budget,
+            ),
+            samples=args.samples,
+            seed=args.seed,
+            concurrency=args.concurrency,
+            protocol=protocol,
+            call_budget=call_budget,
+        )
 
     def shown(value: float | None) -> str:
         return "—" if value is None else f"{value:.3f}"
 
     print(
         f"生成评测：计划 {report['planned']} 份回答，"
-        f"已生成 {report['generated']}，已评判 {report['judged']}"
+        f"已生成 {report['generated']}，完整 {report['completed']}，"
+        f"未完成 {report['incomplete']}（截断 {report['truncated']}，"
+        f"空回答 {report['empty_answers']}），已评判 {report['judged']}"
     )
+    print("质量均分与配对比较仅使用完整回答；未完成的生成结果与用量保留，续跑不会重新生成。")
     for name, arm in report["arms"].items():
         print(
-            f"{name}: 实质问题={shown(arm['problem_claims'])} 条/份，"
+            f"{name}: 完整 {arm['completed']}/{arm['samples']}，"
+            f"未完成 {arm['incomplete']}，已评判 {arm['judged']}；"
+            f"实质问题={shown(arm['problem_claims'])} 条/份，"
             f"实质问题比例={shown(arm['problem_rate'])}，严格口径={shown(arm['strict_rate'])}，"
             f"覆盖={shown(arm['coverage'])}，样本相似度={shown(arm['overlap'])}"
         )
@@ -736,6 +793,9 @@ def _run_generation_evaluate(args: argparse.Namespace, settings: Settings) -> in
                 f"{primary['cases']} 题）"
             )
     print(f"报告: {args.output_dir / 'report.json'}")
+    if report.get("stop_reason") == "http_attempt_limit":
+        print("已达到本次请求次数上限；已有结果已保存，未评判回答不计质量分。续跑将重新计数。")
+        return 2
     return 0
 
 
@@ -826,10 +886,7 @@ def _validated_health_summary(
     *,
     compute: ComputeSettings,
 ) -> dict[str, Any]:
-    if payload.get("status") != "ok":
-        raise ProviderProtocolError("远程 Worker /health 状态不是 ok")
-    if payload.get("protocol_version") != PROTOCOL_VERSION:
-        raise ProviderProtocolError("远程 Worker 协议版本与客户端不一致")
+    validate_worker_health_status(payload)
 
     device = payload.get("device")
     models = payload.get("models")
@@ -1012,6 +1069,7 @@ def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
         reranker_model=compute.reranker_model,
         device=compute.device,
         token=compute.remote_token,
+        reranker_batch_size=compute.reranker_batch_size,
         warmup=args.warmup,
     )
     return 0

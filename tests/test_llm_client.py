@@ -4,6 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+from openai import InternalServerError, OpenAI
+
 from rag_textbook_qa.llm import (
     GenerationCancelled,
     LLMClient,
@@ -77,6 +80,21 @@ def answer_chunk(text, finish_reason=None):
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_context_manager_closes_real_sdk_even_after_an_exception(self):
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200))) as transport:
+            sdk = OpenAI(api_key="fixture-key", base_url="http://fixture.invalid/v1", http_client=transport)
+            self.addCleanup(sdk.close)
+            client = LLMClient(
+                api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                sdk_client=sdk, verbose=False,
+            )
+            with patch.object(sdk, "close", wraps=sdk.close) as close:
+                with self.assertRaisesRegex(RuntimeError, "body failed"), client:
+                    raise RuntimeError("body failed")
+                self.assertTrue(transport.is_closed)
+                client.close()
+                close.assert_called_once_with()
+
     def test_settings_are_resolved_explicitly_at_factory_call_time(self):
         environment = {
             "LLM_API_KEY": "test-key",
@@ -141,6 +159,103 @@ class LLMClientTests(unittest.TestCase):
         self.assertFalse(sdk.completions.calls[-1]["stream"])
         sleep.assert_called_once_with(1)
 
+    def test_default_sdk_does_not_multiply_application_retries(self):
+        for streaming, expected_requests in ((False, 2), (True, 1)):
+            with self.subTest(streaming=streaming):
+                requests = []
+
+                def reject(request, requests=requests):
+                    requests.append(request)
+                    return httpx.Response(503, json={"error": {"message": "fixture unavailable"}})
+
+                def sdk_factory(reject=reject, **kwargs):
+                    sdk = OpenAI(
+                        **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reject))
+                    )
+                    self.addCleanup(sdk.close)
+                    # Keep the regression deterministic and fast even before the
+                    # fix, when the SDK still performs its own hidden retries.
+                    sdk._calculate_retry_timeout = lambda *args: 0
+                    return sdk
+
+                with (
+                    patch("rag_textbook_qa.llm.client.OpenAI", side_effect=sdk_factory),
+                    patch("rag_textbook_qa.llm.client.time.sleep"),
+                ):
+                    client = LLMClient(
+                        api_key="fixture-key", base_url="http://fixture.invalid/v1", verbose=False
+                    )
+                    if streaming:
+                        with self.assertRaises(InternalServerError):
+                            list(client.stream_answer("question", raise_on_error=True))
+                    else:
+                        self.assertFalse(client.generate_answer("question", retry=1)["success"])
+                self.assertEqual(len(requests), expected_requests)
+
+    def test_missing_or_invalid_usage_keeps_answer_without_paid_retries(self):
+        unknown = {"prompt": None, "completion": None, "total": None}
+        cases = [(None, unknown), (SimpleNamespace(), unknown),
+                 (SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                  {"prompt": 0, "completion": 0, "total": 0})]
+        for malformed in ("invalid", "7", -1, True, 7.5):
+            cases.append((SimpleNamespace(prompt_tokens=3, completion_tokens=4,
+                                          total_tokens=malformed),
+                          {"prompt": 3, "completion": 4, "total": None}))
+        for method in ("generate_answer", "chat"):
+            for usage, expected in cases:
+                with self.subTest(method=method, usage=usage):
+                    response = completion_response("完整答案")
+                    response.usage = usage
+                    sdk = FakeSDKClient([response])
+                    client = LLMClient("key", "https://fixture.invalid/v1",
+                                       sdk_client=sdk, verbose=True)
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output), patch(
+                        "rag_textbook_qa.llm.client.time.sleep"
+                    ) as sleep:
+                        result = (client.generate_answer("问题") if method == "generate_answer"
+                                  else client.chat([{"role": "user", "content": "问题"}]))
+                    self.assertTrue(result["success"])
+                    self.assertEqual(result["answer"], "完整答案")
+                    self.assertEqual(result["tokens"], expected)
+                    self.assertEqual(len(sdk.completions.calls), 1)
+                    sleep.assert_not_called()
+                    if method == "generate_answer" and expected["total"] is None:
+                        self.assertIn("token 用量未知", output.getvalue())
+
+    def test_failed_requests_preserve_unknown_usage(self):
+        for method in ("generate_answer", "chat"):
+            with self.subTest(method=method):
+                sdk = FakeSDKClient([RuntimeError("fixture connection lost")])
+                client = LLMClient("key", "https://fixture.invalid/v1",
+                                   sdk_client=sdk, verbose=False)
+                result = (client.generate_answer("问题", retry=0) if method == "generate_answer"
+                          else client.chat([{"role": "user", "content": "问题"}]))
+                self.assertFalse(result["success"])
+                self.assertEqual(result["tokens"],
+                                 {"prompt": None, "completion": None, "total": None})
+
+    def test_permanent_http_failures_do_not_retry_but_transient_errors_do(self):
+        for status, expected_requests in ((401, 1), (422, 1), (429, 3), (503, 3)):
+            with self.subTest(status=status):
+                requests = []
+
+                def reject(request, requests=requests, status=status):
+                    requests.append(request)
+                    return httpx.Response(status, json={"error": {"message": "fixture failure"}})
+
+                with httpx.Client(transport=httpx.MockTransport(reject)) as transport, OpenAI(
+                    api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                    http_client=transport, max_retries=0,
+                ) as sdk, patch("rag_textbook_qa.llm.client.time.sleep") as sleep:
+                    client = LLMClient(
+                        api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                        sdk_client=sdk, verbose=False,
+                    )
+                    self.assertFalse(client.generate_answer("question")["success"])
+                    self.assertEqual(len(requests), expected_requests)
+                    self.assertEqual(sleep.call_count, expected_requests - 1)
+
     def test_stream_skips_empty_deltas_without_network(self):
         chunks = [
             SimpleNamespace(choices=[]),
@@ -187,6 +302,49 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result["answer"], "未完成")
         self.assertIn("长度上限", result["error"])
 
+    def test_received_malformed_answers_are_checked_once_and_keep_known_usage(self):
+        cases = [([], "缺少有效回答"),
+                 ([SimpleNamespace(finish_reason="stop")], "缺少有效回答"),
+                 ([SimpleNamespace(message=SimpleNamespace(content={"text": "wrong type"}),
+                                   finish_reason="stop")], "内容格式异常")]
+        for method in ("generate_answer", "chat"):
+            for choices, expected in cases:
+                with self.subTest(method=method, choices=choices):
+                    response = completion_response()
+                    response.choices = choices
+                    sdk = FakeSDKClient([response])
+                    client = LLMClient("key", "https://fixture.invalid/v1",
+                                       sdk_client=sdk, verbose=False)
+                    with patch("rag_textbook_qa.llm.client.time.sleep") as sleep:
+                        result = (client.generate_answer("问题") if method == "generate_answer"
+                                  else client.chat([{"role": "user", "content": "问题"}]))
+                    self.assertFalse(result["success"])
+                    self.assertIn(expected, result["error"])
+                    self.assertEqual(result["tokens"], {"prompt": 3, "completion": 4, "total": 7})
+                    self.assertEqual(len(sdk.completions.calls), 1)
+                    sleep.assert_not_called()
+
+    def test_chat_rejects_empty_and_incomplete_responses_without_losing_partial_answer(self):
+        for content, reason in (("未完成的回答", "length"), ("部分内容", None),
+                                ("", "stop"), (None, "stop"), (" \n\t", "stop")):
+            with self.subTest(content=content, finish_reason=reason):
+                response = completion_response(content)
+                response.choices[0].finish_reason = reason
+                sdk = FakeSDKClient([response])
+                client = LLMClient("key", "https://fixture.invalid/v1",
+                                   sdk_client=sdk, verbose=False)
+                messages = [{"role": "user", "content": "第一题"},
+                            {"role": "assistant", "content": "已有回答"},
+                            {"role": "user", "content": "继续解释"}]
+                result = client.chat(messages, model="fixture-model", temperature=0.2, max_tokens=40)
+                self.assertFalse(result["success"])
+                self.assertEqual(result["answer"], content or "")
+                self.assertEqual(result["finish_reason"], reason)
+                self.assertEqual(result["tokens"]["total"], 7)
+                self.assertEqual(len(sdk.completions.calls), 1)
+                self.assertEqual(sdk.completions.calls[0], {"model": "fixture-model",
+                    "messages": messages, "temperature": 0.2, "max_tokens": 40})
+
     def test_stream_rejects_a_length_limited_terminal_chunk(self):
         chunks = [
             SimpleNamespace(
@@ -205,6 +363,22 @@ class LLMClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(LLMGenerationIncompleteError, "长度上限"):
             list(client.stream_answer("问题", raise_on_error=True))
+
+    def test_generate_answer_rejects_empty_content_without_retrying(self):
+        for answer in (None, "", " \n\t"):
+            with self.subTest(answer=answer):
+                sdk = FakeSDKClient([completion_response(answer)])
+                client = LLMClient(
+                    api_key="key",
+                    base_url="https://llm.example/v1",
+                    sdk_client=sdk,
+                    verbose=False,
+                )
+                result = client.generate_answer("问题")
+                self.assertFalse(result["success"])
+                self.assertEqual(result["finish_reason"], "stop")
+                self.assertIn("响应为空", result["error"])
+                self.assertEqual(len(sdk.completions.calls), 1)
 
     def test_a_stop_during_hidden_reasoning_ends_and_closes_the_request(self):
         stream = FakeStream(
@@ -253,6 +427,58 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(list(client.stream_answer("问题", should_stop=lambda: False)), ["A", "B"])
         self.assertTrue(stream.closed)
+
+    def test_terminal_chunk_completes_without_reading_more_upstream_data(self):
+        for reason, succeeds in (("stop", True), ("length", False)):
+            with self.subTest(reason=reason):
+                stream = FakeStream([answer_chunk("完整片段", reason), answer_chunk("多余内容")])
+                client = LLMClient(
+                    api_key="key", base_url="https://llm.example/v1",
+                    sdk_client=FakeSDKClient([stream]), verbose=False,
+                )
+                received = []
+                if succeeds:
+                    received.extend(client.stream_answer("问题", raise_on_error=True))
+                else:
+                    with self.assertRaises(LLMGenerationIncompleteError):
+                        received.extend(client.stream_answer("问题", raise_on_error=True))
+                self.assertEqual(received, ["完整片段"])
+                self.assertEqual(stream.pulled, 1, "A terminal marker must finish before socket EOF")
+                self.assertTrue(stream.closed)
+
+    def test_real_sdk_closes_transport_at_stop_without_waiting_for_eof(self):
+        class UpstreamBody(httpx.SyncByteStream):
+            closed = False
+
+            def __iter__(self):
+                yield (
+                    b'data: {"id":"fixture","object":"chat.completion.chunk","created":0,'
+                    b'"model":"fixture","choices":[{"index":0,"delta":{"content":"answer"},'
+                    b'"finish_reason":"stop"}]}\r\n\r\n'
+                )
+                raise AssertionError("Client read upstream after a complete answer")
+
+            def close(self):
+                self.closed = True
+
+        body = UpstreamBody()
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=body)
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as transport, OpenAI(
+            api_key="fixture-key", base_url="http://fixture.invalid/v1", http_client=transport,
+            max_retries=0,
+        ) as sdk:
+            client = LLMClient(
+                api_key="fixture-key", base_url="http://fixture.invalid/v1",
+                sdk_client=sdk, verbose=False,
+            )
+            self.assertEqual(list(client.stream_answer("question", raise_on_error=True)), ["answer"])
+            self.assertTrue(body.closed)
+            self.assertEqual(len(requests), 1)
 
     def test_stream_can_raise_errors_for_engine_handling(self):
         client = LLMClient(
