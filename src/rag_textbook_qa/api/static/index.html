@@ -1086,6 +1086,7 @@ footer details p { margin-top: 6px; text-align: left; }
       if (bookFilter.value && record.book_id !== bookFilter.value) return false;
       if ($("history-favorites").checked && !record.favorite) return false;
       if ($("history-notes").checked && !record.note) return false;
+      if (!keywords.length) return true;
       const text = [record.query, record.result.answer || "", record.book_label, record.note || "",
         ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
         .join("\n").toLocaleLowerCase();
