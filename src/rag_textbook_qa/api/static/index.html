@@ -328,10 +328,33 @@ footer details p { margin-top: 6px; text-align: left; }
   const readerCleanup = new WeakMap();
   let reviewState = null, reviewRevealed = false;
   let initialHistoryBook = "";
+  let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
+  let historyChannel = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
   const sessionRemove = key => { try { sessionStorage.removeItem(key); } catch { /* optional */ } };
+
+  function queueHistoryRefresh() {
+    historyRefreshPending = true;
+    flushHistoryRefresh();
+  }
+
+  function flushHistoryRefresh() {
+    if (!historyRefreshPending || historyRefreshing || historyLoading || historyWriting || busy || !historyDB) return;
+    historyRefreshPending = false; historyRefreshing = true;
+    refreshHistory().catch(() => historyError("其他标签页的更新暂时无法读取，请重新打开历史或刷新页面。"))
+      .finally(() => { historyRefreshing = false; flushHistoryRefresh(); });
+  }
+
+  try {
+    if (typeof BroadcastChannel === "function") {
+      historyChannel = new BroadcastChannel("rag-qa-history-changes");
+      historyChannel.onmessage = event => { if (event.data?.type === "changed") queueHistoryRefresh(); };
+    }
+  } catch { /* Focus/visibility refresh remains available. */ }
+  window.addEventListener("focus", queueHistoryRefresh);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) queueHistoryRefresh(); });
 
   function renderMarkdown(source) {
     if (window.RagMarkdown) return window.RagMarkdown.render(source);
@@ -812,7 +835,12 @@ footer details p { margin-top: 6px; text-align: left; }
       if (!historyDB) { reject(new Error("history unavailable")); return; }
       const transaction = historyDB.transaction("records", mode);
       let value;
-      transaction.oncomplete = () => resolve(value);
+      transaction.oncomplete = () => {
+        if (mode === "readwrite") {
+          try { historyChannel?.postMessage({type: "changed"}); } catch { /* optional notification */ }
+        }
+        resolve(value);
+      };
       transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("history failed"));
       try { run(transaction.objectStore("records"), result => { value = result; }); }
       catch (error) { transaction.abort(); reject(error); }
@@ -883,13 +911,27 @@ footer details p { margin-top: 6px; text-align: left; }
       : draft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
     status.setAttribute("role", "status");
     const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
-    save.type = cancelNote.type = "button";
-    actions.append(save, cancelNote); editor.append(label, status, actions); card.append(editor);
+    const exportDraft = element("button", "action", "导出草稿（含原问答）");
+    save.type = cancelNote.type = exportDraft.type = "button";
+    exportDraft.addEventListener("click", () => {
+      const url = URL.createObjectURL(new Blob([answerRecord(record.query, record.result, area.value)], {type: "text/markdown;charset=utf-8"}));
+      const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
+      document.body.append(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    actions.append(save, exportDraft, cancelNote); editor.append(label, status, actions); card.append(editor);
     area.addEventListener("input", () => {
       sessionSet(draftKey, JSON.stringify({ text: area.value, baseline }));
       status.textContent = "草稿尚未保存；刷新后可在当前标签页重新打开笔记继续编辑。";
     });
-    cancelNote.addEventListener("click", () => { editor.remove(); card.querySelector("[data-note]")?.focus({preventScroll: true}); });
+    cancelNote.addEventListener("click", async () => {
+      editor.remove();
+      if (!records.some(item => item.id === id)) {
+        sessionRemove(draftKey);
+        try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
+      }
+      (card.isConnected ? card.querySelector("[data-note]") : $("toggle-history"))?.focus({preventScroll: true});
+    });
     save.addEventListener("click", async () => {
       if (busy || historyWriting) return;
       const text = area.value.trim() ? area.value : "";
@@ -976,7 +1018,7 @@ footer details p { margin-top: 6px; text-align: left; }
     remove.type = "button";
     remove.addEventListener("click", () => {
       if (busy || historyWriting || !window.confirm("删除这条问答及引用快照？无法撤销。")) return;
-      changeHistory(store => store.delete(id));
+      changeHistory(store => store.delete(id), new Set([id]));
     });
     actions.append(favorite, note, edit, remove);
     return actions;
@@ -1007,10 +1049,12 @@ footer details p { margin-top: 6px; text-align: left; }
     const candidates = $("history-review-all").checked ? filteredRecords.filter(record => record.favorite) : due;
     $("history-review-count").textContent = `当前筛选中有 ${filteredRecords.filter(record => record.favorite).length} 条收藏，${due.length} 条待复习；每轮最多 20 条。`;
     $("history-review-start").disabled = busy || historyWriting || !candidates.length;
-    for (const id of ["review-again", "review-familiar"]) $(id).disabled = busy || historyWriting || !reviewRevealed;
+    const currentReview = reviewState && records.find(record => record.id === reviewState.ids[reviewState.index]);
+    for (const id of ["review-again", "review-familiar"]) $(id).disabled = busy || historyWriting || !reviewRevealed || !currentReview?.favorite;
     for (const id of ["review-reveal", "review-skip", "review-end"]) $(id).disabled = busy || historyWriting;
     for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = busy || !!reviewState;
     if (reviewState) clear.hidden = true;
+    flushHistoryRefresh();
   }
 
   function showRecord(record) {
@@ -1065,31 +1109,46 @@ footer details p { margin-top: 6px; text-align: left; }
     syncHistoryControls();
   }
 
-  async function refreshHistory() {
+  async function refreshHistory({discardDraftsFor = new Set()} = {}) {
+    const generation = ++historyReadGeneration;
     const previousIds = records.map(record => record.id);
-    records = await historyTransaction("readonly", (store, done) => {
+    const loaded = await historyTransaction("readonly", (store, done) => {
       const request = store.getAll();
       request.onsuccess = () => done(request.result);
     });
+    if (generation !== historyReadGeneration) return;
+    records = loaded;
     records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
     const ids = new Set(records.map(record => record.id));
-    for (const id of previousIds) if (!ids.has(id)) sessionRemove(`rag-qa-note-draft-${id}`);
+    const protectedIds = new Set();
+    for (const editor of thread.querySelectorAll(".note-editor")) {
+      const id = editor.closest("[data-history-id]").dataset.historyId;
+      if (!ids.has(id) && !discardDraftsFor.has(id)) {
+        protectedIds.add(id);
+        if (!editor.querySelector(".note-record-missing")) {
+          const warning = element("p", "notice warn note-record-missing", "这条问答已在其他页面删除。当前草稿仍保留，请先导出草稿；关闭编辑后将收起这条记录，刷新也无法从历史恢复。");
+          warning.setAttribute("role", "status"); editor.prepend(warning);
+        }
+      } else editor.querySelector(".note-record-missing")?.remove();
+    }
+    for (const id of previousIds) if (!ids.has(id) && !protectedIds.has(id)) sessionRemove(`rag-qa-note-draft-${id}`);
     for (const row of thread.querySelectorAll("[data-history-id]")) {
-      if (!ids.has(row.dataset.historyId)) {
+      if (!ids.has(row.dataset.historyId) && !protectedIds.has(row.dataset.historyId)) {
         const card = row.querySelector(".answer");
         if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
         row.remove();
       }
     }
-    visibleIds = visibleIds.filter(id => ids.has(id));
+    visibleIds = visibleIds.filter(id => ids.has(id) || protectedIds.has(id));
     empty.hidden = !!thread.querySelector(".msg");
     clear.hidden = !thread.querySelector(".msg");
     document.querySelector(".app").classList.toggle("has-reader", !!thread.querySelector(".answer.reading"));
     renderHistory();
-    if (reviewState && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewQuestion();
+    if (reviewState && !protectedIds.has(reviewState.ids[reviewState.index])
+        && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewQuestion();
   }
 
-  async function changeHistory(run) {
+  async function changeHistory(run, discardDraftsFor = new Set()) {
     if (busy || historyWriting || !historyDB) return;
     const previousFocus = document.activeElement;
     const focusedFavorite = previousFocus?.dataset.favorite;
@@ -1097,7 +1156,7 @@ footer details p { margin-top: 6px; text-align: left; }
     syncHistoryControls();
     try {
       await historyTransaction("readwrite", run);
-      await refreshHistory();
+      await refreshHistory({discardDraftsFor});
       rememberView();
     } catch {
       historyError("历史记录更新失败，请刷新页面后重试；原记录未主动清理。");
@@ -1194,6 +1253,7 @@ footer details p { margin-top: 6px; text-align: left; }
     } finally {
       historyLoading = false;
       send.disabled = busy || bookSelect.disabled;
+      flushHistoryRefresh();
     }
   }
 
@@ -1667,19 +1727,20 @@ footer details p { margin-top: 6px; text-align: left; }
   });
   $("history-clean").addEventListener("click", () => {
     if (busy || historyWriting || !window.confirm("删除所有未收藏的问答及引用快照？收藏将保留，操作无法撤销。")) return;
+    const removed = new Set();
     changeHistory(store => {
       const request = store.openCursor();
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) return;
-        if (!cursor.value.favorite) cursor.delete();
+        if (!cursor.value.favorite) { removed.add(cursor.primaryKey); cursor.delete(); }
         cursor.continue();
       };
-    });
+    }, removed);
   });
   $("history-delete-all").addEventListener("click", () => {
     if (busy || historyWriting || !window.confirm("删除全部问答及引用快照，包括收藏？操作无法撤销。")) return;
-    changeHistory(store => store.clear());
+    changeHistory(store => store.clear(), new Set(records.map(record => record.id)));
   });
   reloadBooks.addEventListener("click", loadBooks);
   try {
