@@ -1130,6 +1130,56 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.assertFalse(any(row.get("review") for row in self.history_records()))
 
+    def test_opening_another_history_record_ends_review_before_showing_its_answer(self) -> None:
+        self.open_page()
+        self.saved_answer("复习中的问题")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.saved_answer("只想查看的另一条记录")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-item").filter(has_text="只想查看的另一条记录").get_by_role("button", name="查看原回答").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator(".composer")).to_be_visible()
+        self.expect(self.page.locator(".user")).to_have_text("只想查看的另一条记录")
+        self.assertFalse(any(row.get("review") for row in self.history_records()))
+
+    def test_unfavoriting_current_review_skips_it_without_grading(self) -> None:
+        self.open_page()
+        for question in ("当前复习问题", "下一条复习问题"):
+            self.saved_answer(question)
+            self.page.locator(".answer").last.get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").last.get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.expect(self.page.locator("#review-question")).to_have_text("当前复习问题")
+        self.page.locator("#review-reveal").click()
+        self.page.locator(".answer").get_by_role("button", name="★ 已收藏").click()
+        self.expect(self.page.locator("#review-question")).to_have_text("下一条复习问题")
+        self.expect(self.page.locator(".answer")).to_have_count(0)
+        self.page.locator("#review-end").click()
+        self.assertFalse(any(row.get("review") for row in self.history_records()))
+
+    def test_other_tab_unfavorite_is_checked_before_review_rating_is_saved(self) -> None:
+        self.open_page()
+        self.saved_answer("另一标签页取消的收藏")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="★ 已收藏").click()
+        self.expect(other.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#history-status")).to_contain_text("已复习 0 条")
+        self.assertFalse(self.history_records()[0].get("review"))
+
     def test_recent_imports_can_reopen_and_discard_copy_after_session_pointer_is_lost(self) -> None:
         self.backend.imports_enabled = True
         self.page.goto(self.base_url + "/imports")

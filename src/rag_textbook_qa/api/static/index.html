@@ -845,6 +845,9 @@ footer details p { margin-top: 6px; text-align: left; }
     if (busy || historyWriting) return;
     const record = records.find(item => item.id === id);
     if (!record) return;
+    // A library selection is a normal reading action. Never leave the review
+    // controls grading the old question while a different answer is visible.
+    if (reviewState) endReview();
     clearThread();
     const card = showRecord(record);
     rememberView();
@@ -1083,6 +1086,7 @@ footer details p { margin-top: 6px; text-align: left; }
     clear.hidden = !thread.querySelector(".msg");
     document.querySelector(".app").classList.toggle("has-reader", !!thread.querySelector(".answer.reading"));
     renderHistory();
+    if (reviewState && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewQuestion();
   }
 
   async function changeHistory(run) {
@@ -1230,13 +1234,13 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function rateReview(rating, days) {
     if (!reviewState || !reviewRevealed || busy || historyWriting) return;
-    const id = reviewState.ids[reviewState.index];
+    const session = reviewState, index = session.index, id = session.ids[index];
     historyWriting = true; syncHistoryControls();
     try {
       const saved = await historyTransaction("readwrite", (store, done) => {
         const request = store.get(id);
         request.onsuccess = () => {
-          if (!request.result) { done(false); return; }
+          if (!request.result?.favorite) { done(false); return; }
           const now = new Date(), next = new Date(now);
           next.setDate(next.getDate() + days);
           const review = { last_reviewed_at: now.toISOString(), next_review_at: next.toISOString(),
@@ -1245,10 +1249,14 @@ footer details p { margin-top: 6px; text-align: left; }
           catch { store.transaction.abort(); }
         };
       });
+      if (saved) session.completed++;
       await refreshHistory();
-      if (saved) reviewState.completed++;
-      reviewState.index++;
-      reviewQuestion();
+      // Refresh may already have skipped a deleted/unfavorited record or ended
+      // the session. Only advance this same question once.
+      if (reviewState === session && session.index === index) {
+        session.index++;
+        reviewQuestion();
+      }
     } catch { $("review-meta").textContent = "复习进度未保存，请检查浏览器存储后重试；当前问题仍保留。"; }
     finally { historyWriting = false; syncHistoryControls(); }
   }
