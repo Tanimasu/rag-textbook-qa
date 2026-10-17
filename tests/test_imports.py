@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -25,6 +27,18 @@ class ImportManagerTests(unittest.TestCase):
 
     def prepare(self):
         return self.manager.prepare("os", "教材.json", json.dumps(CHUNKS).encode())
+
+    def start_blocked_import(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def build(path, book, progress):
+            entered.set()
+            release.wait(10)
+        self.manager._build = MagicMock(side_effect=build)
+        job = self.prepare()
+        self.manager.start(job["job_id"])
+        self.assertTrue(entered.wait(3))
+        return job
 
     def test_prepare_preserves_source_and_previews_without_model_or_index_write(self):
         original = json.dumps(CHUNKS, ensure_ascii=False).encode()
@@ -150,6 +164,101 @@ class ImportManagerTests(unittest.TestCase):
         self.assertLessEqual(len(job["filename"]), 160)
         self.assertTrue(job["filename"].endswith(".json"))
         self.assertEqual(job["total_chunks"], 1)
+
+    def test_other_manager_keeps_running_job_in_building_state(self):
+        job = self.start_blocked_import()
+        other = ImportManager(self.root, self.builder)
+        self.assertEqual(other.status(job["job_id"])["state"], "building")
+        self.assertEqual(self.manager.status(job["job_id"])["state"], "building")
+
+    def test_other_manager_cannot_discard_an_active_import_copy(self):
+        job = self.start_blocked_import()
+        other = ImportManager(self.root, self.builder)
+        with self.assertRaises(ImportBusyError):
+            other.discard(job["job_id"])
+        self.assertTrue((self.root / job["job_id"] / "chunks.json").is_file())
+
+    def test_other_manager_repeated_start_observes_same_running_job(self):
+        job = self.start_blocked_import()
+        other = ImportManager(self.root, self.builder)
+        self.addCleanup(other.close)
+        self.assertEqual(other.start(job["job_id"])["state"], "building")
+        other.close()
+        self.builder.assert_not_called()
+
+    def test_another_process_observes_and_protects_running_job_without_building(self):
+        job = self.start_blocked_import()
+        script = """
+import json, sys
+from pathlib import Path
+from rag_textbook_qa.api.imports import ImportManager, ImportBusyError
+builds = []
+manager = ImportManager(Path(sys.argv[1]), lambda *args: builds.append(True))
+result = {"state": manager.status(sys.argv[2])["state"]}
+result["start_state"] = manager.start(sys.argv[2])["state"]
+try:
+    manager.discard(sys.argv[2])
+    result["discard_blocked"] = False
+except ImportBusyError:
+    result["discard_blocked"] = True
+manager.close()
+result["builds"] = len(builds)
+print(json.dumps(result))
+"""
+        child = subprocess.run([sys.executable, "-c", script, str(self.root), job["job_id"]],
+                               capture_output=True, text=True, timeout=10, check=True)
+        observed = json.loads(child.stdout.strip().splitlines()[-1])
+        self.assertEqual(observed, {"state": "building", "start_state": "building",
+                                    "discard_blocked": True, "builds": 0})
+        self.assertTrue((self.root / job["job_id"] / "chunks.json").is_file())
+
+    def test_process_exit_releases_job_lease_and_allows_explicit_retry(self):
+        job = self.prepare()
+        script = """
+import os, sys, threading
+from pathlib import Path
+from rag_textbook_qa.api.imports import ImportManager
+entered = threading.Event()
+def build(*args):
+    entered.set()
+    threading.Event().wait(30)
+manager = ImportManager(Path(sys.argv[1]), build)
+manager.start(sys.argv[2])
+if not entered.wait(3):
+    os._exit(2)
+os._exit(0)
+"""
+        subprocess.run([sys.executable, "-c", script, str(self.root), job["job_id"]],
+                       capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(self.manager.status(job["job_id"])["state"], "interrupted")
+        self.manager.start(job["job_id"])
+        self.manager.close()
+        self.assertEqual(self.manager.status(job["job_id"])["state"], "complete")
+        self.builder.assert_called_once()
+
+    def test_old_pending_completion_does_not_overwrite_a_new_running_attempt(self):
+        job = self.prepare()
+        original_write = self.manager._write
+        def fail_completion(value):
+            if value["state"] == "complete":
+                raise OSError("storage failure")
+            original_write(value)
+        with patch.object(self.manager, "_write", side_effect=fail_completion):
+            self.manager.start(job["job_id"])
+            self.manager.close()
+        entered, release = threading.Event(), threading.Event()
+        def build(path, book, progress):
+            entered.set()
+            release.wait(10)
+        other = ImportManager(self.root, build)
+        self.addCleanup(other.close)
+        self.addCleanup(release.set)
+        self.assertEqual(other.status(job["job_id"])["state"], "interrupted")
+        other.start(job["job_id"])
+        self.assertTrue(entered.wait(3))
+        self.assertEqual(self.manager.status(job["job_id"])["state"], "building")
+        disk = json.loads((self.root / job["job_id"] / "job.json").read_text())
+        self.assertEqual(disk["state"], "building")
 
     def test_thread_start_failure_does_not_block_later_import_or_retry(self):
         first, second = self.prepare(), self.prepare()

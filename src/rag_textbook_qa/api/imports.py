@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
+
 from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.indexing.vectorizer import _load_chunks
 from rag_textbook_qa.ingestion.chunker import SmartTextbookChunker
@@ -36,6 +38,7 @@ class ImportManager:
         self._active: set[str] = set()
         self._threads: list[threading.Thread] = []
         self._pending_metadata: dict[str, dict[str, Any]] = {}
+        self._running_locks: dict[str, FileLock] = {}
 
     def _folder(self, job_id: str) -> Path:
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -52,6 +55,21 @@ class ImportManager:
         temporary.replace(folder / "job.json")
         self._pending_metadata.pop(job["job_id"], None)
 
+    def _try_job_lock(self, job_id: str) -> FileLock | None:
+        self._folder(job_id)
+        lock_root = self.root / ".locks"
+        if lock_root.is_symlink():
+            raise LookupError("导入任务锁目录不可用")
+        lock_root.mkdir(parents=True, exist_ok=True)
+        # Keep locks outside removable job folders. The worker releases the
+        # same lock object acquired by the request thread.
+        lock = FileLock(lock_root / f"{job_id}.lock", timeout=0, thread_local=False)
+        try:
+            lock.acquire()
+        except Timeout:
+            return None
+        return lock
+
     def _save_terminal(self, job: dict[str, Any]) -> None:
         try:
             self._write(job)
@@ -61,27 +79,52 @@ class ImportManager:
 
     def _load(self, job_id: str) -> dict[str, Any]:
         folder = self._folder(job_id)
-        if job_id in self._pending_metadata:
-            if not folder.is_dir():
-                raise LookupError("没有这个导入任务")
-            return dict(self._pending_metadata[job_id])
+        pending = self._pending_metadata.get(job_id)
         try:
             job = loads_strict((folder / "job.json").read_text(encoding="utf-8"))
             if not isinstance(job, dict) or job.get("job_id") != job_id:
                 raise ValueError("导入任务记录不完整")
-            return job
         except FileNotFoundError:
+            if pending is not None and folder.is_dir():
+                return dict(pending)
+            self._pending_metadata.pop(job_id, None)
             raise LookupError("没有这个导入任务") from None
+        except (OSError, ValueError, TypeError):
+            if pending is not None and folder.is_dir():
+                return dict(pending)
+            raise
+        if pending is not None:
+            if job.get("attempt_id") == pending.get("attempt_id"):
+                return dict(pending)
+            # Another service explicitly retried this job. A previous in-memory
+            # completion must never replace its newer durable attempt.
+            self._pending_metadata.pop(job_id, None)
+        return job
 
     def status(self, job_id: str) -> dict[str, Any]:
         with self._lock:
-            if job_id in self._pending_metadata:
-                with suppress(Exception):
-                    self._write(self._load(job_id))
             job = self._load(job_id)
+            if job_id in self._pending_metadata:
+                lease = self._try_job_lock(job_id)
+                if lease is not None:
+                    try:
+                        job = self._load(job_id)
+                        if job_id in self._pending_metadata:
+                            with suppress(Exception):
+                                self._write(job)
+                    finally:
+                        lease.release()
+                job = self._load(job_id)
             if job["state"] == "building" and job_id not in self._active:
-                job.update(state="interrupted", message="任务执行已中断，未确认完成；请检查教材列表后重试。")
-                self._write(job)
+                lease = self._try_job_lock(job_id)
+                if lease is not None:
+                    try:
+                        job = self._load(job_id)
+                        if job["state"] == "building":
+                            job.update(state="interrupted", message="任务执行已中断，未确认完成；请检查教材列表后重试。")
+                            self._write(job)
+                    finally:
+                        lease.release()
             if job_id in self._pending_metadata:
                 return {**job, "metadata_persisted": False,
                         "message": job["message"] + " 进度未能保存到磁盘；当前结果仅由本次服务保留，请恢复存储后重新读取进度。"}
@@ -113,8 +156,15 @@ class ImportManager:
             self._load(job_id)
             if job_id in self._active:
                 raise ImportBusyError("任务仍在建立索引，不能清理导入副本")
-            shutil.rmtree(self._folder(job_id))
-            self._pending_metadata.pop(job_id, None)
+            lease = self._try_job_lock(job_id)
+            if lease is None:
+                raise ImportBusyError("任务仍由其他服务处理，不能清理导入副本")
+            try:
+                self._load(job_id)
+                shutil.rmtree(self._folder(job_id))
+                self._pending_metadata.pop(job_id, None)
+            finally:
+                lease.release()
 
     def prepare(self, book_id: str, filename: str, content: bytes) -> dict[str, Any]:
         if book_id not in BOOK_LABELS:
@@ -187,28 +237,46 @@ class ImportManager:
                 return self.status(job_id)
             if self._active:
                 raise ImportBusyError("另一个教材正在建立索引，请等待它完成")
-            chunks_file = self._folder(job_id) / "chunks.json"
-            if hashlib.sha256(chunks_file.read_bytes()).hexdigest() != job["chunks_sha256"]:
-                raise ValueError("预览后的分块文件发生变化，请重新上传教材")
-            if job["book_id"] not in BOOK_LABELS:
-                raise ValueError("不支持的教材")
-            job.update(state="building", stage="embedding", completed_chunks=0, message="开始建立索引…")
-            self._write(job)
-            self._active.add(job_id)
-            thread = None
+            lease = self._try_job_lock(job_id)
+            if lease is None:
+                current = self.status(job_id)
+                if current["state"] == "building":
+                    return current
+                raise ImportBusyError("任务正在其他服务中处理，请稍后读取进度")
+            transferred = False
             try:
-                thread = threading.Thread(target=self._run, args=(dict(job),), daemon=True,
-                                          name=f"textbook-import-{job_id[:8]}")
-                self._threads = [previous for previous in self._threads if previous.is_alive()]
-                self._threads.append(thread)
-                thread.start()
-            except Exception:
-                self._active.discard(job_id)
-                self._threads = [previous for previous in self._threads if previous is not thread]
-                job.update(state="failed", message="索引任务暂时无法启动，上传与预览已保留，可稍后重试。")
-                self._save_terminal(job)
-                raise
-            return job
+                job = self._load(job_id)
+                if job["state"] == "complete":
+                    return self.status(job_id)
+                chunks_file = self._folder(job_id) / "chunks.json"
+                if hashlib.sha256(chunks_file.read_bytes()).hexdigest() != job["chunks_sha256"]:
+                    raise ValueError("预览后的分块文件发生变化，请重新上传教材")
+                if job["book_id"] not in BOOK_LABELS:
+                    raise ValueError("不支持的教材")
+                job.update(state="building", stage="embedding", completed_chunks=0,
+                           attempt_id=uuid.uuid4().hex, message="开始建立索引…")
+                self._write(job)
+                self._active.add(job_id)
+                self._running_locks[job_id] = lease
+                thread = None
+                try:
+                    thread = threading.Thread(target=self._run, args=(dict(job),), daemon=True,
+                                              name=f"textbook-import-{job_id[:8]}")
+                    self._threads = [previous for previous in self._threads if previous.is_alive()]
+                    self._threads.append(thread)
+                    thread.start()
+                except Exception:
+                    self._active.discard(job_id)
+                    self._running_locks.pop(job_id, None)
+                    self._threads = [previous for previous in self._threads if previous is not thread]
+                    job.update(state="failed", message="索引任务暂时无法启动，上传与预览已保留，可稍后重试。")
+                    self._save_terminal(job)
+                    raise
+                transferred = True
+                return job
+            finally:
+                if not transferred:
+                    lease.release()
 
     def _run(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
@@ -238,6 +306,9 @@ class ImportManager:
         finally:
             with self._lock:
                 self._active.discard(job_id)
+                lease = self._running_locks.pop(job_id, None)
+                if lease is not None:
+                    lease.release()
 
     def close(self) -> None:
         for thread in self._threads:
