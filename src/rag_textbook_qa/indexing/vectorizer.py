@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import time
 import traceback
@@ -20,6 +19,7 @@ from tqdm import tqdm
 from rag_textbook_qa.catalog import book_id_from_chunk_stem
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
+from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
 
@@ -52,8 +52,10 @@ def _validate_book_id(book_name: str) -> str:
 
 def _load_chunks(chunks_path: str | Path) -> list[dict[str, Any]]:
     path = Path(chunks_path).expanduser().resolve()
-    with path.open(encoding="utf-8") as stream:
-        chunks = json.load(stream)
+    try:
+        chunks = loads_strict(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError("分块 JSON 格式不正确，不能包含重复字段或非有限数值") from exc
     if not isinstance(chunks, list) or not chunks:
         raise ValueError("chunks 文件必须包含至少一个文本块")
 

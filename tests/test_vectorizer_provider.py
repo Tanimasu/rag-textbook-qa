@@ -197,6 +197,29 @@ class VectorizerProviderTests(unittest.TestCase):
                 self.assertEqual(provider.document_calls, 0)
                 self.assertEqual(vectorizer.client.list_collections(), [])
 
+    def test_ambiguous_chunk_json_does_not_embed_or_replace_published_book(self):
+        with TemporaryIndexDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chunks_path = root / "chunks.json"
+            provider = FakeEmbeddingProvider()
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                MultiBookVectorizer(db_path=root / "db", embedding_provider=provider) as vectorizer,
+            ):
+                chunks_path.write_text(json.dumps(_chunks()), encoding="utf-8")
+                vectorizer.vectorize_book(chunks_path, "os")
+                revision = vectorizer.client.get_collection("textbook_os").metadata.copy()
+                for ambiguous in ('[{"content":"first","content":"second"}]',
+                                  '[{"extra":NaN}]', '[{"extra":1e400}]'):
+                    chunks_path.write_text(ambiguous, encoding="utf-8")
+                    with self.subTest(value=ambiguous), self.assertRaisesRegex(ValueError, "重复字段或非有限数值"):
+                        vectorizer.vectorize_book(chunks_path, "os")
+                    self.assertEqual(provider.document_calls, 1)
+                    collection = vectorizer.client.get_collection("textbook_os")
+                    self.assertEqual(collection.count(), 2)
+                    self.assertEqual(collection.metadata, revision)
+
 
 if __name__ == "__main__":
     unittest.main()
