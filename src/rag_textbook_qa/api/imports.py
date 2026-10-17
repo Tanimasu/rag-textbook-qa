@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import threading
 import uuid
 from collections.abc import Callable
@@ -50,7 +51,10 @@ class ImportManager:
 
     def _load(self, job_id: str) -> dict[str, Any]:
         try:
-            return loads_strict((self._folder(job_id) / "job.json").read_text(encoding="utf-8"))
+            job = loads_strict((self._folder(job_id) / "job.json").read_text(encoding="utf-8"))
+            if not isinstance(job, dict) or job.get("job_id") != job_id:
+                raise ValueError("导入任务记录不完整")
+            return job
         except FileNotFoundError:
             raise LookupError("没有这个导入任务") from None
 
@@ -61,6 +65,34 @@ class ImportManager:
                 job.update(state="interrupted", message="任务执行已中断，未确认完成；请检查教材列表后重试。")
                 self._write(job)
             return job
+
+    def list_jobs(self, limit: int = 20) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("任务列表数量必须在 1–100 之间")
+        with self._lock:
+            if not self.root.exists():
+                return {"jobs": [], "unreadable_count": 0}
+            jobs, unreadable = [], 0
+            for folder in sorted(self.root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
+                if not folder.is_dir() or not re.fullmatch(r"[a-f0-9]{32}", folder.name):
+                    continue
+                try:
+                    job = self.status(folder.name)
+                    fields = ("job_id", "book_id", "book", "filename", "created_at", "state",
+                              "completed_chunks", "total_chunks", "message")
+                    jobs.append({key: job[key] for key in fields})
+                except (OSError, ValueError, LookupError, TypeError):
+                    unreadable += 1
+                if len(jobs) >= limit:
+                    break
+            return {"jobs": jobs, "unreadable_count": unreadable}
+
+    def discard(self, job_id: str) -> None:
+        with self._lock:
+            self._load(job_id)
+            if job_id in self._active:
+                raise ImportBusyError("任务仍在建立索引，不能清理导入副本")
+            shutil.rmtree(self._folder(job_id))
 
     def prepare(self, book_id: str, filename: str, content: bytes) -> dict[str, Any]:
         if book_id not in BOOK_LABELS:

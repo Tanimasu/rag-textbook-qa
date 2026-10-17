@@ -155,6 +155,26 @@ class VectorizerProviderTests(unittest.TestCase):
                     )
                 )
 
+    def test_progress_failure_before_publication_keeps_old_index_and_removes_staging(self):
+        with TemporaryIndexDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chunks_path = root / "chunks.json"
+            chunks_path.write_text(json.dumps(_chunks()), encoding="utf-8")
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                MultiBookVectorizer(db_path=root / "db", embedding_provider=FakeEmbeddingProvider()) as vectorizer,
+            ):
+                vectorizer.vectorize_book(chunks_path, "os")
+                for failure_stage in ("embedding", "publishing"):
+                    def progress(done, total, stage, expected_stage=failure_stage):
+                        if done and stage == expected_stage:
+                            raise RuntimeError("progress file unavailable")
+                    with self.subTest(stage=failure_stage), self.assertRaises(RuntimeError):
+                        vectorizer.vectorize_book(chunks_path, "os", batch_size=1, on_progress=progress)
+                    self.assertEqual(vectorizer.client.get_collection("textbook_os").count(), 2)
+                    self.assertFalse(any(row.name.startswith("ragbuild_") for row in vectorizer.client.list_collections()))
+
     def test_invalid_chunks_fail_before_embedding_or_collection_creation(self):
         with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)

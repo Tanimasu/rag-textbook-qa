@@ -70,6 +70,7 @@ def retrieval_result() -> dict[str, Any]:
 def import_result(state: str = "prepared") -> dict[str, Any]:
     return {
         "job_id": "a" * 32, "book_id": "os", "book": "操作系统", "filename": "教材.md",
+        "created_at": "2026-10-17T00:00:00+00:00",
         "state": state, "stage": "embedding" if state == "building" else state,
         "completed_chunks": 1 if state == "building" else 2 if state == "complete" else 0,
         "total_chunks": 2,
@@ -112,6 +113,8 @@ class FakeBackend(ThreadingHTTPServer):
         self.import_state = "prepared"
         self.uploads: list[bytes] = []
         self.import_starts: list[dict[str, Any]] = []
+        self.import_deleted = False
+        self.import_read_gate: threading.Event | None = None
 
     def enqueue(self, reply: Reply) -> None:
         with self.lock:
@@ -153,8 +156,13 @@ class FakeHandler(BaseHTTPRequestHandler):
                 self.json_response({"books": [{"book_id": "os", "label": "操作系统"}],
                                     "formats": [".md", ".json"], "max_upload_bytes": 8388608,
                                     "storage_path": "/tmp/browser-imports"})
+        elif self.path == "/v1/imports/jobs":
+            self.json_response({"jobs": [import_result(self.server.import_state)] if self.server.uploads
+                                and not self.server.import_deleted else [], "unreadable_count": 0})
         elif self.path == "/v1/imports/" + "a" * 32:
-            self.json_response(import_result(self.server.import_state))
+            if self.server.import_read_gate:
+                self.server.import_read_gate.wait(10)
+            self.json_response({"detail": "没有这个导入任务"}, 404) if self.server.import_deleted else self.json_response(import_result(self.server.import_state))
         elif self.path.startswith("/v1/books/os/passages?"):
             chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
             self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
@@ -213,6 +221,7 @@ class FakeHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/v1/imports/prepare?"):
             self.server.uploads.append(content)
             self.server.import_state = "prepared"
+            self.server.import_deleted = False
             self.json_response(import_result())
             return
         payload = json.loads(content)
@@ -270,6 +279,13 @@ class FakeHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             # Stopping generation aborts the browser's fetch and closes this socket.
             pass
+
+    def do_DELETE(self) -> None:
+        if self.path == "/v1/imports/" + "a" * 32 and self.server.import_state != "building":
+            self.server.import_deleted = True
+            self.json_response({"status": "deleted"})
+        else:
+            self.json_response({"detail": "任务仍在建立索引"}, 409)
 
 
 class PublicChatBrowserTests(unittest.TestCase):
@@ -1085,6 +1101,74 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#review-end").click()
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.assertFalse(any(row.get("review") for row in self.history_records()))
+
+    def test_recent_imports_can_reopen_and_discard_copy_after_session_pointer_is_lost(self) -> None:
+        self.backend.imports_enabled = True
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        self.page.locator("#import-file").set_input_files({"name": "教材.md", "mimeType": "text/markdown", "buffer": b"textbook"})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.page.evaluate("sessionStorage.removeItem('rag-qa-import-job')")
+        self.page.reload()
+        self.expect(self.page.locator("#import-recent")).to_be_visible()
+        self.page.locator("#import-recent summary").click()
+        self.expect(self.page.locator(".recent-job")).to_have_count(1)
+        self.page.locator(".recent-job").get_by_role("button", name="查看进度").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.page.once("dialog", lambda dialog: dialog.dismiss())
+        self.page.locator(".recent-job").get_by_role("button", name="清理导入副本").click()
+        self.assertFalse(self.backend.import_deleted)
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator(".recent-job").get_by_role("button", name="清理导入副本").click()
+        self.expect(self.page.locator(".recent-job")).to_have_count(0)
+        self.expect(self.page.locator("#import-job")).to_be_hidden()
+        self.expect(self.page.locator("#import-status")).to_contain_text("已发布索引保留")
+        self.assertEqual(len(self.backend.uploads), 1)
+
+    def test_changed_import_file_invalidates_old_preview_and_running_copy_cannot_be_cleaned(self) -> None:
+        self.backend.imports_enabled = True
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        self.page.locator("#import-file").set_input_files({"name": "one.md", "mimeType": "text/markdown", "buffer": b"first"})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.page.locator("#import-confirm").check()
+        self.page.locator("#import-file").set_input_files({"name": "two.md", "mimeType": "text/markdown", "buffer": b"second"})
+        self.expect(self.page.locator("#import-job")).to_be_hidden()
+        self.expect(self.page.locator("#import-start")).to_be_disabled()
+        self.assertEqual(self.backend.import_starts, [])
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.page.locator("#import-confirm").check()
+        self.page.locator("#import-start").click()
+        self.expect(self.page.locator("#import-progress-text")).to_contain_text("1 / 2")
+        self.page.locator("#import-recent summary").click()
+        self.page.locator("#import-recent-reload").click()
+        self.expect(self.page.locator(".recent-job").get_by_role("button", name="清理导入副本")).to_be_disabled()
+        self.assertEqual(self.backend.uploads, [b"first", b"second"])
+
+    def test_old_import_progress_response_cannot_restore_invalidated_file_preview(self) -> None:
+        self.backend.imports_enabled = True
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        self.page.locator("#import-file").set_input_files({"name": "one.md", "mimeType": "text/markdown", "buffer": b"first"})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        gate = threading.Event()
+        self.backend.import_read_gate = gate
+        self.backend.gates.append(gate)
+        self.page.locator("#import-refresh").click()
+        self.page.locator("#import-file").set_input_files({"name": "two.md", "mimeType": "text/markdown", "buffer": b"second"})
+        self.expect(self.page.locator("#import-job")).to_be_hidden()
+        gate.set()
+        self.page.wait_for_load_state("networkidle")
+        self.expect(self.page.locator("#import-job")).to_be_hidden()
+        self.expect(self.page.locator("#import-start")).to_be_disabled()
+        self.assertEqual(self.backend.import_starts, [])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

@@ -109,3 +109,28 @@ class ImportManagerTests(unittest.TestCase):
         self.assertTrue((folder / "source.json").is_file())
         with self.assertRaises(LookupError):
             self.manager.status("../../outside")
+
+    def test_recent_jobs_skip_corrupt_metadata_and_discard_only_selected_copy(self):
+        first, second = self.prepare(), self.prepare()
+        corrupt = self.root / ("b" * 32)
+        corrupt.mkdir()
+        (corrupt / "job.json").write_text("not json")
+        listed = self.manager.list_jobs()
+        self.assertEqual({job["job_id"] for job in listed["jobs"]}, {first["job_id"], second["job_id"]})
+        self.assertEqual(listed["unreadable_count"], 1)
+        self.manager.discard(first["job_id"])
+        self.assertFalse((self.root / first["job_id"]).exists())
+        self.assertTrue((self.root / second["job_id"] / "source.json").is_file())
+        self.builder.assert_not_called()
+
+    def test_running_job_cannot_be_discarded(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        self.manager._build = lambda *_: (entered.set(), release.wait(3))
+        job = self.prepare()
+        self.manager.start(job["job_id"])
+        self.assertTrue(entered.wait(3))
+        with self.assertRaises(ImportBusyError):
+            self.manager.discard(job["job_id"])
+        self.assertTrue((self.root / job["job_id"] / "chunks.json").is_file())
+        release.set()

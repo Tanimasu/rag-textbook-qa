@@ -579,6 +579,15 @@ def create_api_app(
                 "storage_path": str(manager.root),
                 "books": [{"book_id": key, "label": label} for key, label in BOOK_LABELS.items()]}
 
+    @app.get("/v1/imports/jobs", summary="最近的本机教材导入任务")
+    def recent_imports(request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        try:
+            return manager.list_jobs()
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入任务列表暂时无法读取") from None
+
     @app.post("/v1/imports/prepare", summary="上传教材并解析预览，不建立索引")
     async def prepare_import(book_id: str, filename: str, request: Request) -> dict[str, Any]:
         manager = local_imports(request)
@@ -622,6 +631,20 @@ def create_api_app(
         except Exception as exc:  # noqa: BLE001 - do not expose local paths
             _log_failure(exc)
             raise HTTPException(status_code=503, detail="导入暂时无法启动") from None
+
+    @app.delete("/v1/imports/{job_id}", summary="清理本机导入副本，保留已发布索引")
+    def discard_import(job_id: str, request: Request) -> dict[str, str]:
+        manager = local_imports(request)
+        try:
+            manager.discard(job_id)
+            return {"status": "deleted"}
+        except ImportBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入副本暂时无法清理") from None
 
     @app.get("/v1/books/{book_id}/passages", summary="按引用位置阅读教材及相邻片段")
     def read_passages(book_id: str, chunk_id: str, request: Request) -> dict[str, Any]:

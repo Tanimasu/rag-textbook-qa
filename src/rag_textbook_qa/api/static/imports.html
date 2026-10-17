@@ -22,6 +22,8 @@ button:disabled { opacity:.5; cursor:default; } .actions { display:flex; flex-wr
 .preview { border-top:1px solid var(--line); padding:10px 0; overflow-wrap:anywhere; }
 .excerpt { white-space:pre-wrap; font-size:14px; max-height:14em; overflow:auto; }
 progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-name { overflow-wrap:anywhere; }
+.recent-job { padding:10px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }
+.recent-job button { margin-right:8px; } summary { cursor:pointer; font-weight:600; }
 @media(max-width:520px) { .panel { padding:12px; } label select { min-width:0; flex:1; } }
 </style>
 </head>
@@ -41,6 +43,13 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
     </form>
   </section>
   <p id="import-status" class="hint" role="status">正在连接本机服务…</p>
+  <details class="panel" id="import-recent" hidden>
+    <summary>最近导入任务</summary>
+    <p class="hint">可在新标签页继续查看。清理只删除上传、分块和进度副本，保留已发布的教材索引。</p>
+    <button id="import-recent-reload" type="button">刷新任务列表</button>
+    <p id="import-recent-status" class="hint" role="status"></p>
+    <div id="import-recent-list"></div>
+  </details>
   <section class="panel" id="import-job" hidden>
     <h2>2. 核对解析结果</h2>
     <div id="import-job-name"></div>
@@ -67,7 +76,9 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
   const get = key => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const set = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* optional */ } };
-  let job = null, timer = null, connected = false, uploading = false, starting = false;
+  let job = null, timer = null, connected = false, connecting = false, uploading = false, starting = false;
+  let recentToken = 0;
+  let jobToken = 0;
   function headers() {
     const result = {};
     const code = $("import-code").value.trim();
@@ -86,13 +97,15 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
   }
   function controls() {
     const building = job?.state === "building";
-    for (const id of ["import-book", "import-file"]) $(id).disabled = !connected || uploading || starting || building;
-    $("import-prepare").disabled = !connected || uploading || starting || building;
-    $("import-start").disabled = !job || building || uploading || starting || job.state === "complete" || !$("import-confirm").checked;
+    $("import-connect").disabled = connecting || uploading || starting;
+    for (const id of ["import-book", "import-file"]) $(id).disabled = !connected || connecting || uploading || starting || building;
+    $("import-prepare").disabled = !connected || connecting || uploading || starting || building;
+    $("import-start").disabled = !job || connecting || building || uploading || starting || job.state === "complete" || !$("import-confirm").checked;
     $("import-confirm").disabled = building || starting || job?.state === "complete";
   }
   function render(next) {
     job = next; set("rag-qa-import-job", job.job_id);
+    $("import-book").value = job.book_id;
     $("import-job").hidden = false;
     $("import-job-name").textContent = `${job.book} · ${job.filename}`;
     $("import-job-count").textContent = `解析得到 ${job.total_chunks} 个片段，以下预览前 ${job.preview.length} 个。`;
@@ -108,17 +121,58 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
     $("import-return").hidden = job.state !== "complete";
     controls();
     if (job.state === "building") { status("正在建立索引，可以离开页面，稍后回来查看。"); schedule(); }
-    else status(job.message, ["failed", "interrupted"].includes(job.state));
+    else { status(job.message, ["failed", "interrupted"].includes(job.state)); loadRecent(); }
+  }
+  async function loadRecent() {
+    if (!connected) return;
+    const token = ++recentToken;
+    try {
+      const data = await request("/v1/imports/jobs");
+      if (token !== recentToken) return;
+      $("import-recent").hidden = false;
+      const list = $("import-recent-list"); list.replaceChildren();
+      $("import-recent-status").textContent = data.jobs.length ? `最近 ${data.jobs.length} 条任务` : "还没有导入任务。";
+      if (data.unreadable_count) $("import-recent-status").textContent += ` · ${data.unreadable_count} 条暂时无法读取，原文件保留。`;
+      for (const item of data.jobs) {
+        const row = node("article", undefined, "recent-job");
+        const state = {prepared:"已解析",building:"建索引中",complete:"已完成",failed:"失败",interrupted:"已中断"}[item.state] || "状态未知";
+        row.append(node("div", `${item.book} · ${item.filename}`), node("p", `${state} · ${item.completed_chunks} / ${item.total_chunks} 个片段`, "hint"));
+        const view = node("button", "查看进度"), remove = node("button", "清理导入副本");
+        view.type = remove.type = "button"; remove.disabled = item.state === "building";
+        view.addEventListener("click", async () => {
+          if (uploading || starting || connecting) return;
+          const token = ++jobToken;
+          clearTimeout(timer);
+          try {
+            const next = await request(`/v1/imports/${item.job_id}`);
+            if (token !== jobToken) return;
+            render(next); $("import-job").scrollIntoView({block:"start"});
+          } catch (error) { if (token === jobToken) status(error.message, true); }
+        });
+        remove.addEventListener("click", async () => {
+          if (uploading || starting || !window.confirm("删除这次导入的上传、分块和进度副本？已发布的教材索引会保留。操作无法撤销。")) return;
+          remove.disabled = true;
+          try {
+            await request(`/v1/imports/${item.job_id}`, {method:"DELETE"});
+            if (job?.job_id === item.job_id) { jobToken++; job = null; clearTimeout(timer); set("rag-qa-import-job", ""); $("import-job").hidden = true; controls(); }
+            status("导入副本已清理，已发布索引保留。"); await loadRecent();
+          } catch (error) { status(error.message, true); remove.disabled = false; }
+        });
+        row.append(view, remove); list.append(row);
+      }
+    } catch { if (token === recentToken) $("import-recent-status").textContent = "最近任务暂时无法读取，可以刷新列表重试。"; }
   }
   function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 2000); }
   async function refresh() {
     clearTimeout(timer);
     if (!job) return;
-    try { render(await request(`/v1/imports/${job.job_id}`)); }
-    catch (error) { status(error.message + " 可点击“重新读取进度”恢复查看。", true); }
+    const token = ++jobToken, id = job.job_id;
+    try { const next = await request(`/v1/imports/${id}`); if (token === jobToken) render(next); }
+    catch (error) { if (token === jobToken) status(error.message + " 可点击“重新读取进度”恢复查看。", true); }
   }
   async function connect() {
-    $("import-connect").disabled = true;
+    if (connecting || uploading || starting) return;
+    connecting = true; controls();
     try {
       const health = await (await fetch("/health")).json();
       $("import-code-field").hidden = !health.access_code_required;
@@ -132,10 +186,11 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
       if (!$("import-book").value) $("import-book").selectedIndex = 0;
       connected = true;
       status("已连接本机服务，请选择教材和文件。");
+      await loadRecent();
       const saved = get("rag-qa-import-job");
       if (saved) { try { render(await request(`/v1/imports/${saved}`)); } catch { set("rag-qa-import-job", ""); } }
     } catch (error) { connected = false; status(error.message, true); }
-    finally { $("import-connect").disabled = false; controls(); }
+    finally { connecting = false; controls(); }
   }
   $("import-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -143,7 +198,7 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
     const file = $("import-file").files[0], book = $("import-book").value;
     if (!file || !book) return;
     if (!file.size || file.size > 8 * 1024 * 1024) { status("请选择非空且不超过 8 MB 的教材文件。", true); return; }
-    uploading = true; controls(); clearTimeout(timer); status("正在上传并解析教材，尚未开始建索引…");
+    uploading = true; jobToken++; controls(); clearTimeout(timer); status("正在上传并解析教材，尚未开始建索引…");
     $("import-confirm").checked = false;
     try {
       const next = await request(`/v1/imports/prepare?book_id=${encodeURIComponent(book)}&filename=${encodeURIComponent(file.name)}`, {
@@ -155,7 +210,7 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
   });
   $("import-start").addEventListener("click", async () => {
     if (!job || starting || !$("import-confirm").checked) return;
-    starting = true; controls();
+    starting = true; jobToken++; controls();
     try { render(await request(`/v1/imports/${job.job_id}/start`, {
       method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({confirm_replace:true}),
     })); }
@@ -163,7 +218,14 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
     finally { starting = false; controls(); }
   });
   $("import-confirm").addEventListener("change", controls);
+  for (const id of ["import-book", "import-file"]) $(id).addEventListener("change", () => {
+    if (uploading || starting || job?.state === "building" || !job) return;
+    jobToken++; job = null; clearTimeout(timer); set("rag-qa-import-job", "");
+    $("import-job").hidden = true; $("import-confirm").checked = false;
+    status("教材或文件已改变，请重新上传并核对解析结果。"); controls();
+  });
   $("import-refresh").addEventListener("click", refresh);
+  $("import-recent-reload").addEventListener("click", loadRecent);
   $("import-connect").addEventListener("click", connect);
   $("import-return").addEventListener("click", () => set("rag-qa-selected-book", job.book_id));
   $("import-code").value = get("rag-qa-access-code");
