@@ -423,6 +423,25 @@ class PublicChatBrowserTests(unittest.TestCase):
           };
         }""")
 
+    def conflicting_notes(self, draft: str = "本页要保留的草稿", latest: str = "另一页最新保存的笔记", *, live: bool = True):
+        if not live:
+            self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.open_page()
+        self.saved_answer("整理有冲突的笔记")
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill(draft)
+        other = self.context.new_page()
+        other.on("pageerror", lambda error: self.errors.append(str(error)))
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="学习笔记")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="学习笔记").click()
+        other.get_by_role("textbox", name="编辑学习笔记").fill(latest)
+        other.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(other.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
+        return other
+
     def capture_page(self, name: str) -> None:
         screenshot_dir = os.environ.get("RAG_QA_BROWSER_SCREENSHOTS")
         if screenshot_dir:
@@ -1523,6 +1542,9 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记", exact=True)).to_have_value("第一个标签页的草稿")
         merged = "另一个标签页已经保存的笔记\n  第一个标签页的补充  \n"
         self.page.get_by_role("textbox", name="编辑学习笔记", exact=True).fill(merged)
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记", exact=True)).to_have_value(merged)
         self.page.get_by_role("button", name="保存笔记", exact=True).click()
         self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
         self.assertEqual(self.history_records()[0]["note"], merged)
@@ -1570,6 +1592,139 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(self.history_records()[0]["review"]["count"], 2)
         self.assertEqual(self.history_records()[0]["review"]["last_rating"], "familiar")
         self.assertEqual(len(self.backend.asks), 1)
+
+    def test_conflicting_notes_can_be_joined_without_writing_until_explicit_save(self) -> None:
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.page.emulate_media(color_scheme="dark")
+        other = self.conflicting_notes()
+        other.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(other.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        original = self.history_records()
+        self.page.locator(".note-editor").evaluate("element => element.scrollIntoView({block:'start'})")
+        self.capture_page("note-conflict-action-dark-320.png")
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        area = self.page.get_by_role("textbox", name="编辑学习笔记")
+        combined = area.input_value()
+        self.assertIn("本页要保留的草稿", combined)
+        self.assertEqual(combined.count("另一页最新保存的笔记"), 1)
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.assertEqual(self.history_records(), original)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        saved = self.history_records()[0]
+        self.assertEqual(saved["note"], combined)
+        self.assertTrue(saved["favorite"])
+        self.assertEqual(saved["result"], original[0]["result"])
+        self.page.reload()
+        self.expect(self.page.locator(".saved-note")).to_contain_text("本页要保留的草稿")
+        self.expect(self.page.locator(".saved-note")).to_contain_text("另一页最新保存的笔记")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_recovered_conflict_draft_can_join_latest_and_survive_another_refresh(self) -> None:
+        self.conflicting_notes()
+        self.page.reload()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="编辑笔记")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="编辑笔记").click()
+        self.expect(self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True)).to_be_visible()
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        combined = self.page.get_by_role("textbox", name="编辑学习笔记").input_value()
+        self.assertEqual(self.history_records()[0]["note"], "另一页最新保存的笔记")
+        self.page.reload()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="编辑笔记")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="编辑笔记").click()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value(combined)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], combined)
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_refreshed_conflict_draft_keeps_its_original_version_until_joined(self) -> None:
+        self.conflicting_notes()
+        original = self.history_records()
+        self.page.reload()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="编辑笔记")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="编辑笔记").click()
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.get_by_role("button", name="保存笔记", exact=True)).to_be_enabled()
+        self.assertEqual(self.history_records(), original)
+        self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertIn("本页要保留的草稿", self.history_records()[0]["note"])
+        self.assertIn("另一页最新保存的笔记", self.history_records()[0]["note"])
+
+    def test_joined_note_still_detects_another_update_before_save(self) -> None:
+        other = self.conflicting_notes(latest="另一页第一次保存")
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        other.get_by_role("textbox", name="编辑学习笔记").fill("另一页第二次保存")
+        other.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(other.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
+        self.assertEqual(self.history_records()[0]["note"], "另一页第二次保存")
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        area = self.page.get_by_role("textbox", name="编辑学习笔记")
+        for text in ("本页要保留的草稿", "另一页第一次保存", "另一页第二次保存"):
+            self.assertEqual(area.input_value().count(text), 1)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], area.input_value())
+
+    def test_joining_notes_over_limit_keeps_both_originals_and_can_retry_after_edit(self) -> None:
+        self.conflicting_notes(draft="甲" * 2400, latest="乙" * 2400)
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("超过 4000 字，原草稿未改动")
+        area = self.page.get_by_role("textbox", name="编辑学习笔记")
+        self.expect(area).to_have_value("甲" * 2400)
+        self.assertEqual(self.history_records()[0]["note"], "乙" * 2400)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
+        self.assertEqual(self.history_records()[0]["note"], "乙" * 2400)
+        area.fill("甲" * 1000)
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertIn("甲" * 1000, self.history_records()[0]["note"])
+        self.assertIn("乙" * 2400, self.history_records()[0]["note"])
+
+    def test_join_note_read_failure_keeps_draft_and_allows_retry(self) -> None:
+        self.conflicting_notes()
+        original = self.history_records()
+        self.page.evaluate("""() => {
+          const get = IDBObjectStore.prototype.get;
+          IDBObjectStore.prototype.get = function() {
+            IDBObjectStore.prototype.get = get;
+            throw new DOMException('fixture get failure', 'UnknownError');
+          };
+        }""")
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("最新笔记暂时无法读取")
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("本页要保留的草稿")
+        self.assertEqual(self.history_records(), original)
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("请整理重复内容后再保存")
+        self.assertEqual(self.history_records(), original)
+
+    def test_join_note_detects_deletion_and_keeps_exportable_original_draft(self) -> None:
+        other = self.conflicting_notes(live=False)
+        other.once("dialog", lambda dialog: dialog.accept())
+        other.locator(".answer").get_by_role("button", name="删除记录", exact=True).click()
+        self.expect(other.locator(".answer")).to_have_count(0)
+        self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True).dispatch_event("click")
+        self.expect(self.page.locator(".note-record-missing")).to_be_visible()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("本页要保留的草稿")
+        self.expect(self.page.get_by_role("button", name="把最新笔记加入草稿", exact=True)).to_be_disabled()
+        self.assertEqual(self.history_records(), [])
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.assertIn("本页要保留的草稿", Path(download.value.path()).read_text())
 
     def test_review_session_restores_next_question_after_refresh_and_skip_does_not_grade(self) -> None:
         self.page.set_viewport_size({"width": 390, "height": 844})

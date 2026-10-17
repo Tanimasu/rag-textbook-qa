@@ -933,7 +933,7 @@ footer details p { margin-top: 6px; text-align: left; }
   function noteView(id) {
     const view = element("section", "saved-note");
     view.dataset.noteId = id;
-    view.append(element("h3", "", "我的学习笔记"), element("div", "note-text"));
+    view.append(element("h3", "", "已保存的学习笔记"), element("div", "note-text"));
     return view;
   }
 
@@ -945,19 +945,23 @@ footer details p { margin-top: 6px; text-align: left; }
     const draftKey = `rag-qa-note-draft-${id}`;
     let baseline = record.note || "", draft = null;
     try { draft = JSON.parse(sessionGet(draftKey) || "null"); } catch { /* optional draft */ }
-    const editor = element("div", "note-editor"), label = element("label", "", "我的学习笔记");
+    const editor = element("div", "note-editor"), label = element("label", "", "编辑学习笔记");
     const area = element("textarea"); area.maxLength = 4000;
     area.setAttribute("aria-label", "编辑学习笔记");
-    area.value = typeof draft?.text === "string" ? draft.text : baseline;
-    const draftConflict = typeof draft?.baseline === "string" && draft.baseline !== baseline;
+    const restoredDraft = typeof draft?.text === "string";
+    area.value = restoredDraft ? draft.text : baseline;
+    const draftConflict = restoredDraft && typeof draft?.baseline === "string" && draft.baseline !== baseline;
+    if (restoredDraft && typeof draft?.baseline === "string") baseline = draft.baseline;
     label.append(area);
     const status = element("p", "history-help", draftConflict
-      ? "当前已保存笔记有更新。已保留你的草稿，请核对上方最新笔记后再保存。"
-      : draft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
+      ? "当前已保存笔记有更新。已保留你的草稿，请核对上方最新笔记，可把最新笔记加入草稿后再保存。"
+      : restoredDraft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
     status.setAttribute("role", "status");
     const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
     const exportDraft = element("button", "action", "导出草稿（含原问答）");
-    save.type = cancelNote.type = exportDraft.type = "button";
+    const mergeNote = element("button", "action", "把最新笔记加入草稿");
+    mergeNote.dataset.mergeNote = id; mergeNote.hidden = !draftConflict;
+    save.type = cancelNote.type = exportDraft.type = mergeNote.type = "button";
     exportDraft.addEventListener("click", () => {
       const url = URL.createObjectURL(new Blob([answerRecord(record.query, record.result, area.value)], {type: "text/markdown;charset=utf-8"}));
       const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
@@ -967,7 +971,42 @@ footer details p { margin-top: 6px; text-align: left; }
       status.textContent = "草稿已交给浏览器下载，请确认文件已保存；这不等于写入历史记录。";
       updateOrphanUnloadGuard();
     });
-    actions.append(save, exportDraft, cancelNote); editor.append(label, status, actions); card.append(editor);
+    actions.append(save, mergeNote, exportDraft, cancelNote); editor.append(label, status, actions); card.append(editor);
+    mergeNote.addEventListener("click", async () => {
+      if (busy || historyWriting || mergeNote.hidden) return;
+      historyWriting = true; syncHistoryControls(); area.disabled = true;
+      try {
+        const latest = await historyTransaction("readonly", (store, done) => {
+          const request = store.get(id);
+          request.onsuccess = () => done(request.result);
+        });
+        applyKnownHistoryRecord(id, latest);
+        if (!latest) {
+          status.textContent = "这条问答已删除，当前草稿仍保留，请先导出草稿。";
+          return;
+        }
+        const latestText = latest.note || "";
+        let combined = area.value;
+        if (latestText && !combined.includes(latestText)) {
+          combined = combined ? combined + "\n\n—— 最新已保存的笔记 ——\n" + latestText : latestText;
+        }
+        if (combined.length > 4000) {
+          status.textContent = `两份内容合计 ${combined.length} 字，超过 4000 字，原草稿未改动。请先删减草稿或导出后整理。`;
+          return;
+        }
+        area.value = combined; baseline = latestText;
+        sessionSet(draftKey, JSON.stringify({text: area.value, baseline}));
+        mergeNote.hidden = true;
+        status.textContent = latestText
+          ? "最新笔记已保留在草稿中，请整理重复内容后再保存；保存时仍会检查其他页面的新修改。"
+          : "其他页面已清空已保存笔记，当前草稿仍保留。整理后点击保存才会重新写入笔记。";
+        updateOrphanUnloadGuard();
+      } catch { status.textContent = "最新笔记暂时无法读取，当前草稿仍保留。可重试或先导出草稿。"; }
+      finally {
+        historyWriting = false; area.disabled = false; syncHistoryControls();
+        if (editor.isConnected && [document.body, mergeNote, area].includes(document.activeElement)) area.focus({preventScroll:true});
+      }
+    });
     area.addEventListener("input", () => {
       sessionSet(draftKey, JSON.stringify({ text: area.value, baseline }));
       status.textContent = editor.querySelector(".note-record-missing")
@@ -1011,6 +1050,7 @@ footer details p { margin-top: 6px; text-align: left; }
         }
         if (outcome.state === "saved") {
           baseline = text; area.value = text; sessionSet(draftKey, "");
+          mergeNote.hidden = true;
         }
         applyKnownHistoryRecord(id, outcome.record);
         let readFailed = false;
@@ -1018,7 +1058,8 @@ footer details p { margin-top: 6px; text-align: left; }
         if (outcome.state === "missing" || !records.some(item => item.id === id)) {
           status.textContent = "保存过程中记录已被删除，当前笔记未能确认保存在历史。请先导出草稿。";
         } else if (outcome.state === "conflict") {
-          status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。请复制草稿，再关闭并重新打开编辑。";
+          mergeNote.hidden = false;
+          status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。可把最新笔记加入草稿，整理后再保存。";
         } else {
           status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
         }
@@ -1130,6 +1171,9 @@ footer details p { margin-top: 6px; text-align: left; }
       view.querySelector(".note-text").textContent = record?.note || "";
     }
     for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
+    for (const button of document.querySelectorAll("[data-merge-note]")) {
+      button.disabled = busy || historyWriting || !records.some(record => record.id === button.dataset.mergeNote);
+    }
     const now = Date.now();
     const due = filteredRecords.filter(record => record.favorite && (!record.review || Date.parse(record.review.next_review_at) <= now));
     scheduleReviewDueRefresh(now);
