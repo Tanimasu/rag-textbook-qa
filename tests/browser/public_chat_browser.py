@@ -113,6 +113,7 @@ class FakeBackend(ThreadingHTTPServer):
         self.inspections: list[dict[str, Any]] = []
         self.inspection_gate: threading.Event | None = None
         self.inspection_status = 200
+        self.inspection_payload: dict[str, Any] | None = None
         self.imports_enabled = False
         self.import_state = "prepared"
         self.uploads: list[bytes] = []
@@ -248,7 +249,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             if self.server.inspection_gate:
                 self.server.inspection_gate.wait(timeout=10)
             try:
-                self.json_response(retrieval_result() if self.server.inspection_status == 200
+                self.json_response((self.server.inspection_payload if self.server.inspection_payload is not None
+                                    else retrieval_result()) if self.server.inspection_status == 200
                                    else {"detail": "需要正确的访问口令"}, self.server.inspection_status)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -815,6 +817,150 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#inspect-title")).to_have_text("进程")
         self.expect(self.page.locator("#inspect-summary")).to_contain_text("操作系统")
         self.expect(self.page.locator("#inspect-query")).to_have_value("下一次准备问主键")
+
+    def test_retrieval_export_keeps_completed_request_and_public_stage_snapshot(self) -> None:
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.page.emulate_media(color_scheme="dark")
+        self.backend.access_code_required = True
+        data = retrieval_result()
+        data.update(system_prompt="private-hidden-prompt", api_base="private-hidden-provider")
+        first = data["stages"][0]["items"][0]
+        first.update(chunk_id="id|with`punctuation", excerpt="原文包含 ``` 和 <img src=never>，请保留原样。",
+                     truncated=True, preview_truncated=True, table_compacted=True, api_key="private-hidden-field")
+        first["scores"]["api_key"] = "private-hidden-score"
+        data["stages"][0]["count"] = 42
+        self.backend.inspection_payload = data
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.expect(self.page.locator("#inspect-code")).to_be_visible()
+        self.page.locator("#inspect-code").fill("private-inspection-code")
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-top-k").select_option("3")
+        self.page.locator("#inspect-query").fill("本次进程观察问题")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-result")).to_be_visible()
+        self.page.locator("#inspect-book").select_option("database")
+        self.page.locator("#inspect-top-k").select_option("10")
+        self.page.locator("#inspect-query").fill("下一次尚未观察的问题")
+        self.page.get_by_role("button", name="关键词 42", exact=True).click()
+        with self.page.expect_download() as download:
+            self.page.locator("#inspect-export").click()
+        exported = Path(download.value.path()).read_text()
+        for text in ("# 检索观察记录", "本次进程观察问题", "教材：操作系统", "最终候选数（请求）：3",
+                     "## 同一片段的排名变化", "## 关键词", "## 向量", "## 融合", "## 重排", "## 最终上下文",
+                     "本阶段共 42 个候选，本文件保留展示的 2 个", "长片段预览已截断", "交付片段已截断",
+                     "表格按行整理", "id|with`punctuation", "原文包含 ``` 和 <img src=never>", "生成模型调用：0"):
+            self.assertIn(text, exported)
+        for text in ("下一次尚未观察的问题", "private-hidden", "private-inspection-code", "教材：数据库"):
+            self.assertNotIn(text, exported)
+        self.assertTrue(download.value.suggested_filename.endswith(".md"))
+        self.expect(self.page.locator("#inspect-export-status")).to_contain_text("没有重新运行检索")
+        self.expect(self.page.locator("#inspect-query")).to_have_value("下一次尚未观察的问题")
+        self.assertEqual(len(self.backend.inspections), 1)
+        self.assertEqual(self.backend.asks, [])
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("retrieval-export-dark-320.png")
+
+    def test_retrieval_export_is_unavailable_for_cancelled_or_failed_new_request(self) -> None:
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("第一次已完成")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-export")).to_be_enabled()
+        gate = threading.Event()
+        self.backend.gates.append(gate)
+        self.backend.inspection_gate = gate
+        self.page.locator("#inspect-query").fill("第二次仍在等待")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-stop")).to_be_visible()
+        self.expect(self.page.locator("#inspect-export")).to_be_disabled()
+        downloads = []
+        self.page.on("download", lambda download: downloads.append(download))
+        self.page.locator("#inspect-export").dispatch_event("click")
+        self.page.locator("#inspect-stop").click()
+        self.expect(self.page.locator("#inspect-status")).to_contain_text("已停止等待")
+        self.expect(self.page.locator("#inspect-export")).to_be_disabled()
+        gate.set()
+        self.backend.inspection_status = 503
+        self.backend.inspection_gate = None
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.expect(self.page.locator("#inspect-result")).to_be_hidden()
+        self.expect(self.page.locator("#inspect-export")).to_be_disabled()
+        self.page.locator("#inspect-export").dispatch_event("click")
+        self.assertEqual(downloads, [])
+        self.assertEqual(self.backend.asks, [])
+
+    def test_malformed_retrieval_stages_are_rejected_before_display_or_export(self) -> None:
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("检查完整观察结构")
+        malformed = []
+        data = retrieval_result()
+        data["stages"][4]["items"] = None
+        malformed.append(data)
+        data = retrieval_result()
+        data["stages"][4]["id"] = "keyword"
+        malformed.append(data)
+        data = retrieval_result()
+        data["stages"][0]["items"][0]["scores"] = None
+        malformed.append(data)
+        for data in malformed:
+            with self.subTest(stage=data["stages"][4]["id"]):
+                self.backend.inspection_payload = data
+                self.page.locator("#inspect-send").click()
+                self.expect(self.page.locator("#inspect-status")).to_contain_text("检索结果格式不正确")
+                self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+                self.expect(self.page.locator("#inspect-result")).to_be_hidden()
+                self.expect(self.page.locator("#inspect-export")).to_be_disabled()
+        self.assertEqual(len(self.backend.inspections), 3)
+        self.assertEqual(self.backend.asks, [])
+
+    def test_retrieval_export_handles_empty_stages_without_fabricating_candidates(self) -> None:
+        data = retrieval_result()
+        data["reranker_enabled"] = False
+        for stage in data["stages"]:
+            stage.update(count=0, items=[])
+        self.backend.inspection_payload = data
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("无候选的观察")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-result")).to_be_visible()
+        with self.page.expect_download() as download:
+            self.page.locator("#inspect-export").click()
+        exported = Path(download.value.path()).read_text()
+        self.assertEqual(exported.count("这个阶段没有候选片段。"), 5)
+        self.assertIn("本次没有展示候选", exported)
+        self.assertIn("未配置，沿用融合排名", exported)
+        self.assertNotIn("### 候选", exported)
+        self.assertEqual(len(self.backend.inspections), 1)
+
+    def test_retrieval_export_failure_can_retry_without_repeating_inspection(self) -> None:
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("文件创建故障后重试导出")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-export")).to_be_enabled()
+        self.page.evaluate("""() => {
+          const create = URL.createObjectURL;
+          URL.createObjectURL = function() {
+            URL.createObjectURL = create;
+            throw new Error('fixture blob failure');
+          };
+        }""")
+        self.page.locator("#inspect-export").click()
+        self.expect(self.page.locator("#inspect-export-status")).to_contain_text("本次结果仍保留")
+        self.expect(self.page.locator("#inspect-result")).to_be_visible()
+        with self.page.expect_download() as download:
+            self.page.locator("#inspect-export").click()
+        self.assertIn("文件创建故障后重试导出", Path(download.value.path()).read_text())
+        self.assertEqual(len(self.backend.inspections), 1)
+        self.assertEqual(self.backend.asks, [])
 
     def test_retrieval_mobile_access_code_retry_and_stop(self) -> None:
         self.page.set_viewport_size({"width": 390, "height": 844})

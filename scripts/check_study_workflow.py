@@ -224,9 +224,17 @@ try:
                     page.locator('#inspect-send').click()
                     expect(page.locator('#inspect-status')).to_contain_text('检索观察完成')
                     expect(page.locator('#inspect-stages button')).to_have_count(5)
+                    before_export = generator.calls, embedding.queries, reranker.calls
+                    with page.expect_download() as download:
+                        page.locator('#inspect-export').click()
+                    download.value.save_as(OUT/'retrieval-observation.md')
+                    observation = (OUT/'retrieval-observation.md').read_text()
+                    assert '生成模型调用：0' in observation and '## 同一片段的排名变化' in observation
+                    assert code not in observation
+                    assert (generator.calls, embedding.queries, reranker.calls) == before_export
                     page.screenshot(path=str(OUT/'retrieval.png'), full_page=True)
                     assert generator.calls == 1
-                    report['steps'].append('Actual five-stage inspection without generation')
+                    report['steps'].append('Actual five-stage inspection and Markdown export without additional inference')
                     page.goto(base+'/')
                     expect(page.locator('#send')).to_be_enabled()
                     page.locator('#input').fill('没有生成额度时保留教材资料')

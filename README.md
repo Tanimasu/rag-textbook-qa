@@ -19,6 +19,7 @@
 - **历史、笔记与收藏**：在当前浏览器保存问答和引用，支持搜索筛选、个人笔记、收藏复习、清理和完整备份，
   可按筛选批量整理问答、引用和笔记为 Markdown。[保存位置与使用说明](docs/history-and-favorites.md)、[复习收藏](docs/favorite-review.md)。
 - **检索观察台**：按阶段查看关键词、向量、融合、重排及最终上下文，追踪同一片段的排名变化，不调用生成模型。
+  已完成的观察可连同展示片段和排名变化导出 Markdown。
   [使用说明](docs/retrieval-observatory.md)。
 - **本机导入向导**：选择 Markdown 或分块 JSON，先核对解析预览，再确认建立或替换教材索引，刷新可继续查看进度。
   [支持格式与保存位置](docs/textbook-import.md)。

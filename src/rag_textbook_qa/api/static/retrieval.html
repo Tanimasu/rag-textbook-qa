@@ -55,6 +55,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   <section id="inspect-result" class="panel" hidden aria-label="检索观察结果">
     <h2 id="inspect-title"></h2>
     <p id="inspect-summary" class="hint"></p>
+    <button type="button" id="inspect-export" disabled>导出本次观察（Markdown）</button>
+    <p id="inspect-export-status" class="hint" role="status"></p>
     <p class="hint">各阶段分数的含义不同，不能直接比较或相加。入选上下文表示片段被交给模型，不代表片段或回答一定正确。</p>
     <details><summary>同一片段的排名变化</summary><div class="table-wrap" id="inspect-ranks"></div></details>
     <div class="stages" id="inspect-stages" role="group" aria-label="选择检索阶段"></div>
@@ -69,7 +71,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
   const sessionGet = key => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* optional */ } };
-  let controller = null, result = null;
+  let controller = null, result = null, completedSnapshot = null;
+  const stageLabels = {keyword:"关键词", embedding:"向量", fusion:"融合", rerank:"重排", context:"最终上下文"};
   const explanations = {
     keyword: "关键词检索使用 BM25 匹配教材词语。这里的检索分已按现有实现缩放，重点看排名和正文。",
     embedding: "向量检索找语义接近的片段，也可能找到措辞不同但相关的内容。",
@@ -79,6 +82,77 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   };
   function setStatus(text, error = false) { $("inspect-status").textContent = text; $("inspect-status").className = error ? "hint error" : "hint"; }
   function key(item) { return JSON.stringify([item.book_id, item.chunk_id]); }
+  function validInspection(value) {
+    const object = item => item && typeof item === "object" && !Array.isArray(item);
+    return object(value) && Array.isArray(value.stages) && value.stages.length === 5
+      && value.stages.every((stage, index) => object(stage) && stage.id === Object.keys(stageLabels)[index] && typeof stage.label === "string"
+        && Number.isSafeInteger(stage.count) && Array.isArray(stage.items) && stage.items.length <= 30
+        && stage.count >= stage.items.length && stage.items.every(item => object(item)
+          && Number.isSafeInteger(item.position) && item.position > 0
+          && ["book_id", "chunk_id", "book", "section", "excerpt"].every(name => typeof item[name] === "string")
+          && object(item.scores) && object(item.source_ranks)));
+  }
+  function literalBlock(text) {
+    const value = String(text ?? ""), runs = value.match(/`+/g) || [];
+    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    return `${fence}text\n${value}\n${fence}`;
+  }
+  function tableCell(value) {
+    const text = String(value ?? "").replace(/[\r\n]+/g, " ");
+    const fence = "`".repeat(Math.max(1, ...(text.match(/`+/g) || []).map(run => run.length + 1)));
+    return `${fence} ${text.replaceAll("|", "\\|")} ${fence}`;
+  }
+  function inspectionRecord(snapshot) {
+    const data = snapshot.data;
+    const lines = ["# 检索观察记录", "", "## 本次问题", "", literalBlock(snapshot.query), "", "## 参数与范围", "",
+      literalBlock([`教材：${snapshot.bookLabel}`, `教材编号：${snapshot.book}`, `完成时间（UTC）：${snapshot.finishedAt}`,
+        `最终候选数（请求）：${snapshot.topK}`, `上下文预算：${data.context_budget} 字符`,
+        `重排器：${data.reranker_enabled ? "已配置" : "未配置，沿用融合排名"}`,
+        `生成模型调用：${data.generation_calls ?? "未报告"}`,
+        ...(Number.isFinite(data.elapsed_seconds) ? [`耗时：${data.elapsed_seconds.toFixed(2)} 秒`] : []),
+        ...["embedding", "bm25"].filter(name => Number.isFinite(data.fusion_weights?.[name]))
+          .map(name => `融合权重 ${name === "embedding" ? "向量" : "关键词"}：${data.fusion_weights[name]}`)].join("\n")), "",
+      "各阶段分数含义不同，不能直接比较或相加。入选上下文不表示片段或回答一定正确。", "",
+      "本文件保留服务返回的展示范围；候选或长正文超过范围时会标注，不重新检索完整内容。", "",
+      "## 同一片段的排名变化", "",
+      "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。", "",
+      "| 教材 / 片段 | " + data.stages.map(stage => stageLabels[stage.id]).join(" | ") + " |",
+      "| --- | " + data.stages.map(() => "---:").join(" | ") + " |"];
+    const candidates = new Map();
+    for (const stage of data.stages) for (const item of stage.items) {
+      if (!candidates.has(key(item))) candidates.set(key(item), {item, positions:{}});
+      candidates.get(key(item)).positions[stage.id] = item.position;
+    }
+    for (const row of candidates.values()) lines.push("| " + tableCell(row.item.book + " / " + row.item.chunk_id)
+      + " | " + data.stages.map(stage => row.positions[stage.id] || "—").join(" | ") + " |");
+    if (!candidates.size) lines.push("| 本次没有展示候选 | " + data.stages.map(() => "—").join(" | ") + " |");
+    lines.push("");
+    const contexts = new Map(data.stages[4].items.map(item => [key(item), item]));
+    for (const stage of data.stages) {
+      lines.push(`## ${stageLabels[stage.id]}`, "", `本阶段共 ${stage.count} 个候选，本文件保留展示的 ${stage.items.length} 个。`, "",
+        explanations[stage.id], "");
+      if (!stage.items.length) lines.push("这个阶段没有候选片段。", "");
+      for (const item of stage.items) {
+        const chosen = contexts.get(key(item));
+        const metadata = [`教材：${item.book}`, `章节：${item.section || "未标注章节"}`, `片段编号：${item.chunk_id}`,
+          `阶段排名：${item.position}`, chosen
+            ? "本次展示中入选上下文" + (chosen.citation_id == null ? "" : ` · 资料 ${chosen.citation_id}`)
+            : "未出现在最终上下文的展示范围中"];
+        if (item.source_sha256) metadata.push(`原文 SHA-256：${item.source_sha256}`);
+        for (const [name, label] of [["similarity","检索分"],["bm25_score","BM25"],["rrf_score","RRF"],["rerank_score","重排分"]]) {
+          if (Number.isFinite(item.scores[name])) metadata.push(`${label}：${item.scores[name].toFixed(4)}`);
+        }
+        for (const [name, label] of [["embedding","向量"],["bm25","关键词"]]) {
+          if (item.source_ranks[name]) metadata.push(`${label}路线排名：${item.source_ranks[name]}`);
+        }
+        if (item.truncated) metadata.push("交付片段已截断。");
+        if (item.preview_truncated) metadata.push("长片段预览已截断。");
+        if (item.table_compacted) metadata.push("表格按行整理。");
+        lines.push(`### 候选 ${item.position}`, "", literalBlock(metadata.join("\n")), "", literalBlock(item.excerpt), "");
+      }
+    }
+    return lines.join("\n");
+  }
   function showStage(stage) {
     for (const button of $("inspect-stages").children) button.setAttribute("aria-pressed", String(button.dataset.stage === stage.id));
     $("inspect-explanation").textContent = explanations[stage.id];
@@ -149,11 +223,14 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
     if (controller) return;
     const query = $("inspect-query").value.trim(), book = $("inspect-book").value;
     const bookLabel = $("inspect-book").selectedOptions[0]?.textContent || book;
+    const topK = Number($("inspect-top-k").value);
     if (!query || !book) return;
     controller = new AbortController();
     const signal = controller.signal;
     $("inspect-send").disabled = true; $("inspect-stop").hidden = false;
     $("inspect-result").hidden = true;
+    completedSnapshot = null; $("inspect-export").disabled = true;
+    $("inspect-export-status").textContent = "";
     setStatus("正在运行检索模型，未调用生成模型…");
     const headers = { "Content-Type": "application/json" };
     const code = $("inspect-code").value.trim();
@@ -161,14 +238,16 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
     if (code) headers["X-Access-Code"] = code;
     try {
       const response = await fetch("/v1/retrieval/inspect", { method:"POST", headers, signal,
-        body:JSON.stringify({ query, book_id:book, top_k:Number($("inspect-top-k").value) }) });
+        body:JSON.stringify({ query, book_id:book, top_k:topK }) });
       if (!response.ok) {
         if (response.status === 401) { $("inspect-code-field").hidden = false; $("inspect-code").focus(); }
         let detail; try { detail = (await response.json()).detail; } catch { /* optional */ }
         throw new Error(typeof detail === "string" ? detail : "检索观察失败，请稍后重试。");
       }
-      result = await response.json();
-      if (!Array.isArray(result.stages) || result.stages.length !== 5) throw new Error("检索结果格式不正确。");
+      let received;
+      try { received = await response.json(); } catch { throw new Error("检索结果格式不正确，请重试。"); }
+      if (!validInspection(received)) throw new Error("检索结果格式不正确，请重试。");
+      result = received;
       $("inspect-title").textContent = query;
       $("inspect-summary").textContent = `${bookLabel} · 上下文预算 ${result.context_budget} 字符 · ${result.reranker_enabled ? "已运行重排" : "未配置重排器"}${typeof result.elapsed_seconds === "number" ? " · 耗时 " + result.elapsed_seconds.toFixed(2) + " 秒" : ""}`;
       const stages = $("inspect-stages"); stages.replaceChildren();
@@ -178,10 +257,27 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
         button.addEventListener("click", () => showStage(stage)); stages.append(button);
       }
       showRanks(); showStage(result.stages[4]);
+      completedSnapshot = {query, book, bookLabel, topK, finishedAt:new Date().toISOString(), data:result};
+      $("inspect-export").disabled = false;
       $("inspect-result").hidden = false;
       setStatus("检索观察完成，没有调用生成模型。结果仅用于理解本次检索。");
     } catch (error) { setStatus(error.name === "AbortError" ? "已停止等待，可以重新开始。" : error.message, error.name !== "AbortError"); }
     finally { controller = null; $("inspect-send").disabled = false; $("inspect-stop").hidden = true; }
+  });
+  $("inspect-export").addEventListener("click", () => {
+    if (controller || !completedSnapshot) return;
+    const status = $("inspect-export-status");
+    try {
+      const blob = new Blob([inspectionRecord(completedSnapshot)], {type:"text/markdown;charset=utf-8"});
+      if (blob.size > 64 * 1024 * 1024) throw new Error("export limit");
+      const url = URL.createObjectURL(blob), link = node("a");
+      const now = new Date(), date = [now.getFullYear(), String(now.getMonth()+1).padStart(2,"0"), String(now.getDate()).padStart(2,"0")].join("-");
+      link.href = url; link.download = `检索观察-${date}.md`;
+      try { document.body.append(link); link.click(); }
+      finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      status.className = "hint";
+      status.textContent = "观察记录已交给浏览器下载，请确认文件已保存；没有重新运行检索。";
+    } catch { status.className = "hint error"; status.textContent = "观察记录导出未完成，请重试；本次结果仍保留。"; }
   });
   $("inspect-book").addEventListener("change", () => sessionSet("rag-qa-selected-book", $("inspect-book").value));
   $("inspect-stop").addEventListener("click", () => controller?.abort());
