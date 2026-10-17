@@ -1436,12 +1436,10 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#history-restore").click()
         self.expect(self.page.locator("#history-backup-preview")).to_contain_text("恢复完成")
         original = self.history_records()
-        downloads = []
-        self.page.on("download", lambda download: downloads.append(download))
-        self.page.locator("#history-export-md").click()
+        with self.page.expect_download() as collection:
+            self.page.locator("#history-export-md").click()
         self.expect(self.page.locator("#history-export-status")).to_contain_text("已将 1 条记录")
-        self.assertEqual(len(downloads), 1)
-        self.assertIn(excerpt, Path(downloads[0].path()).read_text())
+        self.assertIn(excerpt, Path(collection.value.path()).read_text())
         self.page.locator("#history-export-practice").check()
         with self.page.expect_download() as practice:
             self.page.locator("#history-export-md").click()
