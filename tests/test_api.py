@@ -357,7 +357,9 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("计算机教材问答", page.text)
         self.assertIn("请选择教材", page.text)
-        self.assertNotIn("全部教材", page.text)
+        # Asking still requires one book; the history library may search all books.
+        question_books = page.text.split('<select id="book"', 1)[1].split("</select>", 1)[0]
+        self.assertNotIn("全部教材", question_books)
         self.assertIn('data-book="os" disabled', page.text)
         self.assertIn('data-book="database" disabled', page.text)
         self.assertIn('data-book="computer_network" disabled', page.text)

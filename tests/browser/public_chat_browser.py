@@ -249,6 +249,266 @@ class PublicChatBrowserTests(unittest.TestCase):
           };
         })();""".replace("CONFIG", config))
 
+    def history_records(self) -> list[dict[str, Any]]:
+        return self.page.evaluate("""() => new Promise((resolve, reject) => {
+          const request = indexedDB.open('rag-qa-history', 1);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const db = request.result;
+            const transaction = db.transaction('records', 'readonly');
+            const rows = transaction.objectStore('records').getAll();
+            transaction.oncomplete = () => { db.close(); resolve(rows.result); };
+          };
+        })""")
+
+    def saved_answer(self, query: str = "什么是进程？", book_id: str = "os",
+                     result: dict[str, Any] | None = None) -> None:
+        self.backend.enqueue(Reply(final=[("result", result or answer_result())]))
+        self.page.locator("#book").select_option(book_id)
+        self.submit(query)
+        self.expect(self.page.locator(".answer").last).to_contain_text("已保存到此浏览器")
+        self.expect_ready()
+
+    def capture_page(self, name: str) -> None:
+        screenshot_dir = os.environ.get("RAG_QA_BROWSER_SCREENSHOTS")
+        if screenshot_dir:
+            Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
+            self.page.screenshot(path=str(Path(screenshot_dir) / name), full_page=True)
+
+    def test_history_restores_snapshot_citations_and_export_without_new_request(self) -> None:
+        self.backend.access_code_required = True
+        self.open_page()
+        self.page.locator("#code").fill("never-persist-this-code")
+        result = answer_result()
+        result["conflicts"] = ["教材中的两种定义"]
+        self.saved_answer(result=result)
+        rows = self.history_records()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["result"]["sources"], result["sources"])
+        self.assertNotIn("answer_id", rows[0]["result"])
+        self.assertNotIn("never-persist-this-code", json.dumps(rows))
+        self.backend.book_failures_remaining = 1
+        self.page.reload()
+        card = self.page.locator(".answer")
+        self.expect(card).to_contain_text("已保存的回答")
+        self.expect(card).to_contain_text("教材中的两种定义")
+        self.expect(card.get_by_role("button", name="👍 有帮助")).to_have_count(0)
+        card.get_by_role("button", name="资料 1", exact=True).click()
+        self.expect(card.locator(".source .excerpt")).to_have_text(result["sources"][0]["excerpt"])
+        with self.page.expect_download() as download_info:
+            card.get_by_role("button", name="保存问答（含来源）", exact=True).click()
+        exported = Path(download_info.value.path()).read_text(encoding="utf-8")
+        self.assertIn(result["answer"], exported)
+        self.assertIn(result["sources"][0]["excerpt"], exported)
+        self.assertEqual(len(self.backend.asks), 1)
+        self.assertEqual(self.backend.feedback, [])
+
+    def test_history_search_book_and_favorite_filters_and_view(self) -> None:
+        self.open_page()
+        self.saved_answer("进程与程序有什么区别？")
+        result = answer_result("db-answer")
+        result["answer"] = "候选键保证记录唯一。【参考资料 1】"
+        result["sources"][0].update(book="数据库原理及应用", section="第三章 关系模型",
+                                    excerpt="复合属性也可以构成候选键。")
+        self.saved_answer("主键如何选择？", "database", result)
+        self.page.locator("#toggle-history").click()
+        items = self.page.locator(".history-item")
+        self.expect(items).to_have_count(2)
+        self.page.locator("#history-search").fill("复合属性")
+        self.expect(items).to_have_count(1)
+        self.expect(items.locator("h3")).to_have_text("主键如何选择？")
+        self.page.locator("#history-search").fill("候选键 唯一")
+        self.expect(items).to_have_count(1)
+        items.get_by_role("button", name="☆ 收藏", exact=True).click()
+        self.expect(items.get_by_role("button", name="★ 已收藏", exact=True)).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        self.page.locator("#history-favorites").check()
+        self.page.locator("#history-book").select_option("os")
+        self.expect(items).to_have_count(0)
+        self.expect(self.page.locator("#history-list")).to_contain_text("没有匹配的记录")
+        self.page.locator("#history-book").select_option("database")
+        self.expect(items).to_have_count(1)
+        self.capture_page("history-desktop.png")
+        items.get_by_role("button", name="查看原回答", exact=True).click()
+        self.expect(self.page.locator(".answer")).to_have_count(1)
+        self.expect(self.page.locator(".answer .body")).to_contain_text("候选键")
+        self.expect(self.page.locator("#history-panel")).to_be_hidden()
+        self.page.reload()
+        self.expect(self.page.locator(".answer")).to_have_count(1)
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="★ 已收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.assertFalse(next(row for row in self.history_records()
+                              if row["query"] == "主键如何选择？")["favorite"])
+        self.assertEqual(len(self.backend.asks), 2)
+
+    def test_clear_view_and_delete_record_have_distinct_persistent_effects(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator("#clear").click()
+        self.page.reload()
+        self.expect(self.page.locator("#thread .msg")).to_have_count(0)
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        self.page.once("dialog", lambda dialog: dialog.dismiss())
+        self.page.locator(".answer").get_by_role("button", name="删除记录").click()
+        self.assertEqual(len(self.history_records()), 1)
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator(".answer").get_by_role("button", name="删除记录").click()
+        self.expect(self.page.locator("#thread .msg")).to_have_count(0)
+        self.page.reload()
+        self.expect(self.page.locator("#empty")).to_be_visible()
+        self.assertEqual(self.history_records(), [])
+
+    def test_bulk_cleanup_preserves_favorites_then_deletes_all(self) -> None:
+        self.open_page()
+        self.saved_answer("要收藏的问题")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.saved_answer("临时问题", "database")
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-cleanup summary").click()
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator("#history-clean").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator(".history-item h3")).to_have_text("要收藏的问题")
+        self.page.reload()
+        self.expect(self.page.locator(".answer")).to_have_count(1)
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-cleanup summary").click()
+        self.page.once("dialog", lambda dialog: dialog.dismiss())
+        self.page.locator("#history-delete-all").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator("#history-delete-all").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(0)
+        self.expect(self.page.locator("#empty")).to_be_visible()
+        self.assertEqual(self.history_records(), [])
+
+    def test_storage_blocked_keeps_chat_and_export_available(self) -> None:
+        self.context.add_init_script("""Object.defineProperty(window, 'indexedDB', {
+          get() { throw new DOMException('Storage disabled', 'SecurityError'); }
+        });""")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.open_page()
+        self.expect(self.page.locator("#history-status")).to_contain_text("无法读取或保存历史记录")
+        self.submit()
+        self.expect_ready()
+        self.expect(self.page.locator(".answer")).to_contain_text("未能保存历史记录")
+        self.expect(self.page.get_by_role("button", name="保存问答（含来源）")).to_be_enabled()
+        self.expect(self.page.get_by_role("button", name="重试保存")).to_be_enabled()
+
+    def test_failed_storage_write_can_retry_without_duplicating_record(self) -> None:
+        self.context.add_init_script("""(() => {
+          const put = IDBObjectStore.prototype.put;
+          let fail = true;
+          IDBObjectStore.prototype.put = function(...args) {
+            if (fail) { fail = false; throw new DOMException('Full', 'QuotaExceededError'); }
+            return put.apply(this, args);
+          };
+        })();""")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.open_page()
+        self.submit()
+        self.expect_ready()
+        self.expect(self.page.locator(".answer")).to_contain_text("未能保存历史记录")
+        self.assertEqual(self.history_records(), [])
+        self.page.get_by_role("button", name="重试保存").click()
+        self.expect(self.page.locator(".answer")).to_contain_text("已保存到此浏览器")
+        self.page.reload()
+        self.expect(self.page.locator(".answer")).to_have_count(1)
+        self.assertEqual(len(self.history_records()), 1)
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_mobile_history_layout_and_citation_snapshot(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page()
+        self.saved_answer("进程和程序有什么区别？" * 5)
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-search").fill("进程")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.assertTrue(self.page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        ))
+        self.capture_page("history-mobile.png")
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        self.page.locator(".answer .cite").click()
+        self.expect(self.page.locator(".source .excerpt")).to_be_visible()
+        self.assertTrue(self.page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        ))
+
+    def test_partial_stream_is_not_saved_and_retrieval_only_snapshot_is_saved(self) -> None:
+        self.backend.enqueue(Reply(initial=[("chunk", {"text": "没有完成的回答"})]))
+        self.open_page()
+        self.submit()
+        self.expect_ready()
+        self.assertEqual(self.history_records(), [])
+        result = answer_result()
+        result.update(status="retrieval_only", answer=None, message="本次仅展示教材原文。")
+        self.saved_answer("只查看资料", result=result)
+        self.page.reload()
+        self.expect(self.page.locator(".answer")).to_have_count(1)
+        self.expect(self.page.locator(".answer")).to_contain_text("本次仅展示教材原文")
+        self.expect(self.page.locator(".source .excerpt")).to_be_visible()
+        self.expect(self.page.locator("#thread")).not_to_contain_text("没有完成的回答")
+
+    def test_library_pagination_and_search_include_records_outside_first_page(self) -> None:
+        self.open_page()
+        # Seed a larger, deterministic personal library without making 25 requests.
+        self.page.evaluate("""result => new Promise(resolve => {
+          const request = indexedDB.open('rag-qa-history', 1);
+          request.onsuccess = () => {
+            const db = request.result;
+            const transaction = db.transaction('records', 'readwrite');
+            for (let i = 0; i < 25; i++) transaction.objectStore('records').put({
+              id: 'seed-' + i, created_at: new Date(1700000000000 + i * 1000).toISOString(),
+              query: i === 0 ? '历史问题 第零条' : '历史问题 ' + i,
+              book_id: 'os', book_label: '操作系统', favorite: false,
+              result: { status: result.status, answer: result.answer, sources: result.sources }
+            });
+            transaction.oncomplete = () => { db.close(); resolve(); };
+          };
+        })""", answer_result())
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(20)
+        self.page.locator("#history-more").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(25)
+        self.expect(self.page.locator("#history-more")).to_be_hidden()
+        self.page.locator("#history-search").fill("第零条")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.assertEqual(self.backend.asks, [])
+
+    def test_multiple_tabs_keep_each_others_records_and_new_tab_restores_history(self) -> None:
+        self.open_page()
+        self.saved_answer("第一个标签的问题")
+        second = self.context.new_page()
+        second.on("pageerror", lambda error: self.errors.append(str(error)))
+        second.goto(self.base_url)
+        self.expect(second.locator(".answer")).to_have_count(1)
+        self.backend.enqueue(Reply(final=[("result", answer_result("second-tab"))]))
+        second.locator("#book").select_option("database")
+        second.locator("#input").fill("第二个标签的问题")
+        second.locator("#send").click()
+        self.expect(second.locator(".answer").last).to_contain_text("已保存到此浏览器")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(2)
+        self.assertEqual(len(self.history_records()), 2)
+        other = self.browser.new_context()
+        try:
+            other.route("**/*", lambda route: route.continue_()
+                        if route.request.url.startswith(self.base_url + "/") else route.abort())
+            private_page = other.new_page()
+            private_page.goto(self.base_url)
+            self.expect(private_page.locator("#send")).to_be_enabled()
+            self.expect(private_page.locator(".answer")).to_have_count(0)
+        finally:
+            other.close()
+
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
         result["compute"] = {

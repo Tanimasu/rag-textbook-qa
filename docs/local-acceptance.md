@@ -230,3 +230,30 @@ python scripts/check_generation_transport.py --output artifacts/evaluations/gene
 
 验证正常 / 截断终止标记无需等待上游关闭连接，以及缺少结束标记的响应被判为不完整。
 只测试传输和结束处理，不衡量生成质量。
+
+
+## 历史与收藏页面（2026-10-17）
+
+从已合并的 `main`（`6ebc5b8`）创建 `codex/history-favorites-20261017`，完成
+[历史与收藏第一版](history-and-favorites.md)。本次使用本机模拟后端和真实 Chrome 执行聊天页，
+没有调用远程 Worker 或付费模型，也没有修改教材、索引或旧实验结果。
+
+- 完整离线单元与集成测试：626 项中 615 项通过，11 项因未安装 RAGAS `eval` extra 跳过。
+- 聊天页浏览器回归：31 项通过，其中新增 10 项覆盖历史与收藏。
+- `ruff check src tests scripts`、`compileall -q src tests`、`git diff --check` 通过。
+- 检查了桌面和 390 像素手机页面截图；手机布局无横向溢出，引用快照仍可跳转和导出。
+
+运行命令：
+
+```bash
+uv run --no-sync python -m unittest discover -s tests -v
+RAG_QA_BROWSER_CHANNEL=chrome \
+  RAG_QA_BROWSER_SCREENSHOTS=artifacts/evaluations/history-favorites-20261017 \
+  uv run --no-sync python tests/browser/public_chat_browser.py -v
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m compileall -q src tests
+git diff --check
+```
+
+本地最终日志、截图及文件哈希保存在忽略目录 `artifacts/evaluations/history-favorites-20261017/`。
+这里验证功能与页面体验，不作为模型回答质量或性能测试。

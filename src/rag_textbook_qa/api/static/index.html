@@ -45,7 +45,7 @@ header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: cent
 }
 .toolbar-button:hover { color: var(--accent); }
 .toolbar-button:disabled { opacity: .5; cursor: default; }
-select, input[type=password] {
+select, input[type=password], input[type=search] {
   font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel); color: var(--text); max-width: 100%;
 }
@@ -92,6 +92,20 @@ main { flex: 1; padding: 16px 0; }
 .action:hover { color: var(--accent); border-color: var(--accent); }
 .action:disabled { opacity: .55; cursor: default; }
 .feedback-status { color: var(--muted); font-size: 13px; }
+.history-panel { margin-top: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.history-panel h2 { margin: 0; font-size: 16px; }
+.history-help, .history-meta { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.history-filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.history-filters label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.history-filters input[type=search] { width: 100%; }
+.history-search { flex: 1 1 230px; }
+.history-item { padding: 12px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.history-item h3 { margin: 0; font-size: 14px; white-space: pre-wrap; }
+.history-item p { margin: 4px 0; font-size: 13px; color: var(--muted); }
+.action[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.history-cleanup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
+.history-cleanup summary { cursor: pointer; }
+#history-status { font-size: 13px; }
 .feedback-notice { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .feedback-panel {
   margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
@@ -160,8 +174,31 @@ footer details p { margin-top: 6px; text-align: left; }
     <button class="toolbar-button" id="reload-books" type="button" hidden>重新加载教材</button>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
     <button class="toolbar-button" id="clear" type="button" hidden>清空对话</button>
+    <button class="toolbar-button" id="toggle-history" type="button" aria-expanded="false" aria-controls="history-panel">历史与收藏</button>
     <span class="quota" id="quota"></span>
   </div>
+
+  <div id="history-status" role="status" hidden></div>
+  <section class="history-panel" id="history-panel" aria-labelledby="history-title" hidden>
+    <h2 id="history-title">历史与收藏</h2>
+    <p class="history-help">问答及引用快照保存在当前浏览器的 IndexedDB。仅此浏览器、此网址可见，不跨设备同步。清除网站数据会丢失记录，重要内容请导出 Markdown。</p>
+    <div class="history-filters">
+      <label class="history-search"><input id="history-search" type="search" placeholder="搜索问题、回答或引用原文" aria-label="搜索历史问答"></label>
+      <label>教材 <select id="history-book"><option value="">全部教材</option></select></label>
+      <label><input id="history-favorites" type="checkbox">只看收藏</label>
+    </div>
+    <p id="history-count" class="history-help" role="status">正在读取记录…</p>
+    <div id="history-list"></div>
+    <button class="action" id="history-more" type="button" hidden>显示更多</button>
+    <details class="history-cleanup">
+      <summary>清理记录</summary>
+      <p class="history-help">清空对话只收起当前显示；删除记录会同时删除它的引用快照，无法撤销。</p>
+      <div class="actions">
+        <button class="action" id="history-clean" type="button" disabled>清理未收藏</button>
+        <button class="action" id="history-delete-all" type="button" disabled>删除全部记录</button>
+      </div>
+    </details>
+  </section>
 
   <main id="thread">
     <div class="empty" id="empty">
@@ -186,7 +223,7 @@ footer details p { margin-top: 6px; text-align: left; }
   </div>
   <footer>
     <p>回答由大模型依据教材片段生成，可能出错，请以原文为准。</p>
-    <details><summary>对话与反馈如何保存</summary><p>对话会在服务中短暂保留。只有主动提交反馈时，本次问题、回答、引用、耗时和反馈内容才会持久保存，不保存 IP 或访问口令。未通过验收的实验功能在公开版中关闭。</p></details>
+    <details><summary>对话与反馈如何保存</summary><p>完整返回的问答及引用自动保存在当前浏览器，刷新后恢复当前显示的记录；停止或断流的片段不自动保存。访问口令不写入历史记录。主动提交反馈时，服务端另行保存本次问题、回答、引用、耗时和反馈内容，不保存 IP 或访问口令。历史记录中的旧回答不能再次提交反馈。未通过验收的实验功能在公开版中关闭。</p></details>
   </footer>
 </div>
 <script>
@@ -199,7 +236,10 @@ footer details p { margin-top: 6px; text-align: left; }
   const bookStatus = $("book-status"), reloadBooks = $("reload-books");
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
+  const VIEW_KEY = "rag-qa-visible-history";
   let busy = false, activeController = null;
+  let historyDB = null, historyLoading = true, historyWriting = false;
+  let records = [], visibleIds = [], historyLimit = 20;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -298,9 +338,10 @@ footer details p { margin-top: 6px; text-align: left; }
     const row = element("div", "msg user");
     row.append(element("div", "bubble", text));
     thread.append(row);
+    return row;
   }
 
-  function addAnswer() {
+  function addAnswer(scroll = true) {
     const row = element("div", "msg");
     const card = element("div", "answer");
     const body = element("div", "body cursor progress", "正在检索教材…");
@@ -309,7 +350,7 @@ footer details p { margin-top: 6px; text-align: left; }
     card.append(body);
     row.append(card);
     thread.append(row);
-    row.scrollIntoView({ block: "end" });
+    if (scroll) row.scrollIntoView({ block: "end" });
     return card;
   }
 
@@ -585,6 +626,243 @@ footer details p { margin-top: 6px; text-align: left; }
     renderActions(card, result, query);
   }
 
+  // One IndexedDB object store, scoped by the browser to this origin. Transactions
+  // update individual records so another tab cannot overwrite a newer library.
+  function historyTransaction(mode, run) {
+    return new Promise((resolve, reject) => {
+      if (!historyDB) { reject(new Error("history unavailable")); return; }
+      const transaction = historyDB.transaction("records", mode);
+      let value;
+      transaction.oncomplete = () => resolve(value);
+      transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("history failed"));
+      try { run(transaction.objectStore("records"), result => { value = result; }); }
+      catch (error) { transaction.abort(); reject(error); }
+    });
+  }
+
+  function historyError(message) {
+    const status = $("history-status");
+    status.className = "notice error";
+    status.textContent = message;
+    status.hidden = false;
+  }
+
+  function rememberView() { sessionSet(VIEW_KEY, JSON.stringify(visibleIds)); }
+
+  function clearThread() {
+    for (const message of thread.querySelectorAll(".msg")) message.remove();
+    visibleIds = [];
+    rememberView();
+    empty.hidden = false;
+    clear.hidden = true;
+  }
+
+  function historyActions(id, view = false) {
+    const actions = element("div", "actions history-actions");
+    actions.dataset.record = id;
+    if (view) {
+      const open = element("button", "action", "查看原回答");
+      open.type = "button";
+      open.dataset.historyView = id;
+      open.addEventListener("click", () => {
+        if (busy || historyWriting) return;
+        const record = records.find(item => item.id === id);
+        if (!record) return;
+        clearThread();
+        showRecord(record);
+        rememberView();
+        $("history-panel").hidden = true;
+        $("toggle-history").setAttribute("aria-expanded", "false");
+        thread.scrollIntoView({ block: "start" });
+      });
+      actions.append(open);
+    }
+    const favorite = element("button", "action");
+    favorite.type = "button";
+    favorite.dataset.favorite = id;
+    favorite.addEventListener("click", () => changeHistory(store => {
+      const request = store.get(id);
+      request.onsuccess = () => {
+        if (request.result) store.put({ ...request.result, favorite: !request.result.favorite });
+      };
+    }));
+    const remove = element("button", "action", "删除记录");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      if (busy || historyWriting || !window.confirm("删除这条问答及引用快照？无法撤销。")) return;
+      changeHistory(store => store.delete(id));
+    });
+    actions.append(favorite, remove);
+    return actions;
+  }
+
+  function syncHistoryControls() {
+    for (const actions of document.querySelectorAll(".history-actions")) {
+      const record = records.find(item => item.id === actions.dataset.record);
+      const favorite = actions.querySelector("[data-favorite]");
+      favorite.textContent = record?.favorite ? "★ 已收藏" : "☆ 收藏";
+      favorite.setAttribute("aria-pressed", String(!!record?.favorite));
+      for (const button of actions.querySelectorAll("button")) button.disabled = busy || historyWriting || !record;
+    }
+    $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
+    $("history-delete-all").disabled = busy || historyWriting || !records.length;
+  }
+
+  function showRecord(record) {
+    const user = addUser(record.query);
+    const card = addAnswer(false);
+    user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
+    finish(card, record.result, record.query);
+    card.prepend(element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()} · 已保存的回答`));
+    card.append(historyActions(record.id));
+    if (record.result.status === "failed") addRetry(card, record.query, record.book_id);
+    visibleIds.push(record.id);
+  }
+
+  function renderHistory() {
+    const bookFilter = $("history-book"), previousBook = bookFilter.value;
+    bookFilter.replaceChildren(new Option("全部教材", ""));
+    const books = new Map(records.map(record => [record.book_id, record.book_label]));
+    for (const [id, label] of books) bookFilter.add(new Option(label, id));
+    if (books.has(previousBook)) bookFilter.value = previousBook;
+    const keywords = $("history-search").value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const matches = records.filter(record => {
+      if (bookFilter.value && record.book_id !== bookFilter.value) return false;
+      if ($("history-favorites").checked && !record.favorite) return false;
+      const text = [record.query, record.result.answer || "", record.book_label,
+        ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
+        .join("\n").toLocaleLowerCase();
+      return keywords.every(keyword => text.includes(keyword));
+    });
+    $("history-count").textContent = `${records.length} 条记录 · ${records.filter(record => record.favorite).length} 条收藏 · 匹配 ${matches.length} 条`;
+    const list = $("history-list");
+    list.replaceChildren();
+    if (!matches.length) list.append(element("p", "history-help", records.length ? "没有匹配的记录，试试其他关键词或筛选条件。" : "还没有历史记录，完整返回的问答会自动保存在这里。"));
+    for (const record of matches.slice(0, historyLimit)) {
+      const item = element("article", "history-item");
+      item.append(element("h3", "", record.query),
+        element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`),
+        element("p", "", (record.result.answer || record.result.message || "仅教材片段").slice(0, 100)),
+        historyActions(record.id, true));
+      list.append(item);
+    }
+    $("history-more").hidden = matches.length <= historyLimit;
+    syncHistoryControls();
+  }
+
+  async function refreshHistory() {
+    records = await historyTransaction("readonly", (store, done) => {
+      const request = store.getAll();
+      request.onsuccess = () => done(request.result);
+    });
+    records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+    const ids = new Set(records.map(record => record.id));
+    for (const row of thread.querySelectorAll("[data-history-id]")) {
+      if (!ids.has(row.dataset.historyId)) row.remove();
+    }
+    visibleIds = visibleIds.filter(id => ids.has(id));
+    empty.hidden = !!thread.querySelector(".msg");
+    clear.hidden = !thread.querySelector(".msg");
+    renderHistory();
+  }
+
+  async function changeHistory(run) {
+    if (busy || historyWriting || !historyDB) return;
+    const previousFocus = document.activeElement;
+    const focusedFavorite = previousFocus?.dataset.favorite;
+    historyWriting = true;
+    syncHistoryControls();
+    try {
+      await historyTransaction("readwrite", run);
+      await refreshHistory();
+      rememberView();
+    } catch {
+      historyError("历史记录更新失败，请刷新页面后重试；原记录未主动清理。");
+    } finally {
+      historyWriting = false;
+      syncHistoryControls();
+      if (previousFocus && !previousFocus.isConnected) {
+        const replacement = focusedFavorite
+          ? [...document.querySelectorAll("[data-favorite]")].find(button => button.dataset.favorite === focusedFavorite && button.offsetParent)
+          : null;
+        (replacement || ($("history-panel").hidden ? $("toggle-history") : $("history-search"))).focus({ preventScroll: true });
+      }
+    }
+  }
+
+  async function saveHistory(card, user, query, bookId, bookLabel, result) {
+    // Explicit public snapshot: never persist the short-lived feedback ID, access
+    // code, prompts or request headers. Old records render without feedback.
+    const snapshot = {};
+    for (const key of ["status", "answer", "message", "sources", "conflicts", "timing", "compute", "citation_integrity"]) {
+      if (result[key] !== undefined) snapshot[key] = result[key];
+    }
+    const id = crypto.randomUUID?.() || `${Date.now()}-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
+    const record = { id, created_at: new Date().toISOString(),
+      query, book_id: bookId, book_label: bookLabel, favorite: false, result: snapshot };
+    const notice = element("div", "history-meta", "正在保存到此浏览器…");
+    card.append(notice);
+    const persist = async () => {
+      try {
+        await historyTransaction("readwrite", store => store.put(record));
+        user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
+        if (user.isConnected && !visibleIds.includes(record.id)) visibleIds.push(record.id);
+        await refreshHistory();
+        rememberView();
+        notice.textContent = "已保存到此浏览器";
+        card.append(historyActions(record.id));
+        syncHistoryControls();
+      } catch {
+        notice.replaceChildren(element("span", "", "未能保存历史记录，可能是浏览器禁用存储或空间不足。可导出本题后清理空间。 "));
+        const retry = element("button", "action", "重试保存");
+        retry.type = "button";
+        retry.addEventListener("click", () => { retry.disabled = true; persist(); });
+        notice.append(retry);
+      }
+    };
+    await persist();
+  }
+
+  async function initHistory() {
+    try {
+      historyDB = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("rag-qa-history", 1);
+        let expired = false;
+        const timer = window.setTimeout(() => { expired = true; reject(new Error("history timeout")); }, 3000);
+        request.onupgradeneeded = () => request.result.createObjectStore("records", { keyPath: "id" });
+        request.onsuccess = () => {
+          clearTimeout(timer);
+          if (expired) request.result.close();
+          else resolve(request.result);
+        };
+        request.onerror = request.onblocked = () => {
+          expired = true;
+          clearTimeout(timer);
+          reject(new Error("history unavailable"));
+        };
+      });
+      historyDB.onversionchange = () => { historyDB.close(); historyDB = null; historyError("历史存储已更新，请刷新页面。"); };
+      await refreshHistory();
+      let ids;
+      try { ids = JSON.parse(sessionGet(VIEW_KEY) || "null"); } catch { ids = null; }
+      // The current tab restores its displayed records. A new tab starts with the
+      // latest ten; the complete library remains searchable in the history panel.
+      if (!Array.isArray(ids)) ids = records.slice(0, 10).reverse().map(record => record.id);
+      for (const id of new Set(ids)) {
+        const record = records.find(item => item.id === id);
+        if (record) showRecord(record);
+      }
+      rememberView();
+      syncHistoryControls();
+    } catch {
+      historyError("此浏览器暂时无法读取或保存历史记录。仍可提问并导出 Markdown；请检查网站存储权限后刷新。");
+      $("history-count").textContent = "历史存储不可用，原记录未主动清理。";
+    } finally {
+      historyLoading = false;
+      send.disabled = busy || bookSelect.disabled;
+    }
+  }
+
   function parseEvent(frame) {
     let name = "message";
     const data = [];
@@ -625,8 +903,9 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function ask() {
     const query = input.value.trim();
-    if (!query || busy || bookSelect.disabled) return;
+    if (!query || busy || historyLoading || historyWriting || bookSelect.disabled) return;
     const bookId = bookSelect.value;
+    const bookLabel = bookSelect.selectedOptions[0]?.textContent || bookId;
     if (!bookId) {
       bookSelect.setCustomValidity("请先选择一本教材");
       bookSelect.reportValidity();
@@ -635,6 +914,7 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     bookSelect.setCustomValidity("");
     busy = true;
+    syncHistoryControls();
     for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = true;
     send.disabled = true;
     clear.disabled = true;
@@ -643,7 +923,7 @@ footer details p { margin-top: 6px; text-align: left; }
     thread.setAttribute("aria-busy", "true");
     input.value = "";
     autosize();
-    addUser(query);
+    const user = addUser(query);
     const card = addAnswer();
     const body = card.querySelector(".body");
     let text = "", paintTimer = 0, settled = false, autoFollow = true;
@@ -713,6 +993,9 @@ footer details p { margin-top: 6px; text-align: left; }
             cancelPaint();
             finish(card, event.data, query);
             if (event.data.status === "failed") addRetry(card, query, bookId);
+            settled = true;
+            reader.cancel().catch(() => {});
+            await saveHistory(card, user, query, bookId, bookLabel, event.data);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
             cancelPaint();
@@ -746,6 +1029,7 @@ footer details p { margin-top: 6px; text-align: left; }
     } finally {
       window.removeEventListener("scroll", trackScrollIntent);
       busy = false;
+      syncHistoryControls();
       activeController = null;
       send.disabled = false;
       clear.disabled = false;
@@ -808,7 +1092,7 @@ footer details p { margin-top: 6px; text-align: left; }
         else example.removeAttribute("title");
       }
       bookSelect.disabled = !books.length;
-      send.disabled = busy || !books.length;
+      send.disabled = busy || historyLoading || !books.length;
       reloadBooks.hidden = !!books.length;
       bookStatus.textContent = books.length ? "" : "暂无可用教材，请稍后重新加载。";
       bookStatus.hidden = !!books.length;
@@ -858,12 +1142,46 @@ footer details p { margin-top: 6px; text-align: left; }
   cancel.addEventListener("click", () => activeController?.abort());
   clear.addEventListener("click", () => {
     if (busy) return;
-    for (const message of thread.querySelectorAll(".msg")) message.remove();
-    empty.hidden = false;
-    clear.hidden = true;
+    clearThread();
     input.focus();
   });
+  $("toggle-history").addEventListener("click", async () => {
+    const panel = $("history-panel");
+    panel.hidden = !panel.hidden;
+    $("toggle-history").setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden) {
+      if (historyDB) {
+        try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
+      }
+      $("history-search").focus();
+    }
+  });
+  for (const id of ["history-search", "history-book", "history-favorites"]) {
+    $(id).addEventListener(id === "history-search" ? "input" : "change", () => {
+      historyLimit = 20;
+      renderHistory();
+    });
+  }
+  $("history-more").addEventListener("click", () => { historyLimit += 20; renderHistory(); });
+  $("history-clean").addEventListener("click", () => {
+    if (busy || historyWriting || !window.confirm("删除所有未收藏的问答及引用快照？收藏将保留，操作无法撤销。")) return;
+    changeHistory(store => {
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (!cursor.value.favorite) cursor.delete();
+        cursor.continue();
+      };
+    });
+  });
+  $("history-delete-all").addEventListener("click", () => {
+    if (busy || historyWriting || !window.confirm("删除全部问答及引用快照，包括收藏？操作无法撤销。")) return;
+    changeHistory(store => store.clear());
+  });
   reloadBooks.addEventListener("click", loadBooks);
+  send.disabled = true;
+  initHistory();
   loadBooks();
   refreshStatus();
 })();
