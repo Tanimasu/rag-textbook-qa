@@ -292,6 +292,7 @@ footer details p { margin-top: 6px; text-align: left; }
       <button class="cancel" id="cancel" type="button" hidden>停止生成</button>
       <button id="send" type="submit">发送</button>
     </form>
+    <p id="draft-status" class="composer-hint" role="status" hidden></p>
     <p class="composer-hint" id="composer-hint"><span class="desktop-hint">Enter 发送 · Shift+Enter 换行 · </span><span class="mobile-hint">点击发送提问 · </span>最多 500 字</p>
   </div>
   <footer>
@@ -312,6 +313,7 @@ footer details p { margin-top: 6px; text-align: left; }
   const BOOK_KEY = "rag-qa-selected-book";
   const VIEW_KEY = "rag-qa-visible-history";
   const REVIEW_KEY = "rag-qa-review-session";
+  const DRAFT_KEY = "rag-qa-question-draft";
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
@@ -449,6 +451,7 @@ footer details p { margin-top: 6px; text-align: left; }
     retry.addEventListener("click", () => {
       if (busy) return;
       input.value = query;
+      sessionSet(DRAFT_KEY, query);
       bookSelect.value = bookId;
       sessionSet(BOOK_KEY, bookId);
       autosize();
@@ -1031,12 +1034,30 @@ footer details p { margin-top: 6px; text-align: left; }
       if (view) openSavedRecord(id, true);
       else noteEditor(actions.closest(".answer"), id);
     });
+    const edit = element("button", "action", "编辑原问题");
+    edit.type = "button"; edit.dataset.editQuery = id;
+    edit.addEventListener("click", () => {
+      if (busy || historyWriting || reviewState) return;
+      const record = records.find(item => item.id === id);
+      if (!record) return;
+      input.value = record.query; sessionSet(DRAFT_KEY, record.query);
+      sessionSet(BOOK_KEY, record.book_id);
+      bookSelect.value = record.book_id;
+      if (!bookSelect.value || bookSelect.disabled) {
+        bookStatus.textContent = "原教材当前不可用，请重新加载教材或选择其他教材后再发送。";
+        bookStatus.hidden = false;
+      }
+      $("history-panel").hidden = true; $("toggle-history").setAttribute("aria-expanded", "false");
+      $("draft-status").textContent = `已载入「${record.book_label}」的原问题，修改后点击发送。每次提问独立检索。`;
+      $("draft-status").hidden = false;
+      autosize(); input.focus();
+    });
     remove.type = "button";
     remove.addEventListener("click", () => {
       if (busy || historyWriting || !window.confirm("删除这条问答及引用快照？无法撤销。")) return;
       changeHistory(store => store.delete(id));
     });
-    actions.append(favorite, note, remove);
+    actions.append(favorite, note, edit, remove);
     return actions;
   }
 
@@ -1048,6 +1069,7 @@ footer details p { margin-top: 6px; text-align: left; }
       favorite.setAttribute("aria-pressed", String(!!record?.favorite));
       actions.querySelector("[data-note]").textContent = record?.note ? "编辑笔记" : "学习笔记";
       for (const button of actions.querySelectorAll("button")) button.disabled = busy || historyWriting || !record;
+      actions.querySelector("[data-edit-query]").disabled = busy || historyWriting || !!reviewState || !record;
     }
     $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
     $("history-delete-all").disabled = busy || historyWriting || !records.length;
@@ -1367,6 +1389,8 @@ footer details p { margin-top: 6px; text-align: left; }
     activeController = new AbortController();
     thread.setAttribute("aria-busy", "true");
     input.value = "";
+    sessionSet(DRAFT_KEY, "");
+    $("draft-status").hidden = true;
     autosize();
     const user = addUser(query);
     const card = addAnswer();
@@ -1531,7 +1555,8 @@ footer details p { margin-top: 6px; text-align: left; }
       }
       bookSelect.replaceChildren(...options);
       const available = new Set(books.map((book) => book.book_id));
-      if (available.has(previous)) bookSelect.value = previous;
+      const desired = sessionGet(BOOK_KEY) || previous;
+      if (available.has(desired)) bookSelect.value = desired;
       for (const example of document.querySelectorAll(".examples button")) {
         example.disabled = !available.has(example.dataset.book);
         if (example.disabled) example.title = "这本教材当前没有可用索引";
@@ -1584,10 +1609,13 @@ footer details p { margin-top: 6px; text-align: left; }
     if (window.matchMedia("(min-width: 801px)").matches) target.focus({ preventScroll: true });
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
-  input.addEventListener("input", autosize);
+  input.addEventListener("input", () => {
+    autosize(); sessionSet(DRAFT_KEY, input.value); $("draft-status").hidden = true;
+  });
   bookSelect.addEventListener("change", () => {
     bookSelect.setCustomValidity("");
     sessionSet(BOOK_KEY, bookSelect.value);
+    if (!bookSelect.disabled) bookStatus.hidden = true;
   });
   input.addEventListener("keydown", (event) => {
     // isComposing: Enter that confirms a Chinese IME candidate must not send.
@@ -1718,6 +1746,12 @@ footer details p { margin-top: 6px; text-align: left; }
     changeHistory(store => store.clear());
   });
   reloadBooks.addEventListener("click", loadBooks);
+  input.value = sessionGet(DRAFT_KEY).slice(0, 500);
+  if (input.value) {
+    $("draft-status").textContent = "已恢复当前标签页的提问草稿。";
+    $("draft-status").hidden = false;
+  }
+  autosize();
   send.disabled = true;
   initHistory();
   loadBooks();

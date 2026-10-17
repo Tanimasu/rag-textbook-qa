@@ -1240,6 +1240,74 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#empty")).to_be_visible()
         self.assertEqual(len(self.backend.reads), 1)
 
+    def test_question_draft_and_book_restore_on_refresh_then_clear_after_submission(self) -> None:
+        self.open_page("database")
+        self.page.locator("#input").fill("还没有发送的问题\n第二行")
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("还没有发送的问题\n第二行")
+        self.expect(self.page.locator("#book")).to_have_value("database")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("已恢复")
+        self.assertEqual(self.backend.asks, [])
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.page.locator("#send").click()
+        self.expect(self.page.locator(".answer")).to_contain_text("已保存到此浏览器")
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_edit_original_question_restores_book_and_never_submits_automatically(self) -> None:
+        self.open_page()
+        self.saved_answer("进程是什么？")
+        self.page.locator("#book").select_option("database")
+        self.page.locator("#input").fill("当前的另一个草稿")
+        self.page.locator(".answer").get_by_role("button", name="编辑原问题", exact=True).click()
+        self.expect(self.page.locator("#input")).to_have_value("进程是什么？")
+        self.expect(self.page.locator("#book")).to_have_value("os")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("独立检索")
+        self.assertEqual(len(self.backend.asks), 1)
+        self.page.locator("#input").fill("进程和线程有什么区别？")
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("进程和线程有什么区别？")
+        self.expect(self.page.locator("#book")).to_have_value("os")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.page.locator("#send").click()
+        self.expect(self.page.locator(".answer").last).to_contain_text("已保存到此浏览器")
+        self.assertEqual(self.backend.asks[-1]["payload"], {"query": "进程和线程有什么区别？", "book_id": "os"})
+
+    def test_next_question_draft_survives_previous_answer_completion_and_refresh(self) -> None:
+        gate = threading.Event()
+        self.backend.enqueue(Reply(initial=[("chunk", {"text": "正在回答上一题"})],
+                                   final=[("result", answer_result())], gate=gate))
+        self.open_page()
+        self.submit("上一题")
+        self.expect(self.page.locator(".answer .body")).to_have_text("正在回答上一题")
+        self.page.locator("#book").select_option("database")
+        self.page.locator("#input").fill("准备好的下一题")
+        gate.set()
+        self.expect(self.page.locator(".answer")).to_contain_text("已保存到此浏览器")
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("准备好的下一题")
+        self.expect(self.page.locator("#book")).to_have_value("database")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_editing_record_without_current_book_keeps_question_and_requires_selection(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page()
+        self.saved_answer("旧教材的原问题")
+        self.page.route("**/v1/books", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps([{"book_id":"database", "label":"数据库原理及应用"}]),
+        ))
+        self.page.reload()
+        self.expect(self.page.locator("#book option")).to_have_count(2)
+        self.page.locator(".answer").get_by_role("button", name="编辑原问题", exact=True).click()
+        self.expect(self.page.locator("#input")).to_have_value("旧教材的原问题")
+        self.expect(self.page.locator("#book")).to_have_value("")
+        self.expect(self.page.locator("#book-status")).to_contain_text("原教材当前不可用")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.page.locator("#send").click()
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
         result["compute"] = {
