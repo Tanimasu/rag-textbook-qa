@@ -1,8 +1,8 @@
 # 个人学习工作流验收 · 2026-10-17
 
-本轮把 `rag-qa serve` 扩展为可连续使用的个人学习页面，当前版本 **0.3.9**。
+本轮把 `rag-qa serve` 扩展为可连续使用的个人学习页面，当前版本 **0.3.10**。
 从 `main` 的 `6ebc5b8` 开始，功能与修复保存在本地分支 `codex/history-favorites-20261017`；
-0.3.9 功能提交为 `64693f6`。具体变更见 [小版本记录](release-notes.md)。
+0.3.10 功能提交为 `10430d6`。具体变更见 [小版本记录](release-notes.md)。
 
 ## 可以直接使用的功能
 
@@ -31,12 +31,12 @@ rag-qa serve
 
 | 检查 | 结果 |
 | --- | --- |
-| 单元与集成测试 | 651 项：640 通过，11 因未安装 RAGAS `eval` extra 跳过 |
+| 单元与集成测试 | 652 项：641 通过，11 因未安装 RAGAS `eval` extra 跳过 |
 | 原始页面与真实 Chrome | 69 项通过，覆盖桌面、手机、深色、存储故障和交互恢复 |
 | 静态检查 | Ruff、compileall、`git diff --check` 通过 |
 | 依赖锁 | `uv lock --check --offline` 通过，无新增运行依赖 |
 | 发布清单 | wheel 的页面与脚本齐全；wheel / 源码包未包含本地索引、环境文件或运行产物 |
-| 安装包串联 | 临时安装 0.3.9 wheel 后，以真实 HTTP、Chrome 和 Chroma 完成下述流程 |
+| 安装包串联 | 临时安装 0.3.10 wheel 后，以真实 HTTP、Chrome 和 Chroma 完成下述流程 |
 
 浏览器回归覆盖中断或断流不保存半份答案、历史分页与筛选、跨标签页写入、备份整批回滚、
 笔记冲突恢复、收藏复习、旧原文快照、自定义片段 ID、导入进度与旧响应失效、检索取消，
@@ -71,8 +71,8 @@ git diff --check
 未调用远程 Worker 或付费模型；没有覆盖原教材、现有索引或旧实验结果。
 
 最终原始日志、文件散列及发布清单位于忽略目录
-`artifacts/evaluations/study-workspace-20261017/checkpoint-0.3.9/`；
-安装包验收脚本、截图、导出样例与 `report.json` 位于同级 `real-http-ui-v039/`。
+`artifacts/evaluations/study-workspace-20261017/checkpoint-0.3.10/`；
+安装包验收脚本、截图、导出样例与 `report.json` 位于同级 `real-http-ui-v0310/`。
 旧的阶段记录保留，没有用本轮结果覆盖。
 
 ## 尚未提供
