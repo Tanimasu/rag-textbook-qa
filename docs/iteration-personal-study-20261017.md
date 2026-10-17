@@ -75,6 +75,17 @@ git diff --check
 安装包验收脚本、截图、导出样例与 `report.json` 位于同级 `real-http-ui-v0310/`。
 旧的阶段记录保留，没有用本轮结果覆盖。
 
+完整串联脚本已整理为 `scripts/check_study_workflow.py`。需要已安装 API 依赖、`requests`、Playwright 和 Chrome，
+输出目录必须不存在，脚本拒绝覆盖旧证据：
+
+```bash
+RAG_QA_BROWSER_CHANNEL=chrome .venv/bin/python scripts/check_study_workflow.py \
+  --output artifacts/evaluations/study-workflow-new-run
+```
+
+也可以设置 `PYTHONPATH` 指向临时安装的 wheel 目录，检查发布包的相同流程。
+该脚本默认读取仓库中的操作系统片段；从其他位置运行时用 `--workspace` 指定仓库。
+
 ## 尚未提供
 
 历史和笔记没有自动跨设备同步，重要记录需要下载备份。页面导入暂不直接解析 PDF，
