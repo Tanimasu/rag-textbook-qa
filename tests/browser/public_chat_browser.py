@@ -1365,6 +1365,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         other.once("dialog", lambda dialog: dialog.accept())
         other.locator(".answer").get_by_role("button", name="删除记录").click()
         self.expect(self.page.locator(".note-record-missing")).to_contain_text("当前草稿仍保留")
+        self.expect(self.page.locator(".answer")).not_to_contain_text("已保存到此浏览器")
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("不能消失的未保存笔记")
         self.assertEqual(self.history_records(), [])
         with self.page.expect_download() as download:
@@ -1758,6 +1759,65 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator(".answer").get_by_role("button", name="删除记录", exact=True).click()
         self.expect(self.page.locator(".answer")).to_have_count(0)
         self.assertIsNone(self.page.evaluate("key => sessionStorage.getItem(key)", key))
+
+    def test_committed_answer_is_not_reported_unsaved_when_library_refresh_fails(self) -> None:
+        self.open_page()
+        self.expect(self.page.locator("#history-count")).to_contain_text("0 条记录")
+        self.page.evaluate("""() => {
+          const put = IDBObjectStore.prototype.put, getAll = IDBObjectStore.prototype.getAll;
+          window.historyPutAttempts = 0; let failedRead = false;
+          IDBObjectStore.prototype.put = function(...args) {
+            window.historyPutAttempts++;
+            return put.apply(this,args);
+          };
+          IDBObjectStore.prototype.getAll = function(...args) {
+            if (window.historyPutAttempts && !failedRead) {
+              failedRead = true;
+              throw new DOMException('fixture read failure after commit','UnknownError');
+            }
+            return getAll.apply(this,args);
+          };
+        }""")
+        self.backend.enqueue(Reply(final=[("result", answer_result())]))
+        self.submit("写入成功但列表读取失败的问答")
+        self.expect(self.page.locator("#send")).to_be_enabled()
+        self.assertEqual(len(self.history_records()), 1)
+        self.expect(self.page.locator(".answer")).to_contain_text("已保存到此浏览器")
+        self.expect(self.page.get_by_role("button", name="重试保存", exact=True)).to_have_count(0)
+        self.assertEqual(self.page.evaluate("window.historyPutAttempts"), 1)
+        self.assertEqual(len(self.history_records()), 1)
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.assertEqual(self.page.evaluate("window.historyPutAttempts"), 1)
+        self.assertTrue(self.history_records()[0]["favorite"])
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_stale_favorite_buttons_apply_the_visible_intent_and_keep_other_notes(self) -> None:
+        self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.open_page()
+        self.saved_answer("按按钮显示的意图收藏")
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="学习笔记").click()
+        other.get_by_role("textbox", name="编辑学习笔记").fill("另一页保存的笔记不能覆盖")
+        other.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(other.locator(".note-editor")).to_contain_text("笔记已保存")
+        other.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(other.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        # The inactive page still offers add-to-favorites. It must not cancel
+        # another tab's already-completed add when its click finally arrives.
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").dispatch_event("click")
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="★ 已收藏").click()
+        self.expect(other.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="★ 已收藏").dispatch_event("click")
+        self.expect(self.page.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.assertEqual(self.history_records()[0]["note"], "另一页保存的笔记不能覆盖")
+        self.assertEqual(len(self.backend.asks), 1)
 
     def test_missing_markdown_asset_falls_back_to_safe_readable_text(self) -> None:
         self.page.route("**/assets/markdown.js", lambda route: route.fulfill(status=503, body=""))

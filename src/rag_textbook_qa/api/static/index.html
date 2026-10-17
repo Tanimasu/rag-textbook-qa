@@ -346,7 +346,7 @@ footer details p { margin-top: 6px; text-align: left; }
   function flushHistoryRefresh() {
     if (!historyRefreshPending || historyRefreshing || historyLoading || historyWriting || busy || !historyDB) return;
     historyRefreshPending = false; historyRefreshing = true;
-    refreshHistory().catch(() => historyError("其他标签页的更新暂时无法读取，请重新打开历史或刷新页面。"))
+    refreshHistory().catch(() => historyError("其他标签页的更新暂时无法读取，请重新打开历史或刷新页面。", "read"))
       .finally(() => { historyRefreshing = false; flushHistoryRefresh(); });
   }
 
@@ -850,10 +850,11 @@ footer details p { margin-top: 6px; text-align: left; }
     });
   }
 
-  function historyError(message) {
+  function historyError(message, kind = "general") {
     const status = $("history-status");
     status.className = "notice error";
     status.textContent = message;
+    status.dataset.historyError = kind;
     status.hidden = false;
   }
 
@@ -1024,12 +1025,15 @@ footer details p { margin-top: 6px; text-align: left; }
     const favorite = element("button", "action");
     favorite.type = "button";
     favorite.dataset.favorite = id;
-    favorite.addEventListener("click", () => changeHistory(store => {
-      const request = store.get(id);
-      request.onsuccess = () => {
-        if (request.result) store.put({ ...request.result, favorite: !request.result.favorite });
-      };
-    }));
+    favorite.addEventListener("click", () => {
+      const desired = favorite.getAttribute("aria-pressed") !== "true";
+      changeHistory(store => {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          if (request.result) store.put({ ...request.result, favorite: desired });
+        };
+      });
+    });
     const remove = element("button", "action", "删除记录");
     const note = element("button", "action", "学习笔记");
     note.type = "button"; note.dataset.note = id;
@@ -1105,7 +1109,9 @@ footer details p { margin-top: 6px; text-align: left; }
     const card = addAnswer(false);
     user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
     finish(card, record.result, record.query);
-    card.prepend(element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()} · 已保存的回答`));
+    const meta = element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()} · `);
+    meta.append(element("span", "history-save-state", "已保存的回答"));
+    card.prepend(meta);
     card.append(historyActions(record.id));
     card.append(noteView(record.id));
     if (record.result.status === "failed") addRetry(card, record.query, record.book_id);
@@ -1162,6 +1168,10 @@ footer details p { margin-top: 6px; text-align: left; }
     });
     if (generation !== historyReadGeneration) return;
     records = loaded;
+    if ($("history-status").dataset.historyError === "read") {
+      $("history-status").hidden = true;
+      delete $("history-status").dataset.historyError;
+    }
     records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
     const ids = new Set(records.map(record => record.id));
     const protectedIds = new Set();
@@ -1177,6 +1187,14 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     for (const id of previousIds) if (!ids.has(id) && !protectedIds.has(id)) sessionRemove(`rag-qa-note-draft-${id}`);
     for (const row of thread.querySelectorAll("[data-history-id]")) {
+      const savedState = row.querySelector(".history-save-state");
+      if (savedState && protectedIds.has(row.dataset.historyId)) {
+        if (savedState.dataset.retainedText === undefined) savedState.dataset.retainedText = savedState.textContent;
+        savedState.textContent = "记录已删除，仅在本页暂存";
+      } else if (savedState?.dataset.retainedText !== undefined && ids.has(row.dataset.historyId)) {
+        savedState.textContent = savedState.dataset.retainedText;
+        delete savedState.dataset.retainedText;
+      }
       if (!ids.has(row.dataset.historyId) && !protectedIds.has(row.dataset.historyId)) {
         const card = row.querySelector(".answer");
         if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
@@ -1226,26 +1244,36 @@ footer details p { margin-top: 6px; text-align: left; }
     const id = crypto.randomUUID?.() || `${Date.now()}-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
     const record = { id, created_at: new Date().toISOString(),
       query, book_id: bookId, book_label: bookLabel, favorite: false, note: "", result: snapshot };
-    const notice = element("div", "history-meta", "正在保存到此浏览器…");
+    const notice = element("div", "history-meta history-save-state", "正在保存到此浏览器…");
     card.append(notice);
     const persist = async () => {
       try {
         await historyTransaction("readwrite", store => store.put(record));
-        user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
-        if (user.isConnected && !visibleIds.includes(record.id)) visibleIds.push(record.id);
-        await refreshHistory();
-        rememberView();
-        notice.textContent = "已保存到此浏览器";
-        card.append(historyActions(record.id));
-        card.append(noteView(record.id));
-        syncHistoryControls();
       } catch {
         notice.replaceChildren(element("span", "", "未能保存历史记录，可能是浏览器禁用存储或空间不足。可导出本题后清理空间。 "));
         const retry = element("button", "action", "重试保存");
         retry.type = "button";
         retry.addEventListener("click", () => { retry.disabled = true; persist(); });
         notice.append(retry);
+        return;
       }
+      // The write transaction has committed. A later list-read failure must
+      // never offer another put of this original, now potentially stale row.
+      user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
+      if (user.isConnected && !visibleIds.includes(record.id)) visibleIds.push(record.id);
+      if (!records.some(item => item.id === record.id)) records.unshift(record);
+      notice.textContent = "已保存到此浏览器";
+      card.append(historyActions(record.id));
+      card.append(noteView(record.id));
+      syncHistoryControls();
+      try { await refreshHistory(); }
+      catch {
+        records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+        renderHistory();
+        historyError("问答已保存，历史列表暂时无法刷新。重新打开历史后可重试读取。", "read");
+      }
+      rememberView();
+      syncHistoryControls();
     };
     await persist();
   }
@@ -1310,6 +1338,7 @@ footer details p { margin-top: 6px; text-align: left; }
     clearThread();
     $("history-status").className = "history-help";
     $("history-status").textContent = `本轮已复习 ${completed} 条收藏，下次可从“历史与收藏”继续。`;
+    delete $("history-status").dataset.historyError;
     $("history-status").hidden = false;
     syncHistoryControls();
     input.focus({preventScroll: true});
