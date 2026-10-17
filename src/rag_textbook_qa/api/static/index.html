@@ -883,8 +883,12 @@ footer details p { margin-top: 6px; text-align: left; }
     rememberView();
     $("history-panel").hidden = true;
     $("toggle-history").setAttribute("aria-expanded", "false");
-    if (editNote) noteEditor(card, id);
     thread.scrollIntoView({ block: "start" });
+    if (editNote) noteEditor(card, id);
+    else {
+      const body = card.querySelector(".body"); body.tabIndex = -1;
+      body.focus({preventScroll: true});
+    }
   }
 
   function noteView(id) {
@@ -1294,6 +1298,7 @@ footer details p { margin-top: 6px; text-align: left; }
     sessionSet(REVIEW_KEY, JSON.stringify(reviewState));
     syncHistoryControls();
     $("review-panel").scrollIntoView({block: "start"});
+    $("review-reveal").focus();
   }
 
   async function rateReview(rating, days) {
@@ -1663,12 +1668,16 @@ footer details p { margin-top: 6px; text-align: left; }
     if (!reviewState || busy || historyWriting) return;
     const record = records.find(item => item.id === reviewState.ids[reviewState.index]);
     if (!record) { reviewState.index++; reviewQuestion(); return; }
-    clearThread(); showRecord(record); rememberView();
+    clearThread();
+    const card = showRecord(record);
+    rememberView();
     reviewRevealed = true;
     $("review-question").hidden = $("review-reveal").hidden = true;
     $("review-controls").hidden = false;
     $("review-meta").textContent = `${reviewState.index + 1} / ${reviewState.ids.length} · 对照原文和自己的笔记，再选择下次复习时间。`;
     syncHistoryControls();
+    const body = card.querySelector(".body"); body.tabIndex = -1;
+    body.focus({preventScroll: true});
   });
   $("review-skip").addEventListener("click", () => {
     if (!reviewState || busy || historyWriting) return;

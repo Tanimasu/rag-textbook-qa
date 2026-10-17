@@ -1132,6 +1132,37 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.assertFalse(any(row.get("review") for row in self.history_records()))
 
+    def test_keyboard_review_and_history_reading_move_focus_to_current_content(self) -> None:
+        self.open_page()
+        for question in ("键盘复习第一题", "键盘复习第二题"):
+            self.saved_answer(question)
+            self.page.locator(".answer").last.get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").last.get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#input").fill("复习结束后继续编辑的草稿")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").focus()
+        self.page.locator("#history-review-start").press("Enter")
+        self.expect(self.page.locator("#review-reveal")).to_be_focused()
+        self.page.locator("#review-reveal").press("Enter")
+        self.expect(self.page.locator(".answer .body")).to_be_focused()
+        self.page.locator("#review-skip").focus()
+        self.page.locator("#review-skip").press("Enter")
+        self.expect(self.page.locator("#review-question")).to_have_text("键盘复习第二题")
+        self.expect(self.page.locator("#review-reveal")).to_be_focused()
+        self.page.locator("#review-reveal").press("Enter")
+        self.page.locator("#review-familiar").focus()
+        self.page.locator("#review-familiar").press("Enter")
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#input")).to_be_focused()
+        self.expect(self.page.locator("#input")).to_have_value("复习结束后继续编辑的草稿")
+        self.page.locator("#toggle-history").click()
+        view = self.page.locator("[data-history-view]").first
+        view.focus()
+        view.press("Enter")
+        self.expect(self.page.locator(".answer .body")).to_be_focused()
+        self.assertEqual(sum(bool(row.get("review")) for row in self.history_records()), 1)
+        self.assertEqual(len(self.backend.asks), 2)
+
     def test_review_is_due_from_start_of_target_local_day_including_dst_change(self) -> None:
         for zone, days, rating, initial, target in (
             ("Australia/Perth", 1, "#review-again", "2026-10-18T22:15:00+08:00", "2026-10-19T00:00:00+08:00"),
