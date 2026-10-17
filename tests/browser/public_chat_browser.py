@@ -408,6 +408,34 @@ class PublicChatBrowserTests(unittest.TestCase):
             Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
             self.page.screenshot(path=str(Path(screenshot_dir) / name), full_page=True)
 
+    def deleted_note_fixture(self, *, review: bool = False, live: bool = True, another: bool = False) -> str:
+        if not live:
+            self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.open_page()
+        self.saved_answer("待保护的草稿问答")
+        identifier = self.history_records()[0]["id"]
+        if another:
+            self.saved_answer("可以继续查看的问答")
+        if review:
+            self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+            self.page.locator("#toggle-history").click()
+            self.page.locator("#history-review-start").click()
+            self.page.locator("#review-reveal").click()
+        self.page.locator(".answer").first.get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("仍需导出的笔记草稿")
+        other = self.context.new_page()
+        other.on("pageerror", lambda error: self.errors.append(str(error)))
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer")).to_have_count(2 if another else 1)
+        other.locator("#toggle-history").click()
+        other.once("dialog", lambda dialog: dialog.accept())
+        other.locator(".history-item").filter(has_text="待保护的草稿问答").get_by_role("button", name="删除记录").click()
+        self.expect(other.locator(".history-item").filter(has_text="待保护的草稿问答")).to_have_count(0)
+        if live:
+            self.expect(self.page.locator(".note-record-missing")).to_be_visible()
+        return identifier
+
     def test_history_restores_snapshot_citations_and_export_without_new_request(self) -> None:
         self.backend.access_code_required = True
         self.open_page()
@@ -1313,6 +1341,81 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".answer")).to_have_count(0)
         self.assertIsNone(self.page.evaluate("id => sessionStorage.getItem('rag-qa-note-draft-' + id)", identifier))
 
+    def test_leaving_deleted_note_can_be_cancelled_before_switching_history(self) -> None:
+        identifier = self.deleted_note_fixture(another=True)
+        self.page.locator("#toggle-history").click()
+        dialogs = []
+        def dismiss(dialog):
+            dialogs.append(dialog.message)
+            dialog.dismiss()
+        self.page.once("dialog", dismiss)
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        self.assertEqual(len(dialogs), 1)
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        self.expect(self.page.locator(".note-editor")).to_have_count(0)
+        self.expect(self.page.locator(".msg.user")).to_have_text("可以继续查看的问答")
+        self.assertIsNone(self.page.evaluate("id => sessionStorage.getItem('rag-qa-note-draft-' + id)", identifier))
+
+    def test_reloading_unexported_deleted_note_warns_and_can_keep_current_draft(self) -> None:
+        from playwright.sync_api import Error
+        self.deleted_note_fixture()
+        dialogs = []
+        def dismiss(dialog):
+            dialogs.append(dialog.type)
+            dialog.dismiss()
+        self.page.once("dialog", dismiss)
+        try:
+            self.page.reload()
+        except Error:
+            pass  # Dismissing Chromium's beforeunload cancels navigation.
+        self.assertEqual(dialogs, ["beforeunload"])
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
+
+    def test_note_save_detects_deletion_without_channel_and_keeps_exportable_draft(self) -> None:
+        self.deleted_note_fixture(live=False)
+        self.page.get_by_role("button", name="保存笔记", exact=True).dispatch_event("click")
+        self.expect(self.page.locator(".note-record-missing")).to_be_visible()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
+        self.assertEqual(self.history_records(), [])
+
+    def test_review_rating_race_with_deleted_record_keeps_open_note_draft(self) -> None:
+        self.deleted_note_fixture(review=True, live=False)
+        self.page.locator("#review-again").dispatch_event("click")
+        self.expect(self.page.locator(".note-record-missing")).to_be_visible()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
+        self.expect(self.page.locator("#review-again")).to_be_disabled()
+        self.assertEqual(self.history_records(), [])
+        self.page.once("dialog", lambda dialog: dialog.dismiss())
+        self.page.locator("#review-end").click()
+        self.expect(self.page.locator("#review-panel")).to_be_visible()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
+        with self.page.expect_download():
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.page.locator("#review-end").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#history-status")).to_contain_text("已复习 0 条")
+
+    def test_editing_after_draft_export_requires_confirm_or_a_new_export_before_clear(self) -> None:
+        self.deleted_note_fixture()
+        with self.page.expect_download():
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("导出后新增的草稿内容")
+        dialogs = []
+        def dismiss(dialog):
+            dialogs.append(dialog.message)
+            dialog.dismiss()
+        self.page.once("dialog", dismiss)
+        self.page.locator("#clear").click()
+        self.assertEqual(len(dialogs), 1)
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("导出后新增的草稿内容")
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.assertIn("导出后新增的草稿内容", Path(download.value.path()).read_text())
+        self.page.locator("#clear").click()
+        self.expect(self.page.locator(".answer")).to_have_count(0)
+
     def test_deleting_review_question_elsewhere_preserves_open_draft_and_disables_grading(self) -> None:
         self.open_page()
         self.saved_answer("复习中保留草稿")
@@ -1331,6 +1434,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".note-record-missing")).to_be_visible()
         self.expect(self.page.locator("#review-again")).to_be_disabled()
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("复习中尚未保存的笔记")
+        self.page.once("dialog", lambda dialog: dialog.accept())
         self.page.get_by_role("button", name="关闭编辑", exact=True).click()
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.expect(self.page.locator("#history-status")).to_contain_text("已复习 0 条")

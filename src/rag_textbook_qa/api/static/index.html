@@ -332,6 +332,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let initialHistoryBook = "";
   let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
   let historyChannel = null;
+  let orphanUnloadArmed = false;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -858,10 +859,35 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function rememberView() { sessionSet(VIEW_KEY, JSON.stringify(visibleIds)); }
 
+  function hasUnexportedDeletedDrafts(editors = thread.querySelectorAll(".note-editor")) {
+    return [...editors].some(editor => editor.querySelector(".note-record-missing")
+      && editor.querySelector("textarea").value.trim()
+      && editor.exportedDraft !== editor.querySelector("textarea").value);
+  }
+
+  function confirmLeavingDeletedDrafts(editors) {
+    return !hasUnexportedDeletedDrafts(editors)
+      || window.confirm("有已删除记录的笔记草稿尚未导出，离开后将无法恢复。确定放弃草稿并继续？");
+  }
+
+  function warnBeforeOrphanUnload(event) {
+    if (!hasUnexportedDeletedDrafts()) return;
+    event.preventDefault(); event.returnValue = "";
+  }
+
+  function updateOrphanUnloadGuard() {
+    const needed = hasUnexportedDeletedDrafts();
+    if (needed === orphanUnloadArmed) return;
+    orphanUnloadArmed = needed;
+    if (needed) window.addEventListener("beforeunload", warnBeforeOrphanUnload);
+    else window.removeEventListener("beforeunload", warnBeforeOrphanUnload);
+  }
+
   function clearThread() {
     for (const message of thread.querySelectorAll(".msg")) {
       const card = message.querySelector(".answer");
       if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
+      if (card?.querySelector(".note-record-missing")) sessionRemove(`rag-qa-note-draft-${message.dataset.historyId}`);
       message.remove();
     }
     visibleIds = [];
@@ -869,15 +895,16 @@ footer details p { margin-top: 6px; text-align: left; }
     empty.hidden = false;
     clear.hidden = true;
     document.querySelector(".app").classList.remove("has-reader");
+    updateOrphanUnloadGuard();
   }
 
   function openSavedRecord(id, editNote = false) {
     if (busy || historyWriting) return;
     const record = records.find(item => item.id === id);
-    if (!record) return;
+    if (!record || !confirmLeavingDeletedDrafts()) return;
     // A library selection is a normal reading action. Never leave the review
     // controls grading the old question while a different answer is visible.
-    if (reviewState) endReview();
+    if (reviewState) endReview(true);
     clearThread();
     const card = showRecord(record);
     rememberView();
@@ -924,14 +951,22 @@ footer details p { margin-top: 6px; text-align: left; }
       const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
       document.body.append(link); link.click(); link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      editor.exportedDraft = area.value;
+      status.textContent = "草稿已交给浏览器下载，请确认文件已保存；这不等于写入历史记录。";
+      updateOrphanUnloadGuard();
     });
     actions.append(save, exportDraft, cancelNote); editor.append(label, status, actions); card.append(editor);
     area.addEventListener("input", () => {
       sessionSet(draftKey, JSON.stringify({ text: area.value, baseline }));
-      status.textContent = "草稿尚未保存；刷新后可在当前标签页重新打开笔记继续编辑。";
+      status.textContent = editor.querySelector(".note-record-missing")
+        ? "这条问答已删除，草稿只在当前页面保留，请先导出后再离开。"
+        : "草稿尚未保存；刷新后可在当前标签页重新打开笔记继续编辑。";
+      updateOrphanUnloadGuard();
     });
     cancelNote.addEventListener("click", async () => {
+      if (!confirmLeavingDeletedDrafts([editor])) return;
       editor.remove();
+      updateOrphanUnloadGuard();
       if (!records.some(item => item.id === id)) {
         sessionRemove(draftKey);
         try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
@@ -957,14 +992,14 @@ footer details p { margin-top: 6px; text-align: left; }
             } catch { store.transaction.abort(); }
           };
         });
-        if (outcome === "missing") status.textContent = "这条记录已被删除，笔记未保存。请先复制草稿。";
-        else {
-          await refreshHistory();
-          if (outcome === "conflict") status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。请复制草稿，再关闭并重新打开编辑。";
-          else {
-            baseline = text; area.value = text; sessionSet(draftKey, "");
-            status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
-          }
+        await refreshHistory();
+        if (outcome === "missing" || !records.some(item => item.id === id)) {
+          status.textContent = "保存过程中记录已被删除，当前笔记未能确认保存在历史。请先导出草稿。";
+        } else if (outcome === "conflict") {
+          status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。请复制草稿，再关闭并重新打开编辑。";
+        } else {
+          baseline = text; area.value = text; sessionSet(draftKey, "");
+          status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
         }
       } catch { status.textContent = "笔记没有保存成功，草稿仍在。请检查浏览器存储后重试。"; }
       finally {
@@ -1061,6 +1096,7 @@ footer details p { margin-top: 6px; text-align: left; }
     for (const id of ["review-reveal", "review-skip", "review-end"]) $(id).disabled = busy || historyWriting;
     for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = busy || !!reviewState;
     if (reviewState) clear.hidden = true;
+    updateOrphanUnloadGuard();
     flushHistoryRefresh();
   }
 
@@ -1265,7 +1301,8 @@ footer details p { margin-top: 6px; text-align: left; }
     }
   }
 
-  function endReview() {
+  function endReview(skipDraftConfirmation = false) {
+    if (!skipDraftConfirmation && !confirmLeavingDeletedDrafts()) return;
     const completed = reviewState?.completed || 0;
     reviewState = null; reviewRevealed = false; sessionSet(REVIEW_KEY, "");
     $("review-panel").hidden = $("review-controls").hidden = true;
@@ -1324,6 +1361,7 @@ footer details p { margin-top: 6px; text-align: left; }
       // Refresh may already have skipped a deleted/unfavorited record or ended
       // the session. Only advance this same question once.
       if (reviewState === session && session.index === index) {
+        if (thread.querySelector(".note-record-missing")) return;
         session.index++;
         reviewQuestion();
       }
@@ -1627,7 +1665,7 @@ footer details p { margin-top: 6px; text-align: left; }
   form.addEventListener("submit", (event) => { event.preventDefault(); ask(); });
   cancel.addEventListener("click", () => activeController?.abort());
   clear.addEventListener("click", () => {
-    if (busy) return;
+    if (busy || !confirmLeavingDeletedDrafts()) return;
     clearThread();
     input.focus();
   });
@@ -1656,7 +1694,7 @@ footer details p { margin-top: 6px; text-align: left; }
   });
   $("history-review-all").addEventListener("change", syncHistoryControls);
   $("history-review-start").addEventListener("click", () => {
-    if (busy || historyWriting) return;
+    if (busy || historyWriting || !confirmLeavingDeletedDrafts()) return;
     const pool = filteredRecords.filter(record => record.favorite
       && ($("history-review-all").checked || !record.review || Date.parse(record.review.next_review_at) <= Date.now()));
     pool.sort((a, b) => (Date.parse(a.review?.next_review_at || a.created_at) - Date.parse(b.review?.next_review_at || b.created_at)));
@@ -1680,10 +1718,10 @@ footer details p { margin-top: 6px; text-align: left; }
     body.focus({preventScroll: true});
   });
   $("review-skip").addEventListener("click", () => {
-    if (!reviewState || busy || historyWriting) return;
+    if (!reviewState || busy || historyWriting || !confirmLeavingDeletedDrafts()) return;
     reviewState.index++; reviewQuestion();
   });
-  $("review-end").addEventListener("click", endReview);
+  $("review-end").addEventListener("click", () => endReview());
   $("review-again").addEventListener("click", () => rateReview("again", 1));
   $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
   async function exportHistory(filtered) {
