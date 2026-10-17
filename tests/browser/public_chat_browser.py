@@ -1422,6 +1422,37 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(len(self.history_records()), 5001)
         self.assertEqual(self.backend.asks, [])
 
+    def test_valid_dense_backtick_source_exports_without_argument_stack_overflow(self) -> None:
+        self.open_page()
+        excerpt = "`x" * 140000 + "\n``````\n原文末尾🧠"
+        result = answer_result()
+        result["sources"][0]["excerpt"] = excerpt
+        row = {"id":"dense-code-source", "created_at":"2026-10-18T00:00:00Z", "query":"保留完整代码片段",
+               "book_id":"os", "book_label":"操作系统", "favorite":False, "note":"", "result":result}
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file([row]))
+        self.expect(self.page.locator("#history-restore")).to_be_enabled()
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("恢复完成")
+        original = self.history_records()
+        downloads = []
+        self.page.on("download", lambda download: downloads.append(download))
+        self.page.locator("#history-export-md").click()
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("已将 1 条记录")
+        self.assertEqual(len(downloads), 1)
+        self.assertIn(excerpt, Path(downloads[0].path()).read_text())
+        self.page.locator("#history-export-practice").check()
+        with self.page.expect_download() as practice:
+            self.page.locator("#history-export-md").click()
+        self.assertIn(excerpt, Path(practice.value.path()).read_text())
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        with self.page.expect_download() as single:
+            self.page.locator(".answer").get_by_role("button", name="保存问答（含来源）", exact=True).click()
+        self.assertIn(excerpt, Path(single.value.path()).read_text())
+        self.assertEqual(self.history_records(), original)
+        self.assertEqual(self.backend.asks, [])
+
     def test_practice_markdown_keeps_answers_and_saved_notes_after_all_questions(self) -> None:
         self.page.set_viewport_size({"width": 320, "height": 800})
         self.page.emulate_media(color_scheme="dark")

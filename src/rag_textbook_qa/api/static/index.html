@@ -535,8 +535,9 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function literalBlock(text) {
     const value = String(text || "");
-    const runs = value.match(/`+/g) || [];
-    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    let fenceLength = 3;
+    for (const run of value.matchAll(/`+/g)) fenceLength = Math.max(fenceLength, run[0].length + 1);
+    const fence = "`".repeat(fenceLength);
     return `${fence}text\n${value}\n${fence}`;
   }
 
