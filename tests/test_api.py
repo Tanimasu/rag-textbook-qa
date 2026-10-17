@@ -577,6 +577,7 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual((call["book_name"], call["top_k"]), ("os", 3))
         self.assertFalse(call["use_hyde"])
         self.assertFalse(call["use_decomposition"])
+        self.assertFalse(call["use_adjacent_context"])
         self.assertFalse(call["verify_citations"])
 
     def test_invalid_requests_never_reach_the_engine(self):

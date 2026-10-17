@@ -734,6 +734,7 @@ class RAGEngine:
         self, book_name: str, query: str, top_k: int, use_hyde: bool | None,
         use_reranker: bool, *, _query_embedding: list[list[float]] | None,
         _stages: dict[str, list[dict[str, Any]]] | None = None,
+        _should_stop: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         _require_positive_integer(top_k, "top_k")
         rerank_enabled = self.reranker is not None and use_reranker
@@ -743,6 +744,8 @@ class RAGEngine:
         if _query_embedding is not None:
             semantic_options["_query_embedding"] = _query_embedding
         semantic = self.search_embedding(book_name, query, retrieval_count, **semantic_options)
+        if _should_stop and _should_stop():
+            raise GenerationCancelled(request_sent=False)
         keyword = self.search_bm25(book_name, query, retrieval_count)
         combined = _reciprocal_rank_fusion(
             (("embedding", semantic), ("bm25", keyword)),
@@ -756,6 +759,8 @@ class RAGEngine:
                 "fusion": [dict(row) for row in combined],
             })
         if rerank_enabled:
+            if _should_stop and _should_stop():
+                raise GenerationCancelled(request_sent=False)
             results = self._rerank(query, combined, top_k)
         else:
             results = combined[:top_k]
@@ -779,6 +784,7 @@ class RAGEngine:
             stages: dict[str, list[dict[str, Any]]] = {}
             results = self._search_single_book(
                 book_name, query, top_k, False, True, _query_embedding=None, _stages=stages,
+                _should_stop=should_stop,
             )
             if should_stop and should_stop():
                 raise GenerationCancelled(request_sent=False)

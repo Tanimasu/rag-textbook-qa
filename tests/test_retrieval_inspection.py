@@ -61,3 +61,18 @@ class RetrievalInspectionTests(unittest.TestCase):
         self.assertEqual(stage["items"][0]["source_ranks"], {"bm25": 2})
         self.assertIsNone(payload["elapsed_seconds"])
         self.assertNotIn("secret", json.dumps(payload, allow_nan=False))
+
+    def test_cancel_after_embedding_does_not_start_keyword_or_reranker(self):
+        engine = self.engine()
+        stopped = False
+        rows = engine.search_embedding.return_value
+        def embedding(*args, **kwargs):
+            nonlocal stopped
+            stopped = True
+            return rows
+        engine.search_embedding.side_effect = embedding
+        with self.assertRaises(GenerationCancelled):
+            engine.inspect_retrieval("进程", "os", should_stop=lambda: stopped)
+        engine.search_bm25.assert_not_called()
+        engine.reranker.rerank.assert_not_called()
+        self.assertFalse(engine.llm.mock_calls)

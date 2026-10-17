@@ -514,6 +514,7 @@ def create_api_app(
                 use_llm=retrieval_only is None,
                 use_hyde=False,
                 use_decomposition=False,
+                use_adjacent_context=False,
                 verify_citations=False,
                 on_answer_chunk=sink if retrieval_only is None else None,
                 should_stop=should_stop,
