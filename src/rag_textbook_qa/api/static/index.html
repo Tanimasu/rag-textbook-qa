@@ -343,7 +343,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let initialHistoryBook = "";
   let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
   let historyChannel = null;
-  let draftUnloadArmed = false, historyExporting = false;
+  let draftUnloadArmed = false, questionDraftUncached = false, historyExporting = false;
   let reviewDueTimer = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
@@ -404,7 +404,7 @@ footer details p { margin-top: 6px; text-align: left; }
     retry.addEventListener("click", () => {
       if (busy) return;
       input.value = query;
-      sessionSet(DRAFT_KEY, query);
+      rememberQuestionDraft();
       bookSelect.value = bookId;
       sessionSet(BOOK_KEY, bookId);
       autosize();
@@ -896,16 +896,28 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   function warnBeforeDraftUnload(event) {
-    if (!hasUnexportedProtectedDrafts()) return;
+    if (!hasUnexportedProtectedDrafts() && !(questionDraftUncached && input.value.trim())) return;
     event.preventDefault(); event.returnValue = "";
   }
 
   function updateDraftUnloadGuard() {
-    const needed = hasUnexportedProtectedDrafts();
+    const needed = hasUnexportedProtectedDrafts() || (questionDraftUncached && !!input.value.trim());
     if (needed === draftUnloadArmed) return;
     draftUnloadArmed = needed;
     if (needed) window.addEventListener("beforeunload", warnBeforeDraftUnload);
     else window.removeEventListener("beforeunload", warnBeforeDraftUnload);
+  }
+
+  function rememberQuestionDraft(hint = "") {
+    const text = input.value;
+    const stored = sessionSet(DRAFT_KEY, text) || sessionGet(DRAFT_KEY) === text;
+    if (!stored && !text) sessionRemove(DRAFT_KEY);
+    questionDraftUncached = !!text.trim() && !stored;
+    const warning = questionDraftUncached
+      ? "提问草稿暂存失败，当前文字只在本页。刷新或离开前请先复制保存，或发送问题。" : "";
+    $("draft-status").textContent = [hint, warning].filter(Boolean).join(" ");
+    $("draft-status").hidden = !hint && !warning;
+    updateDraftUnloadGuard();
   }
 
   function clearThread() {
@@ -1141,7 +1153,7 @@ footer details p { margin-top: 6px; text-align: left; }
       if (busy || historyWriting || reviewState) return;
       const record = records.find(item => item.id === id);
       if (!record) return;
-      input.value = record.query; sessionSet(DRAFT_KEY, record.query);
+      input.value = record.query;
       sessionSet(BOOK_KEY, record.book_id);
       bookSelect.value = record.book_id;
       if (!bookSelect.value || bookSelect.disabled) {
@@ -1149,8 +1161,7 @@ footer details p { margin-top: 6px; text-align: left; }
         bookStatus.hidden = false;
       }
       $("history-panel").hidden = true; $("toggle-history").setAttribute("aria-expanded", "false");
-      $("draft-status").textContent = `已载入「${record.book_label}」的原问题，修改后点击发送。每次提问独立检索。`;
-      $("draft-status").hidden = false;
+      rememberQuestionDraft(`已载入「${record.book_label}」的原问题，修改后点击发送。每次提问独立检索。`);
       autosize(); input.focus();
     });
     remove.type = "button";
@@ -1668,8 +1679,7 @@ footer details p { margin-top: 6px; text-align: left; }
     activeController = new AbortController();
     thread.setAttribute("aria-busy", "true");
     input.value = "";
-    sessionSet(DRAFT_KEY, "");
-    $("draft-status").hidden = true;
+    rememberQuestionDraft();
     autosize();
     const user = addUser(query);
     const card = addAnswer();
@@ -1889,7 +1899,7 @@ footer details p { margin-top: 6px; text-align: left; }
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
   input.addEventListener("input", () => {
-    autosize(); sessionSet(DRAFT_KEY, input.value); $("draft-status").hidden = true;
+    autosize(); rememberQuestionDraft();
   });
   codeInput.addEventListener("input", () => { if (!codeInput.value.trim()) sessionRemove(CODE_KEY); });
   bookSelect.addEventListener("change", () => {

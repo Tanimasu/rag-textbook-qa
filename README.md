@@ -84,6 +84,8 @@ rag-qa serve                           # 聊天页 http://127.0.0.1:8000，接�
 
 本地调试也可以用 Streamlit 工作台：`rag-qa app`（需要额外安装 `--extra ui`）。
 
+已能正常启动时，可直接按 [每天用它学一节](docs/personal-study-quickstart.md) 完成提问、核对、笔记、复习和备份。
+
 ## 文档
 
 | 文档 | 内容 |

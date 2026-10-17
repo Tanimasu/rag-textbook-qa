@@ -442,6 +442,18 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
         return other
 
+    def block_question_draft_cache(self) -> None:
+        self.context.add_init_script("""(() => {
+          window.questionCacheBroken = true;
+          const set = Storage.prototype.setItem;
+          Storage.prototype.setItem = function(key, value) {
+            if (window.questionCacheBroken && String(key) === 'rag-qa-question-draft') {
+              throw new DOMException('fixture question cache full', 'QuotaExceededError');
+            }
+            return set.call(this, key, value);
+          };
+        })();""")
+
     def block_note_draft_cache(self, *, blocked: bool = True) -> None:
         self.context.add_init_script("""(() => {
           window.noteCacheBroken = BLOCKED;
@@ -2377,6 +2389,80 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".reader")).to_have_count(0)
         self.expect(self.page.locator("#empty")).to_be_visible()
         self.assertEqual(len(self.backend.reads), 1)
+
+    def test_question_cache_failure_warns_and_cancelled_reload_keeps_text(self) -> None:
+        from playwright.sync_api import Error
+        self.block_question_draft_cache()
+        self.open_page()
+        self.page.locator("#input").fill("暂存失败时仍在本页的问题")
+        self.expect(self.page.locator("#draft-status")).to_be_visible()
+        self.expect(self.page.locator("#draft-status")).to_contain_text("提问草稿暂存失败")
+        dialogs = []
+        self.page.once("dialog", lambda dialog: (dialogs.append(dialog.type), dialog.dismiss()))
+        try:
+            self.page.reload()
+        except Error:
+            pass
+        self.assertEqual(dialogs, ["beforeunload"])
+        self.expect(self.page.locator("#input")).to_have_value("暂存失败时仍在本页的问题")
+        self.assertEqual(self.backend.asks, [])
+
+    def test_question_cache_recovery_and_manual_clear_remove_refresh_warning(self) -> None:
+        self.block_question_draft_cache()
+        self.open_page()
+        self.page.locator("#input").fill("暂存失败的问题")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("暂存失败")
+        self.page.evaluate("window.questionCacheBroken = false")
+        self.page.locator("#input").fill("恢复正常暂存的问题")
+        self.expect(self.page.locator("#draft-status")).to_be_hidden()
+        dialogs = []
+        self.page.on("dialog", lambda dialog: (dialogs.append(dialog.type), dialog.dismiss()))
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("恢复正常暂存的问题")
+        self.page.locator("#input").fill("再次暂存失败的问题")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("暂存失败")
+        self.page.locator("#input").fill("")
+        self.expect(self.page.locator("#draft-status")).to_be_hidden()
+        self.page.reload()
+        self.expect(self.page.locator("#input")).to_have_value("")
+        self.assertEqual(dialogs, [])
+        self.assertEqual(self.backend.asks, [])
+
+    def test_sending_uncached_question_preserves_next_uncached_draft_after_completion(self) -> None:
+        from playwright.sync_api import Error
+        gate = threading.Event()
+        self.backend.enqueue(Reply(initial=[("chunk", {"text": "等待上一题"})],
+                                   final=[("result", answer_result())], gate=gate))
+        self.block_question_draft_cache()
+        self.open_page()
+        self.page.locator("#input").fill("准备发送的暂存失败问题")
+        self.page.locator("#send").click()
+        self.expect(self.page.locator(".answer .body")).to_have_text("等待上一题")
+        self.expect(self.page.locator("#input")).to_have_value("")
+        self.expect(self.page.locator("#draft-status")).to_be_hidden()
+        self.page.locator("#input").fill("回答期间写的下一题")
+        gate.set()
+        self.expect(self.page.locator(".answer")).to_contain_text("已保存到此浏览器")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("提问草稿暂存失败")
+        dialogs = []
+        self.page.once("dialog", lambda dialog: (dialogs.append(dialog.type), dialog.dismiss()))
+        try:
+            self.page.reload()
+        except Error:
+            pass
+        self.assertEqual(dialogs, ["beforeunload"])
+        self.expect(self.page.locator("#input")).to_have_value("回答期间写的下一题")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_edit_original_question_keeps_context_and_warns_if_draft_cache_fails(self) -> None:
+        self.block_question_draft_cache()
+        self.open_page()
+        self.saved_answer("仍然可以编辑的原问题")
+        self.page.locator(".answer").get_by_role("button", name="编辑原问题", exact=True).click()
+        self.expect(self.page.locator("#draft-status")).to_contain_text("已载入")
+        self.expect(self.page.locator("#draft-status")).to_contain_text("提问草稿暂存失败")
+        self.expect(self.page.locator("#input")).to_have_value("仍然可以编辑的原问题")
+        self.assertEqual(len(self.backend.asks), 1)
 
     def test_question_draft_and_book_restore_on_refresh_then_clear_after_submission(self) -> None:
         self.open_page("database")
