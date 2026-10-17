@@ -7,8 +7,10 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
 <style>
 :root {
+  color-scheme: light dark;
   --bg: #f6f7f9; --panel: #ffffff; --text: #1c2330; --muted: #5c6675; --line: #e3e6eb;
   --accent: #2f6fed; --accent-soft: #e8f0fe; --user: #2f6fed; --user-text: #ffffff;
+  --button-bg: #2f6fed;
   --warn-bg: #fff6e0; --warn-text: #7a5300; --err-bg: #fdecec; --err-text: #9b1c1c;
   --code-bg: #f1f3f6; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
 }
@@ -16,6 +18,7 @@
   :root {
     --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #9aa4b2; --line: #2a3039;
     --accent: #6ea0ff; --accent-soft: #1d2a42; --user: #3b6fd8; --user-text: #ffffff;
+    --button-bg: #3b6fd8;
     --warn-bg: #3a2e12; --warn-text: #f3d28a; --err-bg: #3d1a1a; --err-text: #f4a3a3;
     --code-bg: #20252d; --shadow: none;
   }
@@ -178,7 +181,7 @@ details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted);
 .composer form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer-hint { margin: 5px 8px 0; font-size: 12px; color: var(--muted); }
 .mobile-hint { display: none; }
-.composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
+.composer button { font: inherit; border: 0; background: var(--button-bg); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
 .composer .cancel { background: transparent; color: var(--err-text); border: 1px solid var(--line); }
 footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
@@ -869,9 +872,11 @@ footer details p { margin-top: 6px; text-align: left; }
     const area = element("textarea"); area.maxLength = 4000;
     area.setAttribute("aria-label", "编辑学习笔记");
     area.value = typeof draft?.text === "string" ? draft.text : baseline;
-    if (typeof draft?.baseline === "string") baseline = draft.baseline;
+    const draftConflict = typeof draft?.baseline === "string" && draft.baseline !== baseline;
     label.append(area);
-    const status = element("p", "history-help", draft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
+    const status = element("p", "history-help", draftConflict
+      ? "当前已保存笔记有更新。已保留你的草稿，请核对上方最新笔记后再保存。"
+      : draft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
     status.setAttribute("role", "status");
     const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
     save.type = cancelNote.type = "button";
@@ -883,7 +888,7 @@ footer details p { margin-top: 6px; text-align: left; }
     cancelNote.addEventListener("click", () => { editor.remove(); card.querySelector("[data-note]")?.focus({preventScroll: true}); });
     save.addEventListener("click", async () => {
       if (busy || historyWriting) return;
-      const text = area.value.trim();
+      const text = area.value.trim() ? area.value : "";
       if (text.length > 4000) { status.textContent = "学习笔记最多 4000 字。"; return; }
       historyWriting = true; syncHistoryControls();
       area.disabled = save.disabled = cancelNote.disabled = true;

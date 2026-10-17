@@ -5,19 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>教材导入 · 计算机教材问答</title>
 <style>
-:root { --bg:#f6f7f9; --panel:#fff; --text:#1c2330; --muted:#5c6675; --line:#e3e6eb; --accent:#2f6fed; }
-@media(prefers-color-scheme:dark) { :root { --bg:#0f1216; --panel:#171b21; --text:#e6e9ee; --muted:#9aa4b2; --line:#2a3039; --accent:#6ea0ff; } }
+:root { color-scheme:light dark; --bg:#f6f7f9; --panel:#fff; --text:#1c2330; --muted:#5c6675; --line:#e3e6eb; --accent:#2f6fed; --button-bg:#2f6fed; --error:#b42318; }
+@media(prefers-color-scheme:dark) { :root { --bg:#0f1216; --panel:#171b21; --text:#e6e9ee; --muted:#9aa4b2; --line:#2a3039; --accent:#6ea0ff; --button-bg:#3b6fd8; --error:#f4a3a3; } }
 * { box-sizing:border-box; } [hidden] { display:none!important; }
 body { margin:0; color:var(--text); background:var(--bg); font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
 .app { max-width:860px; margin:auto; padding:20px 16px 50px; }
 header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:12px; }
 h1 { font-size:22px; margin:0; } h2 { font-size:17px; margin:0 0 10px; } a { color:var(--accent); }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin:16px 0; }
-.hint { color:var(--muted); font-size:13px; margin:6px 0; } .error { color:#b42318; }
+.hint { color:var(--muted); font-size:13px; margin:6px 0; } .error { color:var(--error); }
 label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; font-size:14px; }
 select,input,button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:7px 10px; max-width:100%; }
 input[type=checkbox] { padding:0; } input[type=file] { width:100%; }
-button { cursor:pointer; font-size:14px; } button.primary { background:var(--accent); color:#fff; }
+button { cursor:pointer; font-size:14px; } button.primary { background:var(--button-bg); color:#fff; }
 button:disabled { opacity:.5; cursor:default; } .actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:12px; }
 .preview { border-top:1px solid var(--line); padding:10px 0; overflow-wrap:anywhere; }
 .excerpt { white-space:pre-wrap; font-size:14px; max-height:14em; overflow:auto; }

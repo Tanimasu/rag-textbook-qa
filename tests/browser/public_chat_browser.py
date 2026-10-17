@@ -1032,6 +1032,15 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".note-editor")).to_contain_text("其他标签页已修改")
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记", exact=True)).to_have_value("第一个标签页的草稿")
         self.assertEqual(self.history_records()[0]["note"], "另一个标签页已经保存的笔记")
+        self.page.get_by_role("button", name="关闭编辑", exact=True).click()
+        self.page.locator(".answer").get_by_role("button", name="编辑笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("核对上方最新笔记")
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记", exact=True)).to_have_value("第一个标签页的草稿")
+        merged = "另一个标签页已经保存的笔记\n  第一个标签页的补充  \n"
+        self.page.get_by_role("textbox", name="编辑学习笔记", exact=True).fill(merged)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], merged)
 
     def test_mobile_late_citation_opens_reader_in_view(self) -> None:
         self.page.set_viewport_size({"width": 390, "height": 844})
@@ -1379,6 +1388,33 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertIn("本次记录未包含教材片段", exported)
         self.assertIn("本次没有完整的生成回答", exported)
         self.assertEqual(len(self.backend.asks), 1)
+
+    def test_dark_narrow_screens_keep_controls_and_error_messages_readable(self) -> None:
+        self.page.emulate_media(color_scheme="dark")
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.backend.imports_enabled = True
+        self.backend.access_code_required = True
+        self.open_page()
+        self.saved_answer()
+        self.expect(self.page.locator("#send")).to_have_css("background-color", "rgb(59, 111, 216)")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.expect(self.page.locator(".reader-quote")).to_be_visible()
+        self.capture_page("reader-dark-320.png")
+        self.backend.inspection_status = 401
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("进程")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-status")).to_have_css("color", "rgb(244, 163, 163)")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.backend.imports_enabled = False
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-status")).to_contain_text("只在本机服务提供")
+        self.expect(self.page.locator("#import-status")).to_have_css("color", "rgb(244, 163, 163)")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("imports-dark-320.png")
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
