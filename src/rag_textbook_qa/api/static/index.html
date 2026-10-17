@@ -981,29 +981,38 @@ footer details p { margin-top: 6px; text-align: left; }
       historyWriting = true; syncHistoryControls();
       area.disabled = save.disabled = cancelNote.disabled = true;
       try {
-        const outcome = await historyTransaction("readwrite", (store, done) => {
+        let outcome;
+        try { outcome = await historyTransaction("readwrite", (store, done) => {
           const request = store.get(id);
           request.onsuccess = () => {
             const latest = request.result;
-            if (!latest) { done("missing"); return; }
-            if ((latest.note || "") !== baseline) { done("conflict"); return; }
+            if (!latest) { done({state: "missing", record: null}); return; }
+            if ((latest.note || "") !== baseline) { done({state: "conflict", record: latest}); return; }
             try {
-              store.put({ ...latest, note: text, note_updated_at: new Date().toISOString() });
-              done("saved");
+              const updated = { ...latest, note: text, note_updated_at: new Date().toISOString() };
+              store.put(updated);
+              done({state: "saved", record: updated});
             } catch { store.transaction.abort(); }
           };
-        });
-        await refreshHistory();
-        if (outcome === "missing" || !records.some(item => item.id === id)) {
+        }); } catch {
+          status.textContent = "笔记没有保存成功，草稿仍在。请检查浏览器存储后重试。";
+          return;
+        }
+        if (outcome.state === "saved") {
+          baseline = text; area.value = text; sessionSet(draftKey, "");
+        }
+        applyKnownHistoryRecord(id, outcome.record);
+        let readFailed = false;
+        try { await refreshHistory(); } catch { readFailed = true; }
+        if (outcome.state === "missing" || !records.some(item => item.id === id)) {
           status.textContent = "保存过程中记录已被删除，当前笔记未能确认保存在历史。请先导出草稿。";
-        } else if (outcome === "conflict") {
+        } else if (outcome.state === "conflict") {
           status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。请复制草稿，再关闭并重新打开编辑。";
         } else {
-          baseline = text; area.value = text; sessionSet(draftKey, "");
           status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
         }
-      } catch { status.textContent = "笔记没有保存成功，草稿仍在。请检查浏览器存储后重试。"; }
-      finally {
+        if (readFailed) status.textContent += " 历史列表暂时无法刷新，重新打开历史可重试读取。";
+      } finally {
         historyWriting = false; syncHistoryControls();
         area.disabled = save.disabled = cancelNote.disabled = false;
       }
@@ -1161,17 +1170,30 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function refreshHistory({discardDraftsFor = new Set()} = {}) {
     const generation = ++historyReadGeneration;
-    const previousIds = records.map(record => record.id);
     const loaded = await historyTransaction("readonly", (store, done) => {
       const request = store.getAll();
       request.onsuccess = () => done(request.result);
     });
     if (generation !== historyReadGeneration) return;
-    records = loaded;
     if ($("history-status").dataset.historyError === "read") {
       $("history-status").hidden = true;
       delete $("history-status").dataset.historyError;
     }
+    applyHistory(loaded, discardDraftsFor);
+  }
+
+  function applyKnownHistoryRecord(id, record) {
+    // This row was read in the committed transaction. Reconcile known deletes
+    // and notes even if a subsequent full-library read is unavailable.
+    historyReadGeneration++;
+    const known = records.filter(item => item.id !== id);
+    if (record) known.push(record);
+    applyHistory(known);
+  }
+
+  function applyHistory(loaded, discardDraftsFor = new Set()) {
+    const previousIds = records.map(record => record.id);
+    records = loaded;
     records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
     const ids = new Set(records.map(record => record.id));
     const protectedIds = new Set();
@@ -1217,11 +1239,14 @@ footer details p { margin-top: 6px; text-align: left; }
     historyWriting = true;
     syncHistoryControls();
     try {
-      await historyTransaction("readwrite", run);
-      await refreshHistory({discardDraftsFor});
+      try { await historyTransaction("readwrite", run); }
+      catch {
+        historyError("历史记录更新失败，请刷新页面后重试；原记录未主动清理。");
+        return;
+      }
+      try { await refreshHistory({discardDraftsFor}); }
+      catch { historyError("更新已保存，历史列表暂时无法刷新。重新打开历史可重试读取。", "read"); }
       rememberView();
-    } catch {
-      historyError("历史记录更新失败，请刷新页面后重试；原记录未主动清理。");
     } finally {
       historyWriting = false;
       syncHistoryControls();
@@ -1372,21 +1397,30 @@ footer details p { margin-top: 6px; text-align: left; }
     const session = reviewState, index = session.index, id = session.ids[index];
     historyWriting = true; syncHistoryControls();
     try {
-      const saved = await historyTransaction("readwrite", (store, done) => {
+      let outcome;
+      try { outcome = await historyTransaction("readwrite", (store, done) => {
         const request = store.get(id);
         request.onsuccess = () => {
-          if (!request.result?.favorite) { done(false); return; }
+          if (!request.result?.favorite) { done({saved: false, record: request.result}); return; }
           const now = new Date(), next = new Date(now);
           next.setDate(next.getDate() + days);
           next.setHours(0, 0, 0, 0);
           const review = { last_reviewed_at: now.toISOString(), next_review_at: next.toISOString(),
             count: Math.min((request.result.review?.count || 0) + 1, Number.MAX_SAFE_INTEGER), last_rating: rating };
-          try { store.put({...request.result, review}); done(true); }
+          try {
+            const updated = {...request.result, review};
+            store.put(updated); done({saved: true, record: updated});
+          }
           catch { store.transaction.abort(); }
         };
-      });
-      if (saved) session.completed++;
-      await refreshHistory();
+      }); } catch {
+        $("review-meta").textContent = "复习进度未保存，请检查浏览器存储后重试；当前问题仍保留。";
+        return;
+      }
+      if (outcome.saved) session.completed++;
+      applyKnownHistoryRecord(id, outcome.record);
+      let readFailed = false;
+      try { await refreshHistory(); } catch { readFailed = true; }
       // Refresh may already have skipped a deleted/unfavorited record or ended
       // the session. Only advance this same question once.
       if (reviewState === session && session.index === index) {
@@ -1394,8 +1428,9 @@ footer details p { margin-top: 6px; text-align: left; }
         session.index++;
         reviewQuestion();
       }
-    } catch { $("review-meta").textContent = "复习进度未保存，请检查浏览器存储后重试；当前问题仍保留。"; }
-    finally { historyWriting = false; syncHistoryControls(); }
+      if (readFailed) historyError((reviewState ? "本题处理已完成。" : $("history-status").textContent)
+        + " 历史列表暂时无法刷新，重新打开历史可重试读取。", "read");
+    } finally { historyWriting = false; syncHistoryControls(); }
   }
 
   function parseEvent(frame) {
@@ -1793,7 +1828,8 @@ footer details p { margin-top: 6px; text-align: left; }
     const incoming = restoreRecords;
     historyWriting = true; syncHistoryControls();
     try {
-      const added = await historyTransaction("readwrite", (store, done) => {
+      let added;
+      try { added = await historyTransaction("readwrite", (store, done) => {
         const request = store.getAllKeys();
         request.onsuccess = () => {
           try {
@@ -1803,12 +1839,15 @@ footer details p { margin-top: 6px; text-align: left; }
             done(count);
           } catch { store.transaction.abort(); }
         };
-      });
-      await refreshHistory();
+      }); } catch {
+        $("history-backup-preview").textContent = "恢复失败，已有记录保持原样。请检查浏览器存储空间后重试。";
+        return;
+      }
       $("history-backup-preview").textContent = `恢复完成：新增 ${added} 条，保留当前已有编号 ${incoming.length - added} 条。`;
       restoreRecords = null; $("history-backup-file").value = "";
-    } catch { $("history-backup-preview").textContent = "恢复失败，已有记录保持原样。请检查浏览器存储空间后重试。"; }
-    finally { historyWriting = false; syncHistoryControls(); }
+      try { await refreshHistory(); }
+      catch { $("history-backup-preview").textContent += " 历史列表暂时无法刷新，重新打开历史可重试读取。"; }
+    } finally { historyWriting = false; syncHistoryControls(); }
   });
   $("history-clean").addEventListener("click", () => {
     if (busy || historyWriting || !window.confirm("删除所有未收藏的问答及引用快照？收藏将保留，操作无法撤销。")) return;

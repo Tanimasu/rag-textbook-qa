@@ -402,6 +402,25 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".answer").last).to_contain_text("已保存到此浏览器")
         self.expect_ready()
 
+    def fail_first_library_read_after_write(self) -> None:
+        self.page.evaluate("""() => {
+          let written = false, failed = false;
+          for (const name of ['put', 'add', 'delete', 'clear']) {
+            const method = IDBObjectStore.prototype[name];
+            IDBObjectStore.prototype[name] = function(...args) {
+              const result = method.apply(this, args); written = true; return result;
+            };
+          }
+          const getAll = IDBObjectStore.prototype.getAll;
+          IDBObjectStore.prototype.getAll = function(...args) {
+            if (written && !failed) {
+              failed = true;
+              throw new DOMException('fixture list read failure after commit', 'UnknownError');
+            }
+            return getAll.apply(this, args);
+          };
+        }""")
+
     def capture_page(self, name: str) -> None:
         screenshot_dir = os.environ.get("RAG_QA_BROWSER_SCREENSHOTS")
         if screenshot_dir:
@@ -1411,6 +1430,13 @@ class PublicChatBrowserTests(unittest.TestCase):
 
     def test_note_save_detects_deletion_without_channel_and_keeps_exportable_draft(self) -> None:
         self.deleted_note_fixture(live=False)
+        self.page.evaluate("""() => {
+          const getAll = IDBObjectStore.prototype.getAll;
+          IDBObjectStore.prototype.getAll = function() {
+            IDBObjectStore.prototype.getAll = getAll;
+            throw new DOMException('fixture list read failure', 'UnknownError');
+          };
+        }""")
         self.page.get_by_role("button", name="保存笔记", exact=True).dispatch_event("click")
         self.expect(self.page.locator(".note-record-missing")).to_be_visible()
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
@@ -1418,6 +1444,13 @@ class PublicChatBrowserTests(unittest.TestCase):
 
     def test_review_rating_race_with_deleted_record_keeps_open_note_draft(self) -> None:
         self.deleted_note_fixture(review=True, live=False)
+        self.page.evaluate("""() => {
+          const getAll = IDBObjectStore.prototype.getAll;
+          IDBObjectStore.prototype.getAll = function() {
+            IDBObjectStore.prototype.getAll = getAll;
+            throw new DOMException('fixture list read failure', 'UnknownError');
+          };
+        }""")
         self.page.locator("#review-again").dispatch_event("click")
         self.expect(self.page.locator(".note-record-missing")).to_be_visible()
         self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("仍需导出的笔记草稿")
@@ -1759,6 +1792,111 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator(".answer").get_by_role("button", name="删除记录", exact=True).click()
         self.expect(self.page.locator(".answer")).to_have_count(0)
         self.assertIsNone(self.page.evaluate("key => sessionStorage.getItem(key)", key))
+
+    def test_committed_note_remains_editable_when_library_refresh_fails(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        area = self.page.get_by_role("textbox", name="编辑学习笔记")
+        area.fill("第一次已经提交的笔记")
+        self.fail_first_library_read_after_write()
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], "第一次已经提交的笔记")
+        self.expect(self.page.locator(".saved-note")).to_contain_text("第一次已经提交的笔记")
+        area.fill("在同一编辑器继续修改")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], "在同一编辑器继续修改")
+
+    def test_note_write_failure_keeps_draft_and_allows_retry(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("写入被拒绝时应保留的草稿")
+        self.page.evaluate("""() => {
+          const put = IDBObjectStore.prototype.put;
+          IDBObjectStore.prototype.put = function(...args) {
+            IDBObjectStore.prototype.put = put;
+            throw new DOMException('fixture full storage', 'QuotaExceededError');
+          };
+        }""")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记没有保存成功")
+        self.assertEqual(self.history_records()[0]["note"], "")
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("写入被拒绝时应保留的草稿")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.assertEqual(self.history_records()[0]["note"], "写入被拒绝时应保留的草稿")
+
+    def test_committed_review_advances_once_when_library_refresh_fails(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.fail_first_library_read_after_write()
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#history-status")).to_contain_text("已复习 1 条")
+        self.assertEqual(self.history_records()[0]["review"]["count"], 1)
+
+    def test_review_write_failure_does_not_advance_or_count_before_retry(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.page.evaluate("""() => {
+          const put = IDBObjectStore.prototype.put;
+          IDBObjectStore.prototype.put = function(...args) {
+            IDBObjectStore.prototype.put = put;
+            throw new DOMException('fixture full storage', 'QuotaExceededError');
+          };
+        }""")
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-meta")).to_contain_text("复习进度未保存")
+        self.expect(self.page.locator("#review-panel")).to_be_visible()
+        self.assertIsNone(self.history_records()[0].get("review"))
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#history-status")).to_contain_text("已复习 1 条")
+        self.assertEqual(self.history_records()[0]["review"]["count"], 1)
+        self.page.reload()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertEqual(self.history_records()[0]["review"]["count"], 1)
+
+    def test_committed_restore_is_not_offered_again_when_library_refresh_fails(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        incoming = [dict(self.history_records()[0], id="committed-restore")]
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
+        self.expect(self.page.locator("#history-restore")).to_be_enabled()
+        self.fail_first_library_read_after_write()
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("恢复完成：新增 1 条")
+        self.expect(self.page.locator("#history-restore")).to_be_disabled()
+        self.assertEqual(len(self.history_records()), 2)
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(2)
+
+    def test_committed_favorite_reports_only_read_failure_and_refresh_recovers(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.fail_first_library_read_after_write()
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator("#history-status")).to_contain_text("更新已保存")
+        self.assertTrue(self.history_records()[0]["favorite"])
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.expect(self.page.locator("#history-status")).to_be_hidden()
 
     def test_committed_answer_is_not_reported_unsaved_when_library_refresh_fails(self) -> None:
         self.open_page()

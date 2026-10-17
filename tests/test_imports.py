@@ -147,6 +147,27 @@ class ImportManagerTests(unittest.TestCase):
         self.assertTrue((self.root / second["job_id"] / "source.json").is_file())
         self.builder.assert_not_called()
 
+    def test_recent_jobs_tolerate_another_service_removing_a_listed_folder(self):
+        keep, removed = self.prepare(), self.prepare()
+        folder = self.manager.root / removed["job_id"]
+        other = ImportManager(self.root, self.builder)
+        original_stat, deleted = Path.stat, False
+
+        def stat(path, *args, **kwargs):
+            nonlocal deleted
+            if path == folder and not deleted:
+                deleted = True
+                other.discard(removed["job_id"])
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat):
+            listed = self.manager.list_jobs()
+        self.assertTrue(deleted)
+        self.assertEqual([job["job_id"] for job in listed["jobs"]], [keep["job_id"]])
+        self.assertEqual(listed["unreadable_count"], 0)
+        self.assertTrue((self.root / keep["job_id"] / "source.json").is_file())
+        self.builder.assert_not_called()
+
     def test_running_job_cannot_be_discarded(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

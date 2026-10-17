@@ -137,9 +137,20 @@ class ImportManager:
             if not self.root.exists():
                 return {"jobs": [], "unreadable_count": 0}
             jobs, unreadable = [], 0
-            for folder in sorted(self.root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
-                if not folder.is_dir() or not re.fullmatch(r"[a-f0-9]{32}", folder.name):
+            candidates = []
+            for folder in self.root.iterdir():
+                if not re.fullmatch(r"[a-f0-9]{32}", folder.name):
                     continue
+                try:
+                    if folder.is_dir():
+                        candidates.append((folder.stat().st_mtime, folder))
+                except FileNotFoundError:
+                    # Another process can remove an inactive copy between
+                    # directory enumeration and metadata lookup.
+                    continue
+                except OSError:
+                    unreadable += 1
+            for _, folder in sorted(candidates, key=lambda item: item[0], reverse=True):
                 try:
                     job = self.status(folder.name)
                     fields = ("job_id", "book_id", "book", "filename", "created_at", "state",
