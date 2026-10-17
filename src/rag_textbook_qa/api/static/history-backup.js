@@ -38,6 +38,10 @@
     const result = { status: value.status, answer: value.answer == null ? null : string(value.answer, 200000),
       message: value.message == null ? null : string(value.message, 4000), sources: [], conflicts: [], timing: {}, compute: {}, citation_integrity: null };
     if (value.status === "answered" && !result.answer?.trim()) fail();
+    if (value.status !== "answered") {
+      if (result.answer?.trim()) fail();
+      result.answer = null;
+    }
     if (!Array.isArray(value.sources) || value.sources.length > 100) fail();
     result.sources = value.sources.map(source);
     if (new Set(result.sources.map(item => item.citation_id)).size !== result.sources.length) fail();
@@ -89,6 +93,7 @@
       for (const key of ["last_reviewed_at", "next_review_at"]) {
         if (typeof review[key] !== "string" || !Number.isFinite(Date.parse(review[key]))) fail();
       }
+      if (Date.parse(review.next_review_at) <= Date.parse(review.last_reviewed_at)) fail();
       result.review = {count: review.count, last_rating: review.last_rating,
         last_reviewed_at: new Date(review.last_reviewed_at).toISOString(),
         next_review_at: new Date(review.next_review_at).toISOString()};

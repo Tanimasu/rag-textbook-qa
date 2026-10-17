@@ -994,6 +994,41 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertNotIn("private-prompt", result["exported"])
         self.assertNotIn("private-answer-id", result["exported"])
 
+    def test_backup_rejects_conflicting_terminal_states_and_backwards_review_dates(self) -> None:
+        self.open_page()
+        self.saved_answer("备份一致性检查")
+        original = self.history_records()[0]
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        bad_records = []
+        for status in ("retrieval_only", "no_evidence", "failed"):
+            row = json.loads(json.dumps(original))
+            row["id"] = "conflicting-" + status
+            row["result"]["status"] = status
+            bad_records.append(row)
+        backwards = json.loads(json.dumps(original))
+        backwards["id"] = "backwards-review"
+        backwards["review"] = {"count": 1, "last_rating": "again",
+                               "last_reviewed_at": "2026-10-18T08:00:00Z",
+                               "next_review_at": "2026-10-18T07:00:00Z"}
+        bad_records.append(backwards)
+        equal = json.loads(json.dumps(backwards))
+        equal["id"] = "equal-review-times"
+        equal["review"]["next_review_at"] = equal["review"]["last_reviewed_at"]
+        bad_records.append(equal)
+        for row in bad_records:
+            with self.subTest(record=row["id"]):
+                self.page.locator("#history-backup-file").set_input_files(self.backup_file([row]))
+                self.expect(self.page.locator("#history-backup-preview")).to_contain_text("无效记录")
+                self.expect(self.page.locator("#history-restore")).to_be_disabled()
+                self.assertEqual(self.history_records(), [original])
+        legacy = json.loads(json.dumps(original))
+        legacy["result"].update(status="retrieval_only", answer="")
+        normalized = self.page.evaluate("""record => RagHistoryBackup.parse(JSON.stringify({
+          format:'rag-qa-history', version:1, records:[record]
+        }))[0]""", legacy)
+        self.assertIsNone(normalized["result"]["answer"])
+
     def test_saved_notes_restore_search_export_and_backup_without_changing_answer(self) -> None:
         self.open_page()
         self.saved_answer()
@@ -1415,6 +1450,18 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertIn("导出后新增的草稿内容", Path(download.value.path()).read_text())
         self.page.locator("#clear").click()
         self.expect(self.page.locator(".answer")).to_have_count(0)
+
+    def test_deleted_note_warning_and_export_fit_dark_narrow_screen(self) -> None:
+        self.page.set_viewport_size({"width": 320, "height": 844})
+        self.page.emulate_media(color_scheme="dark")
+        self.deleted_note_fixture()
+        self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).scroll_into_view_if_needed()
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.assertIn("仍需导出的笔记草稿", Path(download.value.path()).read_text())
+        self.expect(self.page.locator(".note-record-missing")).to_be_visible()
+        self.capture_page("deleted-note-dark-320.png")
 
     def test_deleting_review_question_elsewhere_preserves_open_draft_and_disables_grading(self) -> None:
         self.open_page()
