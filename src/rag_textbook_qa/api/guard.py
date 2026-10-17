@@ -173,6 +173,7 @@ class AccessGuard:
         limits = {
             "question": self.settings.requests_per_window,
             "feedback": self.settings.feedback_requests_per_window,
+            "reading": max(60, self.settings.requests_per_window * 6),
         }
         if scope not in limits:
             raise ValueError(f"未知限流范围: {scope}")

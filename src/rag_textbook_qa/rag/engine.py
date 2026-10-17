@@ -487,6 +487,22 @@ class RAGEngine:
                 return books
         raise RuntimeError("教材目录正在更新，请稍后重试")
 
+    def read_passages(self, book_name: str, chunk_id: str, *, radius: int = 1) -> dict[str, Any]:
+        """Read indexed source order, with the same publication boundary as retrieval."""
+        from rag_textbook_qa.rag.reading import passage_window
+
+        def read() -> dict[str, Any]:
+            if book_name not in self.bm25_corpus:
+                raise LookupError("没有这本教材的索引")
+            rows = order_indexed_chunks({
+                "ids": self.bm25_doc_ids[book_name],
+                "documents": self.bm25_corpus[book_name],
+                "metadatas": self.bm25_metadatas[book_name],
+            }, book_name)
+            return passage_window(rows, chunk_id, radius=radius)
+
+        return self._run_with_index_snapshot(read)
+
     def _build_bm25_indexes(self, *, expected_revision: str) -> bool:
         if self.verbose:
             print("构建 BM25 关键词索引...")

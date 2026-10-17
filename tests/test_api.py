@@ -348,6 +348,39 @@ class ApiAppTests(unittest.TestCase):
             )
         )
 
+    def test_reading_is_authenticated_sanitized_and_does_not_spend_generation(self):
+        engine = FakeEngine()
+        engine.read_passages = MagicMock(return_value={
+            "anchor_chunk_id": "chapter_p1", "source_sha256": "a" * 64,
+            "previous_chunk_id": None, "next_chunk_id": "chapter_p2",
+            "passages": [{**SOURCE, "chunk_id": "chapter_p1", "is_anchor": True,
+                          "internal_path": SECRET, "prompt": SECRET}],
+        })
+        client = self.client(engine=engine, access_code="reader-code", requests_per_window=1)
+        path = "/v1/books/os/passages?chunk_id=chapter_p1"
+        self.assertEqual(client.get(path).status_code, 401)
+        engine.read_passages.assert_not_called()
+        response = client.get(path, headers={"X-Access-Code": "reader-code"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(SECRET, response.text)
+        self.assertTrue(response.json()["passages"][0]["is_anchor"])
+        self.assertEqual(response.json()["passages"][0]["excerpt"], SOURCE["content"])
+        self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
+        self.assertEqual(client.post("/v1/ask", json={"query": "进程", "book_id": "os"},
+                                     headers={"X-Access-Code": "reader-code"}).status_code, 200)
+
+    def test_reading_missing_or_updating_index_keeps_provider_details_private(self):
+        engine = FakeEngine()
+        engine.read_passages = MagicMock(side_effect=LookupError(SECRET))
+        client = self.client(engine=engine)
+        path = "/v1/books/os/passages?chunk_id=chapter_p1"
+        self.assertEqual(client.get(path).status_code, 404)
+        engine.read_passages.side_effect = RuntimeError(SECRET)
+        response = client.get(path)
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(SECRET, response.text)
+        self.assertEqual(engine.calls, [])
+
     def test_page_books_docs_and_health_expose_no_secrets(self):
         client = self.client(access_code="demo-2026")
 

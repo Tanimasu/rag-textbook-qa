@@ -7,6 +7,7 @@ Only the backend is fake: the browser executes the unchanged HTML and JavaScript
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
@@ -30,6 +32,9 @@ def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
         "sources": [
             {
                 "citation_id": 1,
+                "book_id": "os",
+                "chunk_id": "chapter_p1",
+                "source_sha256": hashlib.sha256("进程是程序在一个数据集合上的一次执行。".encode()).hexdigest(),
                 "book": "操作系统",
                 "section": "第二章 进程管理",
                 "excerpt": "进程是程序在一个数据集合上的一次执行。",
@@ -64,6 +69,9 @@ class FakeBackend(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.gates: list[threading.Event] = []
         self.book_failures_remaining = 0
+        self.reading_changed = False
+        self.reading_failure = False
+        self.reads: list[dict[str, Any]] = []
 
     def enqueue(self, reply: Reply) -> None:
         with self.lock:
@@ -92,6 +100,24 @@ class FakeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/":
             self.respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path.startswith("/v1/books/os/passages?"):
+            chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
+            self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
+            if self.server.reading_failure:
+                self.json_response({"detail": "原文暂时无法读取，请稍后重试"}, 503)
+                return
+            source = dict(answer_result()["sources"][0])
+            if self.server.reading_changed:
+                source.update(excerpt="更新后的教材原文。", source_sha256="b" * 64)
+            source.update(chunk_id=chunk_id, is_anchor=True)
+            neighbor = {**source, "chunk_id": "chapter_p2", "excerpt": "相邻原文：进程具有动态性。", "is_anchor": False}
+            self.json_response({
+                "book_id": "os", "anchor_chunk_id": chunk_id,
+                "source_sha256": source["source_sha256"],
+                "previous_chunk_id": "chapter_p1" if chunk_id == "chapter_p2" else None,
+                "next_chunk_id": "chapter_p2" if chunk_id == "chapter_p1" else None,
+                "passages": [source, neighbor],
+            })
         elif self.path == "/v1/books":
             with self.server.lock:
                 if self.server.book_failures_remaining:
@@ -435,7 +461,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.capture_page("history-mobile.png")
         self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
         self.page.locator(".answer .cite").click()
-        self.expect(self.page.locator(".source .excerpt")).to_be_visible()
+        self.expect(self.page.locator(".reader-quote")).to_be_visible()
         self.assertTrue(self.page.evaluate(
             "document.documentElement.scrollWidth <= window.innerWidth"
         ))
@@ -508,6 +534,84 @@ class PublicChatBrowserTests(unittest.TestCase):
             self.expect(private_page.locator(".answer")).to_have_count(0)
         finally:
             other.close()
+
+    def test_reader_pairs_snapshot_with_answer_and_reads_neighbors_only_on_request(self) -> None:
+        self.backend.access_code_required = True
+        self.open_page()
+        self.page.locator("#code").fill("reader-test-code")
+        self.saved_answer()
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.expect(self.page.locator(".reader-quote")).to_have_text(
+            answer_result()["sources"][0]["excerpt"]
+        )
+        left = self.page.locator(".answer-content").bounding_box()
+        right = self.page.locator(".reader").bounding_box()
+        self.assertGreater(right["x"], left["x"] + left["width"])
+        self.assertEqual(self.backend.reads, [])
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("定位片段与引用时的原文一致")
+        self.expect(self.page.locator(".reader-current")).to_contain_text("进程具有动态性")
+        self.expect(self.page.get_by_role("button", name="向前阅读", exact=True)).to_be_disabled()
+        self.page.get_by_role("button", name="向后阅读", exact=True).click()
+        self.expect(self.page.get_by_role("button", name="向后阅读", exact=True)).to_be_disabled()
+        self.expect(self.page.get_by_role("button", name="向前阅读", exact=True)).to_be_enabled()
+        self.assertEqual(self.backend.reads, [
+            {"chunk_id": "chapter_p1", "access_code": "reader-test-code"},
+            {"chunk_id": "chapter_p2", "access_code": "reader-test-code"},
+        ])
+        self.capture_page("reader-desktop.png")
+        self.page.get_by_role("button", name="收起对照", exact=True).click()
+        self.expect(self.page.locator(".reader")).to_have_count(0)
+        self.expect(self.page.locator(".app")).not_to_have_class("app has-reader")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_reader_marks_changed_text_and_keeps_old_snapshot_when_read_fails(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.backend.reading_changed = True
+        self.page.reload()
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("教材原文已更新")
+        self.expect(self.page.locator(".reader-current")).to_contain_text("更新后的教材原文")
+        self.expect(self.page.locator(".reader-quote")).not_to_contain_text("更新后的教材原文")
+        self.backend.reading_failure = True
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("原文暂时无法读取")
+        self.expect(self.page.locator(".reader-quote")).to_have_text(
+            answer_result()["sources"][0]["excerpt"]
+        )
+        self.page.locator("#clear").click()
+        self.expect(self.page.locator(".reader")).to_have_count(0)
+        self.expect(self.page.locator(".app")).not_to_have_class("app has-reader")
+
+    def test_mobile_reader_switches_between_answer_and_source_without_overflow(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page()
+        self.saved_answer()
+        self.page.locator(".answer .cite").click()
+        self.expect(self.page.locator(".reader")).to_be_visible()
+        self.expect(self.page.locator(".answer-content")).to_be_hidden()
+        self.page.locator(".reader-tabs").get_by_role("button", name="回答", exact=True).click()
+        self.expect(self.page.locator(".answer-content")).to_be_visible()
+        self.expect(self.page.locator(".reader")).to_be_hidden()
+        self.page.locator(".reader-tabs").get_by_role("button", name="原文", exact=True).click()
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("进程具有动态性")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("reader-mobile.png")
+
+    def test_legacy_history_without_position_still_opens_snapshot(self) -> None:
+        self.open_page()
+        result = answer_result()
+        for key in ("chunk_id", "source_sha256"):
+            result["sources"][0].pop(key)
+        self.saved_answer(result=result)
+        self.page.reload()
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.expect(self.page.locator(".reader-quote")).to_be_visible()
+        self.expect(self.page.get_by_role("button", name="读取相邻原文", exact=True)).to_be_disabled()
+        self.assertEqual(self.backend.reads, [])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

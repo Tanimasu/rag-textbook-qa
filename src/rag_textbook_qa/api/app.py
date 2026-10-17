@@ -10,6 +10,7 @@ returned, because it can carry upstream detail.
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import re
 import sys
@@ -184,9 +185,16 @@ def _citation_integrity(answer: str, sources: Sequence[Mapping[str, Any]]) -> di
 
 def _public_source(source: Mapping[str, Any]) -> dict[str, Any]:
     book_id = str(source.get("book_name") or "")
+    fingerprint = source.get("source_sha256")
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        fingerprint = None
+        if not source.get("truncated") and not source.get("table_compacted"):
+            fingerprint = hashlib.sha256(str(source.get("content") or "").strip().encode()).hexdigest()
     return {
         "citation_id": source.get("citation_id"),
         "book_id": book_id,
+        "chunk_id": str(source.get("chunk_id") or ""),
+        "source_sha256": fingerprint,
         "book": BOOK_LABELS.get(book_id, book_id),
         "section": " > ".join(str(source[field]) for field in _HEADING_FIELDS if source.get(field)),
         "excerpt": str(source.get("content") or ""),
@@ -492,6 +500,33 @@ def create_api_app(
     @app.get("/v1/books", summary="已索引的教材")
     def list_books() -> list[dict[str, Any]]:
         return current_books()
+
+    @app.get("/v1/books/{book_id}/passages", summary="按引用位置阅读教材及相邻片段")
+    def read_passages(book_id: str, chunk_id: str, request: Request) -> dict[str, Any]:
+        authorize(request, rate_scope="reading")
+        if not chunk_id.strip() or len(chunk_id) > 512 or len(book_id) > 503:
+            raise HTTPException(status_code=422, detail="教材或片段编号格式不正确")
+        read = getattr(engine, "read_passages", None)
+        if not callable(read):
+            raise HTTPException(status_code=404, detail="当前服务不提供原文阅读")
+        try:
+            window = read(book_id, chunk_id)
+            return {
+                "book_id": book_id,
+                "anchor_chunk_id": window["anchor_chunk_id"],
+                "source_sha256": window["source_sha256"],
+                "previous_chunk_id": window["previous_chunk_id"],
+                "next_chunk_id": window["next_chunk_id"],
+                "passages": [
+                    {**_public_source(row), "is_anchor": bool(row.get("is_anchor"))}
+                    for row in window["passages"]
+                ],
+            }
+        except LookupError:
+            raise HTTPException(status_code=404, detail="原文位置已不存在，可能是教材索引已经更新") from None
+        except Exception as exc:  # noqa: BLE001 - keep provider details private
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="原文暂时无法读取，请稍后重试") from None
 
     @app.post("/v1/ask", summary="提问，一次性返回回答与引用")
     async def ask(payload: AskRequest, request: Request) -> dict[str, Any]:

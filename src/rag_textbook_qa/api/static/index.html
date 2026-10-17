@@ -31,6 +31,7 @@ body {
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 .app { max-width: 860px; margin: 0 auto; padding: 0 16px; min-height: 100%; display: flex; flex-direction: column; }
+.app.has-reader { max-width: 1320px; }
 header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
 .brand h1 { margin: 0; font-size: 20px; }
 .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
@@ -106,6 +107,24 @@ main { flex: 1; padding: 16px 0; }
 .history-cleanup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
 .history-cleanup summary { cursor: pointer; }
 #history-status { font-size: 13px; }
+.answer.reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.answer-content { min-width: 0; }
+.reader { position: sticky; top: 12px; max-height: 80vh; overflow: auto; min-width: 0; border-left: 1px solid var(--line); padding-left: 16px; }
+.reader h3 { margin: 0; font-size: 16px; }
+.reader .reader-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reader label { display: grid; gap: 5px; font-size: 13px; margin-top: 10px; }
+.reader-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.reader-quote { border-left: 3px solid var(--accent); padding-left: 12px; margin: 12px 0; }
+.reader-passage { padding: 10px; margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; }
+.reader-passage.anchor { border-color: var(--accent); background: var(--accent-soft); }
+.reader-tabs { display: none; }
+@media (max-width: 800px) {
+  .answer.reading { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .reader { position: static; max-height: none; border-left: 0; padding-left: 0; }
+  .reader-tabs { display: flex; gap: 8px; }
+  .answer.reading[data-reader-tab=source] > .answer-content { display: none; }
+  .answer.reading[data-reader-tab=answer] > .reader { display: none; }
+}
 .feedback-notice { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .feedback-panel {
   margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
@@ -240,6 +259,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
+  const answerSnapshots = new WeakMap();
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -478,6 +498,12 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function renderActions(card, result, query) {
     const actions = element("div", "actions");
+    if (result.sources?.length) {
+      const read = element("button", "action", "对照原文");
+      read.type = "button";
+      read.addEventListener("click", () => openReader(card));
+      actions.append(read);
+    }
     if (result.answer) {
       const copy = element("button", "action", "复制答案");
       copy.type = "button";
@@ -592,6 +618,7 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   function finish(card, result, query) {
+    answerSnapshots.set(card, result.sources || []);
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
@@ -626,6 +653,128 @@ footer details p { margin-top: 6px; text-align: left; }
     renderActions(card, result, query);
   }
 
+  function openReader(card, citationId) {
+    const sources = answerSnapshots.get(card) || [];
+    if (!sources.length) return;
+    let pane = card.querySelector(":scope > .reader");
+    if (pane) {
+      card.dataset.readerTab = "source";
+      [...card.querySelector(".reader-tabs").children].forEach((tab, index) => tab.setAttribute("aria-pressed", String(index === 1)));
+      pane.selectCitation(citationId);
+      return;
+    }
+    const content = element("div", "answer-content");
+    content.append(...card.childNodes);
+    const tabs = element("div", "reader-tabs");
+    for (const [value, label] of [["answer", "回答"], ["source", "原文"]]) {
+      const button = element("button", "action", label);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        card.dataset.readerTab = value;
+        for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === button));
+      });
+      button.setAttribute("aria-pressed", String(value === "source"));
+      tabs.append(button);
+    }
+    pane = element("aside", "reader");
+    pane.setAttribute("aria-label", "教材原文对照");
+    const heading = element("div", "reader-heading");
+    const close = element("button", "action", "收起对照");
+    close.type = "button";
+    heading.append(element("h3", "", "教材原文"), close);
+    const select = element("select");
+    const label = element("label", "", "选择引用");
+    select.setAttribute("aria-label", "选择引用原文");
+    for (const source of sources) select.add(new Option(`资料 ${source.citation_id} · ${source.book}`, source.citation_id));
+    label.append(select);
+    const snapshot = element("div", "reader-snapshot");
+    const load = element("button", "action", "读取相邻原文");
+    load.type = "button";
+    const current = element("div", "reader-current");
+    let controller = null, selected = null;
+    const stop = () => { controller?.abort(); controller = null; };
+    async function read(chunkId) {
+      stop();
+      const requestController = new AbortController();
+      controller = requestController;
+      current.replaceChildren(element("p", "history-help", "正在读取当前索引…"));
+      load.disabled = true;
+      try {
+        const response = await fetch(`/v1/books/${encodeURIComponent(selected.book_id)}/passages?chunk_id=${encodeURIComponent(chunkId)}`, {
+          headers: requestHeaders(), signal: requestController.signal,
+        });
+        if (controller !== requestController) return;
+        current.replaceChildren();
+        if (!response.ok) { await explainRefusal(current, response, "原文读取"); return; }
+        const data = await response.json();
+        if (controller !== requestController) return;
+        if (!Array.isArray(data.passages)) throw new Error("invalid passages");
+        current.append(element("h3", "", "当前索引中的上下文"),
+          element("p", "history-help", "相邻原文只供阅读，未加入这次回答的依据。"));
+        if (chunkId === selected.chunk_id) {
+          if (!selected.source_sha256) addNotice(current, "这条旧记录没有原文指纹，无法核对版本。", "warn");
+          else if (data.source_sha256 !== selected.source_sha256) addNotice(current, "教材原文已更新；上方保留引用时的快照，以下是当前内容。", "warn");
+          else current.append(element("p", "history-help", "定位片段与引用时的原文一致。"));
+        }
+        for (const passage of data.passages) {
+          const item = element("section", "reader-passage" + (passage.is_anchor ? " anchor" : ""));
+          item.append(element("div", "history-meta", (passage.is_anchor ? "当前定位 · " : "相邻片段 · ") + passage.section),
+            element("div", "reader-text", passage.excerpt));
+          current.append(item);
+        }
+        const navigation = element("div", "actions");
+        for (const [key, title] of [["previous_chunk_id", "向前阅读"], ["next_chunk_id", "向后阅读"]]) {
+          const button = element("button", "action", title);
+          button.type = "button";
+          button.disabled = !data[key];
+          button.addEventListener("click", () => read(data[key]));
+          navigation.append(button);
+        }
+        current.append(navigation);
+      } catch (error) {
+        if (error.name !== "AbortError" && controller === requestController) {
+          current.replaceChildren();
+          addNotice(current, "原文暂时无法读取，仍可对照上方保存的引用快照。", "error");
+        }
+      } finally {
+        if (controller === requestController) { controller = null; load.disabled = false; }
+      }
+    }
+    function choose() {
+      stop();
+      selected = sources.find(source => String(source.citation_id) === select.value) || sources[0];
+      snapshot.replaceChildren(element("p", "history-help", "引用时的原文快照"),
+        element("div", "history-meta", selected.section || "未标注章节"),
+        element("div", "reader-text reader-quote", selected.excerpt));
+      if (selected.truncated) snapshot.append(element("p", "history-help", "引用片段已截断，可读取当前索引中的完整片段及相邻原文。"));
+      if (selected.table_compacted) snapshot.append(element("p", "history-help", "本次引用中的表格已按行整理。"));
+      current.replaceChildren();
+      load.disabled = !selected.chunk_id || !selected.book_id;
+      load.title = load.disabled ? "这条旧记录未保存原文位置，仍可阅读引用快照" : "";
+    }
+    pane.selectCitation = id => {
+      if (id !== undefined) select.value = String(id);
+      choose();
+    };
+    select.addEventListener("change", choose);
+    load.addEventListener("click", () => read(selected.chunk_id));
+    close.addEventListener("click", () => {
+      stop();
+      pane.remove(); tabs.remove();
+      content.replaceWith(...content.childNodes);
+      card.classList.remove("reading");
+      delete card.dataset.readerTab;
+      if (!document.querySelector(".answer.reading")) document.querySelector(".app").classList.remove("has-reader");
+      card.querySelector(".actions button")?.focus({ preventScroll: true });
+    });
+    pane.append(heading, label, snapshot, load, current);
+    card.append(tabs, content, pane);
+    card.classList.add("reading");
+    card.dataset.readerTab = "source";
+    document.querySelector(".app").classList.add("has-reader");
+    pane.selectCitation(citationId);
+  }
+
   // One IndexedDB object store, scoped by the browser to this origin. Transactions
   // update individual records so another tab cannot overwrite a newer library.
   function historyTransaction(mode, run) {
@@ -655,6 +804,7 @@ footer details p { margin-top: 6px; text-align: left; }
     rememberView();
     empty.hidden = false;
     clear.hidden = true;
+    document.querySelector(".app").classList.remove("has-reader");
   }
 
   function historyActions(id, view = false) {
@@ -763,6 +913,7 @@ footer details p { margin-top: 6px; text-align: left; }
     visibleIds = visibleIds.filter(id => ids.has(id));
     empty.hidden = !!thread.querySelector(".msg");
     clear.hidden = !thread.querySelector(".msg");
+    document.querySelector(".app").classList.toggle("has-reader", !!thread.querySelector(".answer.reading"));
     renderHistory();
   }
 
@@ -1127,6 +1278,8 @@ footer details p { margin-top: 6px; text-align: left; }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     target.classList.add("flash");
+    openReader(cite.closest(".answer"), cite.dataset.cite);
+    if (window.matchMedia("(min-width: 801px)").matches) target.focus({ preventScroll: true });
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
   input.addEventListener("input", autosize);
