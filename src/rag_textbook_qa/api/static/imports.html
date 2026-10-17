@@ -82,7 +82,8 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
   function headers() {
     const result = {};
     const code = $("import-code").value.trim();
-    if (code) { result["X-Access-Code"] = code; set("rag-qa-access-code", code); }
+    set("rag-qa-access-code", code);
+    if (code) result["X-Access-Code"] = code;
     return result;
   }
   function status(text, error = false) { $("import-status").textContent = text; $("import-status").className = error ? "hint error" : "hint"; }
@@ -229,6 +230,7 @@ progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-na
   $("import-connect").addEventListener("click", connect);
   $("import-return").addEventListener("click", () => set("rag-qa-selected-book", job.book_id));
   $("import-code").value = get("rag-qa-access-code");
+  $("import-code").addEventListener("input", () => { if (!$("import-code").value.trim()) set("rag-qa-access-code", ""); });
   connect();
 })();
 </script>

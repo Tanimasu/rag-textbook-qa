@@ -1335,7 +1335,8 @@ footer details p { margin-top: 6px; text-align: left; }
   function requestHeaders() {
     const headers = { "Content-Type": "application/json" };
     const code = codeInput.value.trim();
-    if (code) { headers["X-Access-Code"] = code; sessionSet(CODE_KEY, code); }
+    sessionSet(CODE_KEY, code);
+    if (code) headers["X-Access-Code"] = code;
     return headers;
   }
 
@@ -1603,6 +1604,7 @@ footer details p { margin-top: 6px; text-align: left; }
   input.addEventListener("input", () => {
     autosize(); sessionSet(DRAFT_KEY, input.value); $("draft-status").hidden = true;
   });
+  codeInput.addEventListener("input", () => { if (!codeInput.value.trim()) sessionRemove(CODE_KEY); });
   bookSelect.addEventListener("change", () => {
     bookSelect.setCustomValidity("");
     sessionSet(BOOK_KEY, bookSelect.value);

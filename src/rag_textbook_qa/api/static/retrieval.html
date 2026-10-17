@@ -157,7 +157,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
     setStatus("正在运行检索模型，未调用生成模型…");
     const headers = { "Content-Type": "application/json" };
     const code = $("inspect-code").value.trim();
-    if (code) { headers["X-Access-Code"] = code; sessionSet("rag-qa-access-code", code); }
+    sessionSet("rag-qa-access-code", code);
+    if (code) headers["X-Access-Code"] = code;
     try {
       const response = await fetch("/v1/retrieval/inspect", { method:"POST", headers, signal,
         body:JSON.stringify({ query, book_id:book, top_k:Number($("inspect-top-k").value) }) });
@@ -186,6 +187,7 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   $("inspect-stop").addEventListener("click", () => controller?.abort());
   $("inspect-reload").addEventListener("click", loadBooks);
   $("inspect-code").value = sessionGet("rag-qa-access-code");
+  $("inspect-code").addEventListener("input", () => { if (!$("inspect-code").value.trim()) sessionSet("rag-qa-access-code", ""); });
   loadBooks();
   fetch("/health").then(response => response.json()).then(data => { $("inspect-code-field").hidden = !data.access_code_required; }).catch(() => {});
 })();

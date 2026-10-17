@@ -1441,6 +1441,21 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#input")).to_have_value("")
         self.assertEqual(len(self.backend.asks), 1)
 
+    def test_clearing_access_code_forgets_previous_value_on_all_three_pages(self) -> None:
+        self.backend.access_code_required = self.backend.imports_enabled = True
+        self.open_page()
+        for path, code_selector in (("/", "#code"), ("/retrieval", "#inspect-code"), ("/imports", "#import-code")):
+            with self.subTest(path=path):
+                self.page.evaluate("sessionStorage.setItem('rag-qa-access-code', 'fixture-code-to-forget')")
+                self.page.goto(self.base_url + path)
+                self.expect(self.page.locator(code_selector)).to_be_visible()
+                self.expect(self.page.locator(code_selector)).to_have_value("fixture-code-to-forget")
+                self.page.locator(code_selector).fill("")
+                self.page.reload()
+                self.expect(self.page.locator(code_selector)).to_have_value("")
+                self.assertNotEqual(self.page.evaluate("sessionStorage.getItem('rag-qa-access-code')"), "fixture-code-to-forget")
+        self.assertEqual(self.backend.asks, [])
+
     def test_edit_original_question_restores_book_and_never_submits_automatically(self) -> None:
         self.open_page()
         self.saved_answer("进程是什么？")

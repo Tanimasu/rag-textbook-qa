@@ -82,6 +82,8 @@ rag-qa feedback export --output artifacts/product/feedback-export.jsonl --force
 | `RAG_QA_TRUST_PROXY` | false | 前面恰有一层可信代理时才开启 |
 
 监听非本机地址时，必须设置 `RAG_QA_ACCESS_CODE`，或显式加 `--public` 确认无口令开放。
+聊天、检索观察和导入页沿用当前标签页保存的访问口令。清空口令输入框会忘记该标签页保存的旧值，
+刷新也不会恢复旧口令；这不删除历史问答，也不更改服务端访问配置。
 计数器存在进程内存里，重启即清零，只适合单进程演示。
 排队使用协程，仅取得执行槽的请求创建回答线程。`/health` 提供
 `requests_in_flight`、`requests_queued` 和 `request_capacity`，便于观察队列。
