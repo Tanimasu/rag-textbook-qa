@@ -582,6 +582,13 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".answer")).to_contain_text("本次仅展示教材原文")
         self.expect(self.page.locator(".source .excerpt")).to_be_visible()
         self.expect(self.page.locator("#thread")).not_to_contain_text("没有完成的回答")
+        with self.page.expect_download() as info:
+            self.page.get_by_role("button", name="导出本次记录", exact=True).click()
+        exported = Path(info.value.path()).read_text()
+        self.assertIn("本次没有完整的生成回答", exported)
+        self.assertIn(result["sources"][0]["excerpt"], exported)
+        self.assertIn(result["message"], exported)
+        self.assertEqual(len(self.backend.asks), 2)
 
     def test_library_pagination_and_search_include_records_outside_first_page(self) -> None:
         self.open_page()
@@ -1355,6 +1362,23 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.get_by_role("button", name="对照原文", exact=True).click()
         self.expect(self.page.locator(".reader-quote")).to_be_visible()
         self.assertEqual(self.history_records()[0]["result"]["answer"], answer_result()["answer"])
+
+    def test_no_evidence_record_exports_question_and_status_without_fake_answer(self) -> None:
+        self.open_page()
+        result = answer_result()
+        result.update(status="no_evidence", answer=None, sources=[], citation_integrity=None,
+                      message="本次未找到教材证据，请换个问题。")
+        self.saved_answer("没有检索资料的问题", result=result)
+        self.page.reload()
+        self.expect(self.page.get_by_role("button", name="复制答案", exact=True)).to_have_count(0)
+        with self.page.expect_download() as info:
+            self.page.get_by_role("button", name="导出本次记录", exact=True).click()
+        exported = Path(info.value.path()).read_text()
+        self.assertIn("没有检索资料的问题", exported)
+        self.assertIn(result["message"], exported)
+        self.assertIn("本次记录未包含教材片段", exported)
+        self.assertIn("本次没有完整的生成回答", exported)
+        self.assertEqual(len(self.backend.asks), 1)
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
