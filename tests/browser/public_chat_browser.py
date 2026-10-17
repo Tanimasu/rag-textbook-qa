@@ -105,6 +105,7 @@ class FakeBackend(ThreadingHTTPServer):
         self.book_failures_remaining = 0
         self.reading_changed = False
         self.reading_failure = False
+        self.reading_gate: threading.Event | None = None
         self.reads: list[dict[str, Any]] = []
         self.inspections: list[dict[str, Any]] = []
         self.inspection_gate: threading.Event | None = None
@@ -135,7 +136,10 @@ class FakeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def json_response(self, value: Any, status: int = 200) -> None:
         self.respond(status, json.dumps(value).encode(), "application/json")
@@ -166,6 +170,8 @@ class FakeHandler(BaseHTTPRequestHandler):
         elif self.path.startswith("/v1/books/os/passages?"):
             chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
             self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
+            if self.server.reading_gate:
+                self.server.reading_gate.wait(10)
             if self.server.reading_failure:
                 self.json_response({"detail": "原文暂时无法读取，请稍后重试"}, 503)
                 return
@@ -1169,6 +1175,70 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#import-job")).to_be_hidden()
         self.expect(self.page.locator("#import-start")).to_be_disabled()
         self.assertEqual(self.backend.import_starts, [])
+
+    def test_markdown_comparison_table_keeps_alignment_citations_and_literal_html(self) -> None:
+        self.open_page()
+        result = answer_result()
+        result["answer"] = "3. 比较下面的概念。\n\n| 项目 | 说明 |\n| :--- | ---: |\n| 程序 | 静态代码【参考资料 1】 |\n| 转义\\|竖线 | <img src=x onerror=neverRun()> |\n\n4. 请结合原文核对。"
+        self.saved_answer(result=result)
+        body = self.page.locator(".answer .body")
+        self.expect(body.locator("table")).to_have_count(1)
+        self.expect(body.locator("th").last).to_have_css("text-align", "right")
+        self.expect(body.locator("tbody tr")).to_have_count(2)
+        self.expect(body.locator("tbody tr").last.locator("td").first).to_have_text("转义|竖线")
+        self.expect(body.locator("img")).to_have_count(0)
+        self.expect(body.locator("tbody")).to_contain_text("<img src=x onerror=neverRun()>")
+        self.expect(body.locator("ol").first).to_have_attribute("start", "3")
+        self.expect(body.locator("ol").last).to_have_attribute("start", "4")
+        body.locator(".cite").click()
+        self.expect(self.page.locator(".reader-quote")).to_be_visible()
+        self.assertEqual(self.history_records()[0]["result"]["answer"], result["answer"])
+
+    def test_code_copy_preserves_nested_fences_unicode_and_literal_citation(self) -> None:
+        self.isolated_clipboard(api=False, command="success")
+        self.open_page()
+        code = 'print("中文 <script>neverRun()</script>")\n```\n【参考资料 1】'
+        result = answer_result()
+        result["answer"] = "````python\n" + code + "\n````\n\n代码之后的说明。`**原样**【参考资料 9】`"
+        self.saved_answer(result=result)
+        body = self.page.locator(".answer .body")
+        self.expect(body.locator("pre code")).to_have_text(code)
+        self.expect(body.locator("pre .cite")).to_have_count(0)
+        self.expect(body.locator("script")).to_have_count(0)
+        self.expect(body.locator(".cite")).to_have_count(0)
+        self.expect(body.locator("p code")).to_have_text("**原样**【参考资料 9】")
+        body.get_by_role("button", name="复制代码", exact=True).click()
+        self.expect(body.locator("[data-copy-code]")).to_have_text("已复制")
+        self.assertEqual(self.page.evaluate("window.copyAttempts[0].text"), code)
+        self.expect(body).to_contain_text("代码之后的说明")
+
+    def test_wide_tables_and_tilde_code_scroll_inside_mobile_answer(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page()
+        result = answer_result()
+        result["answer"] = "| 项目 | 特性一 | 特性二 | 特性三 | 特性四 | 特性五 |\n| --- | --- | --- | --- | --- | --- |\n| 进程 | 动态 | 并发 | 独立 | 异步 | 资源 |\n\n~~~text\n" + "long_code_" * 30 + "\n~~~"
+        self.saved_answer(result=result)
+        body = self.page.locator(".answer .body")
+        self.expect(body.locator("table")).to_have_count(1)
+        self.expect(body.locator("pre code")).to_have_text("long_code_" * 30)
+        self.assertTrue(body.locator(".table-scroll").evaluate("el => el.scrollWidth > el.clientWidth"))
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("answer-table-mobile.png")
+
+    def test_clearing_thread_aborts_pending_source_read(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        gate = threading.Event()
+        self.backend.reading_gate = gate
+        self.backend.gates.append(gate)
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        with self.page.expect_request(lambda request: "/passages?" in request.url):
+            self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        with self.page.expect_event("requestfailed", predicate=lambda request: "/passages?" in request.url):
+            self.page.locator("#clear").click()
+        self.expect(self.page.locator(".reader")).to_have_count(0)
+        self.expect(self.page.locator("#empty")).to_be_visible()
+        self.assertEqual(len(self.backend.reads), 1)
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

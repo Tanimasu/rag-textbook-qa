@@ -64,7 +64,7 @@ main { flex: 1; padding: 16px 0; }
 .msg.user { justify-content: flex-end; }
 .bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
 .msg.user .bubble { background: var(--user); color: var(--user-text); border-bottom-right-radius: 4px; }
-.answer { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
+.answer { width: 100%; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
 .answer .body { word-break: break-word; }
 .answer .body.progress { color: var(--muted); }
 .answer .body h2, .answer .body h3 { font-size: 16px; margin: 14px 0 6px; }
@@ -74,6 +74,13 @@ main { flex: 1; padding: 16px 0; }
 .answer .body code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 .answer .body pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
 .answer .body pre code { background: none; padding: 0; }
+.answer .body .code-block { position: relative; margin: 10px 0; padding-top: 28px; background: var(--code-bg); border-radius: 8px; }
+.answer .body .code-block pre { margin: 0; }
+.code-copy { position: absolute; top: 5px; right: 8px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.table-scroll { overflow-x: auto; margin: 10px 0; }
+.answer .body table { border-collapse: collapse; min-width: 100%; font-size: 14px; }
+.answer .body th, .answer .body td { border: 1px solid var(--line); padding: 7px 10px; min-width: 100px; vertical-align: top; }
+.answer .body th { background: var(--code-bg); }
 .cite {
   font: inherit; font-size: 12px; border: 0; background: var(--accent-soft); color: var(--accent);
   border-radius: 6px; padding: 0 6px; margin: 0 2px; cursor: pointer;
@@ -310,6 +317,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let records = [], visibleIds = [], historyLimit = 20;
   let filteredRecords = [], restoreRecords = null, backupReading = 0;
   const answerSnapshots = new WeakMap();
+  const readerCleanup = new WeakMap();
   let reviewState = null, reviewRevealed = false;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
@@ -320,25 +328,71 @@ footer details p { margin-top: 6px; text-align: left; }
   }[character]));
 
   // Runs on already-escaped text, so every tag it emits is one it chose to emit.
-  const inline = (text) => text
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/【参考资料\s*(\d+)】/g, '<button type="button" class="cite" data-cite="$1">资料 $1</button>');
+  function inline(text) {
+    const plain = value => value.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/【参考资料\s*(\d+)】/g, '<button type="button" class="cite" data-cite="$1">资料 $1</button>');
+    let result = "", offset = 0;
+    for (const match of text.matchAll(/`([^`]+)`/g)) {
+      result += plain(text.slice(offset, match.index)) + "<code>" + match[1] + "</code>";
+      offset = match.index + match[0].length;
+    }
+    return result + plain(text.slice(offset));
+  }
+
+  function tableCells(line) {
+    if (!line.includes("|")) return [];
+    const cells = [], value = line.trim();
+    let text = "";
+    for (let index = 0; index < value.length; index++) {
+      if (value[index] === "\\" && value[index + 1] === "|") { text += "|"; index++; }
+      else if (value[index] === "|") { cells.push(text.trim()); text = ""; }
+      else text += value[index];
+    }
+    cells.push(text.trim());
+    if (value.startsWith("|")) cells.shift();
+    if (value.endsWith("|") && !value.endsWith("\\|")) cells.pop();
+    return cells;
+  }
+
+  const codeBlock = lines => '<div class="code-block"><button class="code-copy" type="button" data-copy-code>复制代码</button><pre><code>' + lines.join("\n") + '</code></pre></div>';
 
   function renderMarkdown(source) {
     const out = [];
-    let list = null, code = null, paragraph = [];
+    let list = null, code = null, fence = "", paragraph = [];
+    const lines = escapeHtml(source).split("\n");
     const flushParagraph = () => {
       if (paragraph.length) { out.push("<p>" + inline(paragraph.join("<br>")) + "</p>"); paragraph = []; }
     };
     const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
-    for (const line of escapeHtml(source).split("\n")) {
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
       if (code !== null) {
-        if (/^\s*```/.test(line)) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = null; }
+        const closing = line.match(/^\s*(`{3,}|~{3,})\s*$/);
+        if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) { out.push(codeBlock(code)); code = null; }
         else code.push(line);
         continue;
       }
-      if (/^\s*```/.test(line)) { flushParagraph(); closeList(); code = []; continue; }
+      const opening = line.match(/^\s*(`{3,}|~{3,})/);
+      if (opening) { flushParagraph(); closeList(); code = []; fence = opening[1]; continue; }
+      const headers = tableCells(line), separators = tableCells(lines[index + 1] || "");
+      if (headers.length && separators.length === headers.length && separators.every(cell => /^:?-{3,}:?$/.test(cell))) {
+        flushParagraph(); closeList();
+        const align = separators.map(cell => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left");
+        out.push('<div class="table-scroll" tabindex="0" role="region" aria-label="回答中的表格"><table><thead><tr>');
+        headers.forEach((cell, column) => out.push(`<th scope="col" style="text-align:${align[column]}">${inline(cell)}</th>`));
+        out.push("</tr></thead><tbody>");
+        index++;
+        while (index + 1 < lines.length) {
+          const cells = tableCells(lines[index + 1]);
+          if (cells.length !== headers.length) break;
+          index++;
+          out.push("<tr>");
+          cells.forEach((cell, column) => out.push(`<td style="text-align:${align[column]}">${inline(cell)}</td>`));
+          out.push("</tr>");
+        }
+        out.push("</tbody></table></div>");
+        continue;
+      }
       const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
       if (heading) {
         flushParagraph(); closeList();
@@ -365,7 +419,7 @@ footer details p { margin-top: 6px; text-align: left; }
       closeList();
       paragraph.push(line);
     }
-    if (code !== null) out.push("<pre><code>" + code.join("\n") + "</code></pre>");
+    if (code !== null) out.push(codeBlock(code));
     flushParagraph(); closeList();
     return out.join("");
   }
@@ -747,6 +801,7 @@ footer details p { margin-top: 6px; text-align: left; }
     const current = element("div", "reader-current");
     let controller = null, selected = null;
     const stop = () => { controller?.abort(); controller = null; };
+    readerCleanup.set(card, stop);
     async function read(chunkId) {
       stop();
       const requestController = new AbortController();
@@ -814,6 +869,7 @@ footer details p { margin-top: 6px; text-align: left; }
     load.addEventListener("click", () => read(selected.chunk_id));
     close.addEventListener("click", () => {
       stop();
+      readerCleanup.delete(card);
       pane.remove(); tabs.remove();
       content.replaceWith(...content.childNodes);
       card.classList.remove("reading");
@@ -854,7 +910,11 @@ footer details p { margin-top: 6px; text-align: left; }
   function rememberView() { sessionSet(VIEW_KEY, JSON.stringify(visibleIds)); }
 
   function clearThread() {
-    for (const message of thread.querySelectorAll(".msg")) message.remove();
+    for (const message of thread.querySelectorAll(".msg")) {
+      const card = message.querySelector(".answer");
+      if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
+      message.remove();
+    }
     visibleIds = [];
     rememberView();
     empty.hidden = false;
@@ -1067,7 +1127,11 @@ footer details p { margin-top: 6px; text-align: left; }
     records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
     const ids = new Set(records.map(record => record.id));
     for (const row of thread.querySelectorAll("[data-history-id]")) {
-      if (!ids.has(row.dataset.historyId)) row.remove();
+      if (!ids.has(row.dataset.historyId)) {
+        const card = row.querySelector(".answer");
+        if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
+        row.remove();
+      }
     }
     visibleIds = visibleIds.filter(id => ids.has(id));
     empty.hidden = !!thread.querySelector(".msg");
@@ -1492,6 +1556,13 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   thread.addEventListener("click", (event) => {
+    const codeCopy = event.target.closest("[data-copy-code]");
+    if (codeCopy) {
+      copyText(codeCopy.closest(".code-block").querySelector("code").textContent)
+        .then(() => { codeCopy.textContent = "已复制"; window.setTimeout(() => { codeCopy.textContent = "复制代码"; }, 1500); })
+        .catch(() => { codeCopy.textContent = "复制失败，请手动复制"; });
+      return;
+    }
     const example = event.target.closest(".examples button");
     if (example) {
       bookSelect.value = example.dataset.book;
