@@ -35,6 +35,7 @@ from rag_textbook_qa.api.guard import (
     RateLimited,
     RequestAdmission,
 )
+from rag_textbook_qa.api.imports import MAX_UPLOAD_BYTES, ImportBusyError, ImportManager
 from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError, MissingOptionalDependencyError
@@ -93,6 +94,10 @@ class FeedbackRequest(BaseModel):
         "other",
     ] | None = None
     comment: str = Field(default="", max_length=500)
+
+
+class ImportStartRequest(BaseModel):
+    confirm_replace: Literal[True]
 
 
 def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> dict[str, Any]:
@@ -405,6 +410,7 @@ def create_api_app(
     books: Sequence[Mapping[str, Any]],
     *,
     feedback_store: FeedbackStore,
+    import_manager: ImportManager | None = None,
 ) -> FastAPI:
     """Build the public app around one shared engine and one guard."""
 
@@ -416,6 +422,7 @@ def create_api_app(
         .read_text(encoding="utf-8")
     )
     retrieval_page = resources.files("rag_textbook_qa.api").joinpath("static/retrieval.html").read_text(encoding="utf-8")
+    import_page = resources.files("rag_textbook_qa.api").joinpath("static/imports.html").read_text(encoding="utf-8")
 
     app = FastAPI(
         title="计算机教材 RAG 问答",
@@ -453,6 +460,18 @@ def create_api_app(
             ) from exc
         except AccessDenied as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def local_imports(request: Request, *, rate_scope: str = "imports") -> ImportManager:
+        if import_manager is None:
+            raise HTTPException(status_code=404, detail="教材导入只在本机服务提供")
+        if request.client is None or not is_loopback_host(request.client.host):
+            raise HTTPException(status_code=403, detail="教材导入只接受本机连接")
+        origin = request.headers.get("Origin")
+        if (not is_loopback_host(request.url.hostname or "")
+                or (origin is not None and origin != str(request.base_url).rstrip("/"))):
+            raise HTTPException(status_code=403, detail="请从本机服务页面操作教材导入")
+        authorize(request, rate_scope=rate_scope)
+        return import_manager
 
     async def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
         authorize(request)
@@ -530,18 +549,74 @@ def create_api_app(
     def retrieval_index() -> HTMLResponse:
         return HTMLResponse(retrieval_page)
 
+    @app.get("/imports", response_class=HTMLResponse, include_in_schema=False)
+    def imports_index() -> HTMLResponse:
+        return HTMLResponse(import_page)
+
     @app.get("/health", summary="服务状态")
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "version": __version__,
             "books": len(current_books()),
+            "imports_enabled": import_manager is not None,
             **guard.status(),
         }
 
     @app.get("/v1/books", summary="已索引的教材")
     def list_books() -> list[dict[str, Any]]:
         return current_books()
+
+    @app.get("/v1/imports", summary="本机教材导入能力")
+    def import_capabilities(request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        return {"max_upload_bytes": MAX_UPLOAD_BYTES, "formats": [".md", ".json"],
+                "storage_path": str(manager.root),
+                "books": [{"book_id": key, "label": label} for key, label in BOOK_LABELS.items()]}
+
+    @app.post("/v1/imports/prepare", summary="上传教材并解析预览，不建立索引")
+    async def prepare_import(book_id: str, filename: str, request: Request) -> dict[str, Any]:
+        manager = local_imports(request)
+        if len(filename) > 1024:
+            raise HTTPException(status_code=422, detail="文件名太长")
+        content = bytearray()
+        async for part in request.stream():
+            if len(content) + len(part) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="教材文件不能超过 8 MB")
+            content.extend(part)
+        try:
+            return await run_in_threadpool(manager.prepare, book_id, filename, bytes(content))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="教材解析失败，请检查文件格式、UTF-8 编码和分块字段") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="教材暂时无法解析，请检查本机存储后重试") from None
+
+    @app.get("/v1/imports/{job_id}", summary="本机教材解析和索引进度")
+    def import_status(job_id: str, request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        try:
+            return manager.status(job_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入进度暂时无法读取") from None
+
+    @app.post("/v1/imports/{job_id}/start", summary="确认建立或替换本机教材索引")
+    def start_import(job_id: str, payload: ImportStartRequest, request: Request) -> dict[str, Any]:
+        manager = local_imports(request)
+        try:
+            return manager.start(job_id)
+        except ImportBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(status_code=422, detail="导入预览文件已改变或丢失，请重新上传") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入暂时无法启动") from None
 
     @app.get("/v1/books/{book_id}/passages", summary="按引用位置阅读教材及相邻片段")
     def read_passages(book_id: str, chunk_id: str, request: Request) -> dict[str, Any]:
@@ -693,6 +768,12 @@ def run_api_server(
         Path(db_path).expanduser().resolve().parent / "product" / "feedback.sqlite3"
     )
     engine = RAGEngine(db_path=db_path, verbose=False, enable_hyde=False)
+    importer = None
+    if is_loopback_host(host) and not public:
+        def build_import(chunks_file: Path, book_id: str, progress: Callable[[int, int, str], None]) -> None:
+            engine.vectorizer.vectorize_book(chunks_file, book_id, on_progress=progress)
+
+        importer = ImportManager(Path(db_path).expanduser().resolve().parent / "product" / "imports", build_import)
     try:
         if warmup and books:
             # Load both retrieval models now rather than inside the first visitor's request.
@@ -704,9 +785,12 @@ def run_api_server(
                 AccessGuard(settings),
                 books,
                 feedback_store=feedback_store,
+                import_manager=importer,
             ),
             host=host,
             port=port,
         )
     finally:
+        if importer is not None:
+            importer.close()
         engine.close()

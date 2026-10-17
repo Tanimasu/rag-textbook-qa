@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教材导入 · 计算机教材问答</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --text:#1c2330; --muted:#5c6675; --line:#e3e6eb; --accent:#2f6fed; }
+@media(prefers-color-scheme:dark) { :root { --bg:#0f1216; --panel:#171b21; --text:#e6e9ee; --muted:#9aa4b2; --line:#2a3039; --accent:#6ea0ff; } }
+* { box-sizing:border-box; } [hidden] { display:none!important; }
+body { margin:0; color:var(--text); background:var(--bg); font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+.app { max-width:860px; margin:auto; padding:20px 16px 50px; }
+header { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:12px; }
+h1 { font-size:22px; margin:0; } h2 { font-size:17px; margin:0 0 10px; } a { color:var(--accent); }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin:16px 0; }
+.hint { color:var(--muted); font-size:13px; margin:6px 0; } .error { color:#b42318; }
+label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; font-size:14px; }
+select,input,button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:7px 10px; max-width:100%; }
+input[type=checkbox] { padding:0; } input[type=file] { width:100%; }
+button { cursor:pointer; font-size:14px; } button.primary { background:var(--accent); color:#fff; }
+button:disabled { opacity:.5; cursor:default; } .actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:12px; }
+.preview { border-top:1px solid var(--line); padding:10px 0; overflow-wrap:anywhere; }
+.excerpt { white-space:pre-wrap; font-size:14px; max-height:14em; overflow:auto; }
+progress { width:100%; height:18px; accent-color:var(--accent); } #import-job-name { overflow-wrap:anywhere; }
+@media(max-width:520px) { .panel { padding:12px; } label select { min-width:0; flex:1; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>教材导入向导</h1><a href="/">返回聊天</a></header>
+  <p class="hint">选择教材 → 上传并解析 → 核对片段 → 确认建立索引。</p>
+  <section class="panel">
+    <h2>1. 选择教材和文件</h2>
+    <label id="import-code-field" hidden>访问口令 <input id="import-code" type="password" autocomplete="off"></label>
+    <button id="import-connect" type="button">连接本机服务</button>
+    <form id="import-form">
+      <label>目标教材 <select id="import-book" required disabled><option value="" selected disabled>请选择教材</option></select></label>
+      <label>教材文件 <input id="import-file" type="file" accept=".md,.json" required disabled></label>
+      <p class="hint">支持 UTF-8 Markdown 和已有分块 JSON，单个文件最多 8 MB。PDF 请先用现有解析工具转成 Markdown。</p>
+      <button class="primary" id="import-prepare" disabled>上传并解析预览</button>
+    </form>
+  </section>
+  <p id="import-status" class="hint" role="status">正在连接本机服务…</p>
+  <section class="panel" id="import-job" hidden>
+    <h2>2. 核对解析结果</h2>
+    <div id="import-job-name"></div>
+    <p id="import-job-count" class="hint"></p>
+    <div id="import-preview"></div>
+    <h2>3. 建立教材索引</h2>
+    <p class="hint">会建立或替换这本教材的当前索引。原始上传和分块另存到本机导入目录，不覆盖原教材文件。建立索引会运行当前配置的 Embedding 模型，不调用 LLM。</p>
+    <label id="import-confirm-label"><input id="import-confirm" type="checkbox">我已核对预览，确认建立或替换所选教材的索引</label>
+    <progress id="import-progress" value="0" max="1" aria-label="已向量化片段进度"></progress>
+    <p id="import-progress-text" class="hint" role="status"></p>
+    <div class="actions">
+      <button class="primary" id="import-start" type="button" disabled>确认建立索引</button>
+      <button id="import-refresh" type="button">重新读取进度</button>
+      <a href="/" id="import-return" hidden>返回聊天，使用这本教材</a>
+    </div>
+    <p class="hint">建索引开始后，关闭或刷新页面不会取消任务。原始上传、分块和任务进度都会保存。</p>
+    <p id="import-storage" class="hint"></p>
+  </section>
+</div>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
+  const get = key => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
+  const set = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* optional */ } };
+  let job = null, timer = null, connected = false, uploading = false, starting = false;
+  function headers() {
+    const result = {};
+    const code = $("import-code").value.trim();
+    if (code) { result["X-Access-Code"] = code; set("rag-qa-access-code", code); }
+    return result;
+  }
+  function status(text, error = false) { $("import-status").textContent = text; $("import-status").className = error ? "hint error" : "hint"; }
+  async function request(url, options = {}) {
+    const response = await fetch(url, { ...options, headers: { ...headers(), ...options.headers } });
+    if (!response.ok) {
+      if (response.status === 401) { $("import-code-field").hidden = false; $("import-code").focus(); }
+      let detail; try { detail = (await response.json()).detail; } catch { /* optional */ }
+      throw new Error(typeof detail === "string" ? detail : "本机服务暂时不可用，请重试。");
+    }
+    return response.json();
+  }
+  function controls() {
+    const building = job?.state === "building";
+    for (const id of ["import-book", "import-file"]) $(id).disabled = !connected || uploading || starting || building;
+    $("import-prepare").disabled = !connected || uploading || starting || building;
+    $("import-start").disabled = !job || building || uploading || starting || job.state === "complete" || !$("import-confirm").checked;
+    $("import-confirm").disabled = building || starting || job?.state === "complete";
+  }
+  function render(next) {
+    job = next; set("rag-qa-import-job", job.job_id);
+    $("import-job").hidden = false;
+    $("import-job-name").textContent = `${job.book} · ${job.filename}`;
+    $("import-job-count").textContent = `解析得到 ${job.total_chunks} 个片段，以下预览前 ${job.preview.length} 个。`;
+    const preview = $("import-preview"); preview.replaceChildren();
+    for (const item of job.preview) {
+      const card = node("article", undefined, "preview");
+      card.append(node("div", item.section || "未标注章节", "hint"), node("div", item.excerpt, "excerpt")); preview.append(card);
+    }
+    $("import-progress").max = Math.max(1, job.total_chunks);
+    $("import-progress").value = job.completed_chunks;
+    $("import-progress-text").textContent = `${job.completed_chunks} / ${job.total_chunks} 个片段 · ${job.message}`;
+    $("import-start").textContent = ["failed", "interrupted"].includes(job.state) ? "重试建立索引" : job.state === "complete" ? "索引已完成" : "确认建立索引";
+    $("import-return").hidden = job.state !== "complete";
+    controls();
+    if (job.state === "building") { status("正在建立索引，可以离开页面，稍后回来查看。"); schedule(); }
+    else status(job.message, ["failed", "interrupted"].includes(job.state));
+  }
+  function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 2000); }
+  async function refresh() {
+    clearTimeout(timer);
+    if (!job) return;
+    try { render(await request(`/v1/imports/${job.job_id}`)); }
+    catch (error) { status(error.message + " 可点击“重新读取进度”恢复查看。", true); }
+  }
+  async function connect() {
+    $("import-connect").disabled = true;
+    try {
+      const health = await (await fetch("/health")).json();
+      $("import-code-field").hidden = !health.access_code_required;
+      const capability = await request("/v1/imports");
+      $("import-storage").textContent = "本机保存位置：" + capability.storage_path;
+      const previous = $("import-book").value || get("rag-qa-selected-book");
+      $("import-book").replaceChildren(new Option("请选择教材", ""));
+      $("import-book").options[0].disabled = true;
+      for (const book of capability.books) $("import-book").add(new Option(book.label, book.book_id));
+      $("import-book").value = previous;
+      if (!$("import-book").value) $("import-book").selectedIndex = 0;
+      connected = true;
+      status("已连接本机服务，请选择教材和文件。");
+      const saved = get("rag-qa-import-job");
+      if (saved) { try { render(await request(`/v1/imports/${saved}`)); } catch { set("rag-qa-import-job", ""); } }
+    } catch (error) { connected = false; status(error.message, true); }
+    finally { $("import-connect").disabled = false; controls(); }
+  }
+  $("import-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (uploading || job?.state === "building") return;
+    const file = $("import-file").files[0], book = $("import-book").value;
+    if (!file || !book) return;
+    if (!file.size || file.size > 8 * 1024 * 1024) { status("请选择非空且不超过 8 MB 的教材文件。", true); return; }
+    uploading = true; controls(); clearTimeout(timer); status("正在上传并解析教材，尚未开始建索引…");
+    $("import-confirm").checked = false;
+    try {
+      const next = await request(`/v1/imports/prepare?book_id=${encodeURIComponent(book)}&filename=${encodeURIComponent(file.name)}`, {
+        method:"POST", headers:{"Content-Type":"application/octet-stream"}, body:file,
+      });
+      render(next);
+    } catch (error) { status(error.message, true); }
+    finally { uploading = false; controls(); }
+  });
+  $("import-start").addEventListener("click", async () => {
+    if (!job || starting || !$("import-confirm").checked) return;
+    starting = true; controls();
+    try { render(await request(`/v1/imports/${job.job_id}/start`, {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({confirm_replace:true}),
+    })); }
+    catch (error) { status(error.message, true); }
+    finally { starting = false; controls(); }
+  });
+  $("import-confirm").addEventListener("change", controls);
+  $("import-refresh").addEventListener("click", refresh);
+  $("import-connect").addEventListener("click", connect);
+  $("import-return").addEventListener("click", () => set("rag-qa-selected-book", job.book_id));
+  $("import-code").value = get("rag-qa-access-code");
+  connect();
+})();
+</script>
+</body>
+</html>

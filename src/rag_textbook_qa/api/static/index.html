@@ -183,6 +183,7 @@ footer details p { margin-top: 6px; text-align: left; }
     </div>
     <nav class="header-links">
       <a href="/retrieval">检索观察台</a>
+      <a href="/imports" id="import-link" hidden>导入教材</a>
       <a href="/docs" target="_blank" rel="noopener">API 文档</a>
       <a href="https://github.com/Tanimasu/rag-textbook-qa" target="_blank" rel="noopener">源代码</a>
     </nav>
@@ -1201,6 +1202,7 @@ footer details p { margin-top: 6px; text-align: left; }
   async function refreshStatus() {
     try {
       const health = await (await fetch("/health")).json();
+      $("import-link").hidden = !health.imports_enabled;
       if (health.access_code_required) {
         codeField.hidden = false;
         if (!codeInput.value) codeInput.value = sessionGet(CODE_KEY);

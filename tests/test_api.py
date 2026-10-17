@@ -31,6 +31,7 @@ from rag_textbook_qa.api.guard import (
     GuardSettings,
     RateLimited,
 )
+from rag_textbook_qa.api.imports import ImportManager
 from rag_textbook_qa.cli import main
 from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError
@@ -333,7 +334,7 @@ class PublicResultTests(unittest.TestCase):
 
 
 class ApiAppTests(unittest.TestCase):
-    def client(self, engine=None, **settings):
+    def client(self, engine=None, import_manager=None, client_host="testclient", **settings):
         self.engine = engine or FakeEngine()
         self.guard = AccessGuard(GuardSettings(**settings))
         temporary = tempfile.TemporaryDirectory()
@@ -345,8 +346,39 @@ class ApiAppTests(unittest.TestCase):
                 self.guard,
                 BOOKS,
                 feedback_store=self.feedback_store,
-            )
+                import_manager=import_manager,
+            ), client=(client_host, 50000),
+            base_url="http://127.0.0.1" if client_host == "127.0.0.1" else "http://testserver",
         )
+
+    def test_imports_require_local_enabled_service_access_and_explicit_confirmation(self):
+        disabled = self.client()
+        self.assertFalse(disabled.get("/health").json()["imports_enabled"])
+        self.assertEqual(disabled.get("/v1/imports").status_code, 404)
+        with tempfile.TemporaryDirectory() as directory:
+            builder = MagicMock()
+            manager = ImportManager(Path(directory), builder)
+            remote = self.client(import_manager=manager, client_host="192.0.2.1")
+            self.assertEqual(remote.get("/v1/imports").status_code, 403)
+            client = self.client(import_manager=manager, client_host="127.0.0.1", access_code="import-code")
+            self.assertEqual(client.get("/v1/imports", headers={"Origin": "https://example.org"}).status_code, 403)
+            self.assertEqual(client.get("/v1/imports").status_code, 401)
+            headers = {"X-Access-Code": "import-code", "Content-Type": "application/octet-stream"}
+            content = ("# 第1章\n## 1.1 进程\n" + "进程是程序的一次执行。" * 20).encode()
+            prepared = client.post("/v1/imports/prepare?book_id=os&filename=textbook.md",
+                                   content=content, headers=headers)
+            self.assertEqual(prepared.status_code, 200)
+            job_id = prepared.json()["job_id"]
+            builder.assert_not_called()
+            url = f"/v1/imports/{job_id}/start"
+            json_headers = {"X-Access-Code": "import-code"}
+            self.assertEqual(client.post(url, json={"confirm_replace": False}, headers=json_headers).status_code, 422)
+            builder.assert_not_called()
+            self.assertEqual(client.post(url, json={"confirm_replace": True}, headers=json_headers).status_code, 200)
+            manager.close()
+            self.assertEqual(client.get(f"/v1/imports/{job_id}", headers=headers).json()["state"], "complete")
+            self.assertEqual(self.engine.calls, [])
+            self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
 
     def test_reading_is_authenticated_sanitized_and_does_not_spend_generation(self):
         engine = FakeEngine()

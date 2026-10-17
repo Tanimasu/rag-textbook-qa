@@ -20,6 +20,8 @@
   重要问答可导出 Markdown。[保存位置与使用说明](docs/history-and-favorites.md)。
 - **检索观察台**：按阶段查看关键词、向量、融合、重排及最终上下文，追踪同一片段的排名变化，不调用生成模型。
   [使用说明](docs/retrieval-observatory.md)。
+- **本机导入向导**：选择 Markdown 或分块 JSON，先核对解析预览，再确认建立或替换教材索引，刷新可继续查看进度。
+  [支持格式与保存位置](docs/textbook-import.md)。
 - **不掩盖教材矛盾**：一处已核实的教材自相矛盾（UNIQUE 允许几个 NULL），两侧原文都被检索到时，
   要求回答并列给出两种说法。
 - **分层评测**：确定性的检索评测（Recall、MRR、nDCG，配对检验）用来迭代，RAGAS 只做阶段验收；

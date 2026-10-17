@@ -70,6 +70,25 @@ def _chunks():
 
 
 class VectorizerProviderTests(unittest.TestCase):
+    def test_progress_reports_written_batches_then_publication(self):
+        with TemporaryIndexDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            chunks_path = root / "chunks.json"
+            chunks_path.write_text(json.dumps(_chunks()), encoding="utf-8")
+            events = []
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                MultiBookVectorizer(db_path=root / "db", embedding_provider=FakeEmbeddingProvider()) as vectorizer,
+            ):
+                def progress(done, total, stage):
+                    self.assertFalse(vectorizer._collection_exists("textbook_os"))
+                    events.append((done, total, stage))
+                vectorizer.vectorize_book(chunks_path, "os", batch_size=1, on_progress=progress)
+                self.assertEqual(events, [(0, 2, "embedding"), (1, 2, "embedding"),
+                                          (2, 2, "embedding"), (2, 2, "publishing")])
+                self.assertTrue(vectorizer._collection_exists("textbook_os"))
+
     def test_vectorization_records_fingerprint_and_uses_injected_provider(self):
         with TemporaryIndexDirectory() as temporary_directory:
             root = Path(temporary_directory)

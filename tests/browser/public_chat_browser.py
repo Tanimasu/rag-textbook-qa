@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
 RETRIEVAL_PAGE = ROOT / "src/rag_textbook_qa/api/static/retrieval.html"
+IMPORT_PAGE = ROOT / "src/rag_textbook_qa/api/static/imports.html"
 
 
 def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
@@ -65,6 +66,18 @@ def retrieval_result() -> dict[str, Any]:
     }
 
 
+def import_result(state: str = "prepared") -> dict[str, Any]:
+    return {
+        "job_id": "a" * 32, "book_id": "os", "book": "操作系统", "filename": "教材.md",
+        "state": state, "stage": "embedding" if state == "building" else state,
+        "completed_chunks": 1 if state == "building" else 2 if state == "complete" else 0,
+        "total_chunks": 2,
+        "message": {"prepared": "解析完成，确认预览后可建立索引。", "building": "正在向量化教材片段…",
+                    "complete": "索引已建立，可以返回聊天选择这本教材。", "failed": "建索引失败，可以重试。"}[state],
+        "preview": [{"section": "第一章 · 进程", "excerpt": "进程是程序的一次执行。<script>neverRun()</script>"}],
+    }
+
+
 @dataclass
 class Reply:
     initial: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
@@ -94,6 +107,10 @@ class FakeBackend(ThreadingHTTPServer):
         self.inspections: list[dict[str, Any]] = []
         self.inspection_gate: threading.Event | None = None
         self.inspection_status = 200
+        self.imports_enabled = False
+        self.import_state = "prepared"
+        self.uploads: list[bytes] = []
+        self.import_starts: list[dict[str, Any]] = []
 
     def enqueue(self, reply: Reply) -> None:
         with self.lock:
@@ -124,6 +141,17 @@ class FakeHandler(BaseHTTPRequestHandler):
             self.respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/retrieval":
             self.respond(200, RETRIEVAL_PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/imports":
+            self.respond(200, IMPORT_PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/v1/imports":
+            if not self.server.imports_enabled:
+                self.json_response({"detail": "教材导入只在本机服务提供"}, 404)
+            else:
+                self.json_response({"books": [{"book_id": "os", "label": "操作系统"}],
+                                    "formats": [".md", ".json"], "max_upload_bytes": 8388608,
+                                    "storage_path": "/tmp/browser-imports"})
+        elif self.path == "/v1/imports/" + "a" * 32:
+            self.json_response(import_result(self.server.import_state))
         elif self.path.startswith("/v1/books/os/passages?"):
             chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
             self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
@@ -159,6 +187,7 @@ class FakeHandler(BaseHTTPRequestHandler):
                 {
                     "access_code_required": self.server.access_code_required,
                     "generations_remaining_today": 17,
+                    "imports_enabled": self.server.imports_enabled,
                 }
             )
         else:
@@ -177,7 +206,18 @@ class FakeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_POST(self) -> None:
-        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        content = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.path.startswith("/v1/imports/prepare?"):
+            self.server.uploads.append(content)
+            self.server.import_state = "prepared"
+            self.json_response(import_result())
+            return
+        payload = json.loads(content)
+        if self.path == "/v1/imports/" + "a" * 32 + "/start":
+            self.server.import_starts.append(payload)
+            self.server.import_state = "building"
+            self.json_response(import_result("building"))
+            return
         if self.path == "/v1/retrieval/inspect":
             self.server.inspections.append({"payload": payload, "access_code": self.headers.get("X-Access-Code")})
             if self.server.inspection_gate:
@@ -713,6 +753,72 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#inspect-stop").click()
         self.expect(self.page.locator("#inspect-status")).to_contain_text("已停止等待")
         self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+
+    def test_import_guide_previews_before_build_and_restores_progress_after_refresh(self) -> None:
+        self.backend.imports_enabled = True
+        self.open_page()
+        self.page.get_by_role("link", name="导入教材", exact=True).click()
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        content = "# 第一章\n进程是程序的一次执行。".encode()
+        self.page.locator("#import-file").set_input_files({"name": "教材.md", "mimeType": "text/markdown", "buffer": content})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.expect(self.page.locator("#import-start")).to_be_disabled()
+        self.expect(self.page.locator("#import-preview script")).to_have_count(0)
+        self.expect(self.page.locator("#import-preview")).to_contain_text("<script>neverRun()</script>")
+        self.assertEqual(self.backend.import_starts, [])
+        self.assertEqual(self.backend.uploads, [content])
+        self.capture_page("imports-desktop.png")
+        self.page.locator("#import-confirm").check()
+        self.page.locator("#import-start").click()
+        self.expect(self.page.locator("#import-progress-text")).to_contain_text("1 / 2")
+        self.expect(self.page.locator("#import-file")).to_be_disabled()
+        self.page.reload()
+        self.expect(self.page.locator("#import-progress-text")).to_contain_text("1 / 2")
+        self.backend.import_state = "complete"
+        self.page.locator("#import-refresh").click()
+        self.expect(self.page.locator("#import-return")).to_be_visible()
+        self.expect(self.page.locator("#import-progress")).to_have_attribute("value", "2")
+        self.assertEqual(self.backend.import_starts, [{"confirm_replace": True}])
+        self.assertEqual(self.backend.asks, [])
+
+    def test_import_mobile_failed_job_can_retry_with_preserved_preview(self) -> None:
+        self.backend.imports_enabled = True
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        self.page.locator("#import-file").set_input_files({"name": "教材.json", "mimeType": "application/json", "buffer": b"[]"})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-job")).to_be_visible()
+        self.page.locator("#import-confirm").check()
+        self.page.locator("#import-start").click()
+        self.expect(self.page.locator("#import-progress-text")).to_contain_text("1 / 2")
+        self.backend.import_state = "failed"
+        self.page.locator("#import-refresh").click()
+        self.expect(self.page.locator("#import-start")).to_have_text("重试建立索引")
+        self.expect(self.page.locator("#import-preview")).to_contain_text("进程是程序")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("imports-mobile.png")
+        self.page.locator("#import-start").click()
+        self.expect(self.page.locator("#import-progress-text")).to_contain_text("1 / 2")
+        self.assertEqual(len(self.backend.import_starts), 2)
+        self.assertEqual(len(self.backend.uploads), 1)
+
+    def test_import_disabled_service_and_oversized_file_do_not_upload(self) -> None:
+        self.page.goto(self.base_url + "/imports")
+        self.expect(self.page.locator("#import-status")).to_contain_text("只在本机服务提供")
+        self.expect(self.page.locator("#import-prepare")).to_be_disabled()
+        self.backend.imports_enabled = True
+        self.page.locator("#import-connect").click()
+        self.expect(self.page.locator("#import-prepare")).to_be_enabled()
+        self.page.locator("#import-book").select_option("os")
+        self.page.locator("#import-file").set_input_files({"name": "big.md", "mimeType": "text/markdown", "buffer": b"a" * (8 * 1024 * 1024 + 1)})
+        self.page.locator("#import-prepare").click()
+        self.expect(self.page.locator("#import-status")).to_contain_text("不超过 8 MB")
+        self.assertEqual(self.backend.uploads, [])
+        self.assertEqual(self.backend.import_starts, [])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

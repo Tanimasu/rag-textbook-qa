@@ -15,6 +15,7 @@ rag-qa serve                     # http://127.0.0.1:8000
 按教材筛选、收藏和删除。数据位置、清理方式及浏览器存储限制见[历史问答与收藏](history-and-favorites.md)。
 回答中的资料编号还可打开[原文对照面板](reading.md)：桌面并排阅读、手机切换查看，并可读取当前索引中的相邻片段。
 `/retrieval` 提供[检索观察台](retrieval-observatory.md)，通过 `/v1/retrieval/inspect` 查看单次检索各阶段，不生成回答。
+本机运行另有[教材导入向导](textbook-import.md)（`/imports`），支持 Markdown / 分块 JSON 解析预览和实际建索引进度。
 
 服务端每次回答会得到一个随机、短期有效的 `answer_id`。页面提供复制、赞和踩；用户主动提交反馈后，
 服务才会把这次问题、公开答案、公开引用、冲突提示、耗时和反馈持久保存到
