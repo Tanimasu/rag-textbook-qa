@@ -106,6 +106,8 @@ main { flex: 1; padding: 16px 0; }
 .history-panel { margin-top: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
 .history-panel h2 { margin: 0; font-size: 16px; }
 .history-help, .history-meta { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.history-export-options { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:8px 0; }
+.history-export-options label { display:flex; align-items:flex-start; gap:6px; flex:1 1 240px; font-size:12px; color:var(--muted); }
 .history-filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .history-filters label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .history-filters input[type=search] { width: 100%; }
@@ -235,7 +237,10 @@ footer details p { margin-top: 6px; text-align: left; }
       <button class="action" id="history-reset-filters" type="button">清除筛选</button>
     </div>
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
-    <button class="action" id="history-export-md" type="button" disabled>导出筛选结果（Markdown）</button>
+    <div class="history-export-options">
+      <label><input id="history-export-practice" type="checkbox">练习版：先列问题，回答和笔记放在后面</label>
+      <button class="action" id="history-export-md" type="button" disabled>导出筛选结果（Markdown）</button>
+    </div>
     <p class="history-help">导出全部匹配记录和已保存笔记，不受列表分页影响；需要恢复到浏览器时请使用 JSON 备份。</p>
     <p id="history-export-status" class="history-help" role="status"></p>
     <div id="history-list"></div>
@@ -325,8 +330,9 @@ footer details p { margin-top: 6px; text-align: left; }
   const REVIEW_KEY = "rag-qa-review-session";
   const DRAFT_KEY = "rag-qa-question-draft";
   const FILTER_KEY = "rag-qa-history-filters";
+  const PRACTICE_KEY = "rag-qa-history-export-practice";
   const backupAvailable = ["parse", "serialize"].every(name => typeof window.RagHistoryBackup?.[name] === "function");
-  const backupUnavailableMessage = "备份组件未能加载，请刷新页面后再备份或恢复。现有历史仍保留，也可逐题导出 Markdown。";
+  const backupUnavailableMessage = "备份组件未能加载，请刷新页面后再备份或恢复。现有历史仍保留，也可导出 Markdown。";
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
@@ -1915,9 +1921,12 @@ footer details p { margin-top: 6px; text-align: left; }
   $("review-end").addEventListener("click", () => endReview());
   $("review-again").addEventListener("click", () => rateReview("again", 1));
   $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
+  $("history-export-practice").checked = sessionGet(PRACTICE_KEY) === "true";
+  $("history-export-practice").addEventListener("change", () => sessionSet(PRACTICE_KEY, String($("history-export-practice").checked)));
   $("history-export-md").addEventListener("click", async () => {
     if (busy || historyWriting || historyExporting || !historyDB) return;
     const filter = currentHistoryFilter(), status = $("history-export-status");
+    const practice = $("history-export-practice").checked;
     historyExporting = true; syncHistoryControls();
     status.textContent = "正在整理已保存记录…";
     try {
@@ -1932,25 +1941,39 @@ footer details p { margin-top: 6px; text-align: left; }
       if (!selected.length) { status.textContent = "当前筛选已没有记录，请重新打开历史查看最新内容。"; return; }
       if (selected.length > 5000) { status.textContent = "单次最多导出 5000 条，请按教材或关键词分批导出。"; return; }
       const now = new Date();
-      const parts = [`# 学习问答整理\n\n导出时间：${now.toLocaleString()}\n\n共 ${selected.length} 条记录，按保存时间倒序。仅包含已保存笔记，不含当前编辑草稿。\n\n此文件供阅读整理，恢复到浏览器请使用 JSON 备份。\n\n`];
+      const parts = [`# ${practice ? "学习问答练习" : "学习问答整理"}\n\n导出时间：${now.toLocaleString()}\n\n共 ${selected.length} 条记录，按保存时间倒序。仅包含已保存笔记，不含当前编辑草稿。\n\n此文件供阅读整理，恢复到浏览器请使用 JSON 备份。\n\n`];
       let bytes = new Blob(parts).size;
-      for (const [index, record] of selected.entries()) {
+      const appendPart = text => {
+        bytes += new Blob([text]).size;
+        if (bytes > 64 * 1024 * 1024) { status.textContent = "导出超过 64 MB，请按教材或关键词分批导出。"; return false; }
+        parts.push(text); return true;
+      };
+      const recordMetadata = record => {
         const metadata = [`教材：${record.book_label}`, `保存时间：${new Date(record.created_at).toLocaleString()}`,
           `收藏：${record.favorite ? "是" : "否"}`, `记录编号：${record.id}`];
         if (record.review) metadata.push(`下次复习：${new Date(record.review.next_review_at).toLocaleString()}`);
+        return metadata.join("\n");
+      };
+      if (practice) {
+        if (!appendPart("## 练习问题\n\n先写下自己的理解，再到后半部分核对已保存回答与教材来源。\n\n")) return;
+        for (const [index, record] of selected.entries()) {
+          const question = `### 第 ${index + 1} 题\n\n${literalBlock(recordMetadata(record))}\n\n${literalBlock(record.query)}\n\n我的回答：\n\n（在这里写下自己的理解。）\n\n`;
+          if (!appendPart(question)) return;
+        }
+        if (!appendPart("---\n\n## 已保存回答与来源\n\n这些是当时保存的回答和笔记，请结合教材片段核验。\n\n")) return;
+      }
+      for (const [index, record] of selected.entries()) {
         const part = answerRecord(record.query, record.result, record.note || "",
-          {level: 2, title: `第 ${index + 1} 条 · 教材问答记录`, metadata: metadata.join("\n")}) + "\n---\n\n";
-        bytes += new Blob([part]).size;
-        if (bytes > 64 * 1024 * 1024) { status.textContent = "导出超过 64 MB，请按教材或关键词分批导出。"; return; }
-        parts.push(part);
+          {level: practice ? 3 : 2, title: practice ? `第 ${index + 1} 题 · 已保存记录` : `第 ${index + 1} 条 · 教材问答记录`, metadata: recordMetadata(record)}) + "\n---\n\n";
+        if (!appendPart(part)) return;
       }
       const url = URL.createObjectURL(new Blob(parts, {type: "text/markdown;charset=utf-8"}));
       const link = element("a"); link.href = url;
       const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
-      link.download = `教材问答整理-${date}.md`;
+      link.download = `教材问答${practice ? "练习" : "整理"}-${date}.md`;
       try { document.body.append(link); link.click(); }
       finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
-      status.textContent = `已将 ${selected.length} 条记录交给浏览器下载，请确认文件已保存；当前草稿未写入导出。`;
+      status.textContent = `已将 ${selected.length} 条记录交给浏览器下载${practice ? "（练习版）" : ""}，请确认文件已保存；当前草稿未写入导出。`;
     } catch { status.textContent = "导出未完成，暂时无法读取历史或创建文件。请重新打开历史后重试。"; }
     finally { historyExporting = false; syncHistoryControls(); }
   });

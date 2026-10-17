@@ -200,7 +200,18 @@ try:
                     collection = (OUT/'study-collection.md').read_text()
                     assert '共 1 条记录' in collection and '离线学习流程验收笔记' in collection
                     assert code not in collection
+                    page.locator('#history-export-practice').check()
+                    with page.expect_download() as download:
+                        page.locator('#history-export-md').click()
+                    download.value.save_as(OUT/'study-practice.md')
+                    practice = (OUT/'study-practice.md').read_text()
+                    questions, answers = practice.split('\n## 已保存回答与来源\n', 1)
+                    assert '## 练习问题' in questions and '离线学习流程验收笔记' not in questions
+                    assert '离线学习流程验收笔记' in answers and code not in practice
+                    assert generator.calls == 1
+                    page.locator('#history-export-practice').uncheck()
                     report['steps'].append('Filtered Markdown collection preserves saved notes and sources without generation')
+                    report['steps'].append('Practice Markdown lists questions before saved answers and notes without generation')
                     page.locator('.history-backup summary').click()
                     with page.expect_download() as download:
                         page.locator('#history-backup-all').click()

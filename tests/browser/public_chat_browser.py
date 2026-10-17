@@ -1262,6 +1262,12 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(exported.count(" · 教材问答记录"), 21)
         self.assertLess(exported.index("批量题目 20"), exported.index("批量题目 00"))
         self.assertNotIn("原始种子问答", exported)
+        self.page.locator("#history-export-practice").check()
+        with self.page.expect_download() as practice:
+            self.page.locator("#history-export-md").click()
+        question_part = Path(practice.value.path()).read_text().split("\n## 已保存回答与来源\n")[0]
+        self.assertEqual(question_part.count("### 第 "), 21)
+        self.assertIn("批量题目 00", question_part)
         self.expect(self.page.locator(".history-item")).to_have_count(20)
         self.assertEqual(len(self.backend.asks), 1)
 
@@ -1318,6 +1324,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.saved_answer("后来切换到的数据库题目", "database")
         self.page.locator("#toggle-history").click()
         self.page.locator("#history-book").select_option("os")
+        self.page.locator("#history-export-practice").check()
         self.page.evaluate("""() => {
           const getAll = IDBObjectStore.prototype.getAll;
           IDBObjectStore.prototype.getAll = function(...args) {
@@ -1326,6 +1333,8 @@ class PublicChatBrowserTests(unittest.TestCase):
             request.addEventListener('success', () => {
               const select = document.querySelector('#history-book');
               select.value = 'database'; select.dispatchEvent(new Event('change'));
+              const practice = document.querySelector('#history-export-practice');
+              practice.checked = false; practice.dispatchEvent(new Event('change'));
             });
             return request;
           };
@@ -1333,9 +1342,11 @@ class PublicChatBrowserTests(unittest.TestCase):
         with self.page.expect_download() as download:
             self.page.locator("#history-export-md").click()
         exported = Path(download.value.path()).read_text()
+        self.assertTrue(exported.startswith("# 学习问答练习"))
         self.assertIn("最初选择的操作系统题目", exported)
         self.assertNotIn("后来切换到的数据库题目", exported)
         self.expect(self.page.locator("#history-book")).to_have_value("database")
+        self.expect(self.page.locator("#history-export-practice")).not_to_be_checked()
         self.assertEqual(len(self.history_records()), 2)
 
     def test_markdown_export_with_many_records_requires_filtering_then_can_continue(self) -> None:
@@ -1354,6 +1365,7 @@ class PublicChatBrowserTests(unittest.TestCase):
           };
         })""")
         self.page.locator("#toggle-history").click()
+        self.page.locator("#history-export-practice").check()
         self.expect(self.page.locator("#history-count")).to_contain_text("5001 条记录")
         downloads = []
         self.page.on("download", lambda download: downloads.append(download))
@@ -1371,6 +1383,63 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertIn("本次记录未包含教材片段。", exported)
         self.assertEqual(len(self.history_records()), 5001)
         self.assertEqual(self.backend.asks, [])
+
+    def test_practice_markdown_keeps_answers_and_saved_notes_after_all_questions(self) -> None:
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.page.emulate_media(color_scheme="dark")
+        self.open_page()
+        result = answer_result()
+        result["answer"] = "ANSWER_ONLY_TOKEN：这是当时保存的回答。"
+        self.saved_answer("练习题甲", result=result)
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        area = self.page.get_by_role("textbox", name="编辑学习笔记")
+        area.fill("SAVED_NOTE_ONLY_TOKEN")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        area.fill("UNSAVED_DRAFT_ONLY_TOKEN")
+        missing = {"status":"no_evidence", "answer":None, "sources":[], "message":"未找到教材证据。"}
+        self.saved_answer("练习题乙", result=missing)
+        self.page.locator("#input").fill("下一题尚未发送的草稿")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-export-practice").check()
+        original = self.history_records()
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").click()
+        exported = Path(download.value.path()).read_text()
+        questions, answers = exported.split("\n## 已保存回答与来源\n", 1)
+        self.assertTrue(exported.startswith("# 学习问答练习"))
+        self.assertTrue(download.value.suggested_filename.startswith("教材问答练习-"))
+        for query in ("练习题甲", "练习题乙"):
+            self.assertIn(query, questions)
+            self.assertIn(query, answers)
+        self.assertEqual(questions.count("我的回答："), 2)
+        for text in ("ANSWER_ONLY_TOKEN", "SAVED_NOTE_ONLY_TOKEN", "进程是程序在一个数据集合上的一次执行。"):
+            self.assertNotIn(text, questions)
+            self.assertIn(text, answers)
+        self.assertNotIn("UNSAVED_DRAFT_ONLY_TOKEN", exported)
+        self.assertIn("本次没有完整的生成回答。", answers)
+        self.assertIn("未找到教材证据。", answers)
+        self.assertEqual(self.history_records(), original)
+        self.expect(area).to_have_value("UNSAVED_DRAFT_ONLY_TOKEN")
+        self.expect(self.page.locator("#input")).to_have_value("下一题尚未发送的草稿")
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("练习版")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("history-practice-export-dark-320.png")
+        self.assertEqual(len(self.backend.asks), 2)
+
+    def test_practice_export_choice_restores_in_current_tab_and_can_be_cleared(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-export-practice")).not_to_be_checked()
+        self.page.locator("#history-export-practice").check()
+        self.page.reload()
+        self.expect(self.page.locator("#history-export-practice")).to_be_checked()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-export-practice").uncheck()
+        self.page.reload()
+        self.expect(self.page.locator("#history-export-practice")).not_to_be_checked()
+        self.assertEqual(len(self.backend.asks), 1)
 
     def test_markdown_export_does_not_download_records_deleted_by_another_tab(self) -> None:
         self.context.add_init_script("window.BroadcastChannel = undefined")
