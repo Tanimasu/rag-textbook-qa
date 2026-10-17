@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import tarfile
+import tomllib
 import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 WHEEL_REQUIRED = {
+    "rag_textbook_qa/__init__.py",
     "rag_textbook_qa/api/app.py",
     "rag_textbook_qa/api/static/index.html",
     "rag_textbook_qa/api/static/retrieval.html",
@@ -19,6 +23,8 @@ WHEEL_REQUIRED = {
     "rag_textbook_qa/worker.py",
 }
 SDIST_REQUIRED = {
+    "pyproject.toml",
+    "uv.lock",
     "environment.yml",
     "project/.env.example",
     "scripts/check_distribution.py",
@@ -52,6 +58,41 @@ def _forbidden(names: list[str]) -> list[str]:
     return blocked
 
 
+def _source_text(archive: tarfile.TarFile, filename: str) -> str:
+    candidates = [entry for entry in archive.getmembers() if entry.isfile()
+                  and len(Path(entry.name).parts) <= 2 and Path(entry.name).name == filename]
+    if len(candidates) != 1:
+        raise ValueError(f"源码包必须包含唯一的根目录 {filename}")
+    source = archive.extractfile(candidates[0])
+    if source is None:
+        raise ValueError(f"源码包无法读取 {filename}")
+    return source.read().decode("utf-8")
+
+
+def _check_versions(wheel: Path, source_archive: Path) -> None:
+    with tarfile.open(source_archive) as archive:
+        project = tomllib.loads(_source_text(archive, "pyproject.toml"))["project"]
+        lock = tomllib.loads(_source_text(archive, "uv.lock"))
+    name, version = project["name"], project["version"]
+    locked = [entry for entry in lock.get("package", []) if entry.get("name") == name]
+    if len(locked) != 1 or locked[0].get("version") != version:
+        raise ValueError("源码包的项目版本与依赖锁中的项目版本不一致")
+    with zipfile.ZipFile(wheel) as archive:
+        entries = [entry for entry in archive.namelist() if entry.endswith(".dist-info/METADATA")]
+        if len(entries) != 1:
+            raise ValueError("wheel 必须包含唯一的版本元数据")
+        metadata = Parser().parsestr(archive.read(entries[0]).decode("utf-8"))
+        tree = ast.parse(archive.read("rag_textbook_qa/__init__.py").decode("utf-8"))
+    if metadata.get_all("Name") != [name] or metadata.get_all("Version") != [version]:
+        raise ValueError("wheel 名称或版本与源码包不一致")
+    runtime_versions = [entry.value.value for entry in tree.body if isinstance(entry, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "__version__" for target in entry.targets)
+                        and isinstance(entry.value, ast.Constant) and isinstance(entry.value.value, str)]
+    if runtime_versions != [version]:
+        raise ValueError("wheel 运行时版本与发布元数据不一致")
+    print(f"project version {version}: metadata, runtime and lock OK")
+
+
 def check_distribution(directory: Path) -> None:
     wheels = sorted(directory.glob("*.whl"))
     source_archives = sorted(directory.glob("*.tar.gz"))
@@ -70,6 +111,7 @@ def check_distribution(directory: Path) -> None:
         if forbidden:
             raise ValueError(f"{archive.name} 包含本地或敏感文件: {forbidden}")
         print(f"{archive.name}: {len(names)} files, manifest OK")
+    _check_versions(wheels[0], source_archives[0])
 
 
 def main() -> None:
