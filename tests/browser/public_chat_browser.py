@@ -1466,6 +1466,59 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.assertFalse(any(row.get("review") for row in self.history_records()))
 
+    def test_open_review_panel_updates_due_count_when_local_midnight_passes(self) -> None:
+        self.context.close()
+        self.context = self.browser.new_context(timezone_id="Australia/Perth")
+        self.addCleanup(self.context.close)
+        self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.context.route("**/*", self.local_only)
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(5000)
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.clock.install(time=datetime.fromisoformat("2026-10-18T23:59:40+08:00"))
+        self.open_page()
+        self.saved_answer("跨午夜仍打开的复习面板")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        original = self.history_records()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-review-count")).to_contain_text("0 条待复习")
+        self.expect(self.page.locator("#history-review-start")).to_be_disabled()
+        self.page.wait_for_timeout(100)  # Let the explicit panel read/focus finish before time advances.
+        self.page.clock.fast_forward(30_000)
+        self.expect(self.page.locator("#history-review-count")).to_contain_text("1 条待复习")
+        self.expect(self.page.locator("#history-review-start")).to_be_enabled()
+        self.assertEqual(self.history_records(), original)
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_distant_review_date_remains_not_due_after_a_day_without_changing_drafts(self) -> None:
+        self.page.clock.install(time=datetime.fromisoformat("2026-10-18T00:00:00+00:00"))
+        self.open_page()
+        self.saved_answer("未来复习日期的原问答")
+        incoming = dict(self.history_records()[0], id="distant-review", favorite=True,
+                        review={"count": 1, "last_rating": "familiar",
+                                "last_reviewed_at": "2026-10-18T00:00:00Z",
+                                "next_review_at": "2099-10-18T00:00:00Z"})
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file([incoming]))
+        self.expect(self.page.locator("#history-restore")).to_be_enabled()
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("新增 1 条")
+        self.page.locator("#input").fill("保持下一题的提问草稿")
+        original = self.history_records()
+        self.page.clock.fast_forward(24 * 60 * 60 * 1000)
+        self.expect(self.page.locator("#history-review-count")).to_contain_text("0 条待复习")
+        self.expect(self.page.locator("#history-review-start")).to_be_disabled()
+        self.expect(self.page.locator("#input")).to_have_value("保持下一题的提问草稿")
+        self.assertEqual(self.history_records(), original)
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_keyboard_review_and_history_reading_move_focus_to_current_content(self) -> None:
         self.open_page()
         for question in ("键盘复习第一题", "键盘复习第二题"):

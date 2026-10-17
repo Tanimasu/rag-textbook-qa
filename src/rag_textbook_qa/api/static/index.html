@@ -241,7 +241,7 @@ footer details p { margin-top: 6px; text-align: left; }
     <div id="history-list"></div>
     <button class="action" id="history-more" type="button" hidden>显示更多</button>
     <div class="history-cleanup">
-      <p class="history-help" id="history-review-count"></p>
+      <p class="history-help" id="history-review-count" role="status"></p>
       <label class="history-help"><input id="history-review-all" type="checkbox">包括未到期收藏</label>
       <button class="action" id="history-review-start" type="button" disabled>复习收藏</button>
       <p class="history-help">按当前筛选，先回忆问题，再展开已保存的回答和教材引用。按自评安排下次复习日期，不调用模型。</p>
@@ -338,6 +338,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
   let historyChannel = null;
   let orphanUnloadArmed = false, historyExporting = false;
+  let reviewDueTimer = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -1088,6 +1089,24 @@ footer details p { margin-top: 6px; text-align: left; }
     return actions;
   }
 
+  function scheduleReviewDueRefresh(now) {
+    if (reviewDueTimer !== null) window.clearTimeout(reviewDueTimer);
+    reviewDueTimer = null;
+    let next = Infinity;
+    for (const record of filteredRecords) {
+      const due = Date.parse(record.review?.next_review_at);
+      if (record.favorite && due > now && due < next) next = due;
+    }
+    if (Number.isFinite(next)) {
+      // Recheck at most a day later, keeping long imported dates within the
+      // browser's timer range. No history write or inference is scheduled.
+      reviewDueTimer = window.setTimeout(() => {
+        reviewDueTimer = null;
+        syncHistoryControls();
+      }, Math.min(next - now + 10, 24 * 60 * 60 * 1000));
+    }
+  }
+
   function syncHistoryControls() {
     for (const actions of document.querySelectorAll(".history-actions")) {
       const record = records.find(item => item.id === actions.dataset.record);
@@ -1111,7 +1130,9 @@ footer details p { margin-top: 6px; text-align: left; }
       view.querySelector(".note-text").textContent = record?.note || "";
     }
     for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
-    const due = filteredRecords.filter(record => record.favorite && (!record.review || Date.parse(record.review.next_review_at) <= Date.now()));
+    const now = Date.now();
+    const due = filteredRecords.filter(record => record.favorite && (!record.review || Date.parse(record.review.next_review_at) <= now));
+    scheduleReviewDueRefresh(now);
     const candidates = $("history-review-all").checked ? filteredRecords.filter(record => record.favorite) : due;
     $("history-review-count").textContent = `当前筛选中有 ${filteredRecords.filter(record => record.favorite).length} 条收藏，${due.length} 条待复习；每轮最多 20 条。`;
     $("history-review-start").disabled = busy || historyWriting || !candidates.length;
