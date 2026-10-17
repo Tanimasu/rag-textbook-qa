@@ -113,6 +113,8 @@ main { flex: 1; padding: 16px 0; }
 .history-item { padding: 12px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .history-item h3 { margin: 0; font-size: 14px; white-space: pre-wrap; }
 .history-item p { margin: 4px 0; font-size: 13px; color: var(--muted); }
+.history-item .history-match { padding: 6px 8px; border-left: 2px solid var(--accent); background: var(--bg); white-space: pre-wrap; }
+.history-match-label { color: var(--text); font-weight: 600; }
 .action[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .history-cleanup, .history-backup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
 .history-cleanup summary, .history-backup summary { cursor: pointer; }
@@ -1155,6 +1157,45 @@ footer details p { margin-top: 6px; text-align: left; }
     return filter.keywords.every(keyword => text.includes(keyword));
   }
 
+  function historyMatchPreview(record, keywords) {
+    if (!keywords.length) return null;
+    const fields = [["answer", "回答命中", record.result.answer], ["note", "笔记命中", record.note]];
+    for (const source of record.result.sources || []) {
+      fields.push(["source", `引用原文命中 · 资料 ${source.citation_id}`, source.excerpt],
+        ["section", `引用章节命中 · 资料 ${source.citation_id}`, source.section],
+        ["book", `引用教材命中 · 资料 ${source.citation_id}`, source.book]);
+    }
+    fields.push(["book", "教材命中", record.book_label]);
+    let best = null;
+    for (const [kind, label, text] of fields) {
+      if (!text) continue;
+      const lower = text.toLocaleLowerCase();
+      const hits = keywords.map(keyword => ({keyword, index: lower.indexOf(keyword)})).filter(hit => hit.index >= 0);
+      if (hits.length && (!best || hits.length > best.count)) {
+        const first = hits.reduce((a, b) => a.index < b.index ? a : b);
+        best = {kind, label, text, lower, count: hits.length, ...first};
+      }
+    }
+    if (!best) return null; // A match in the question is already visible in its heading.
+    let index = best.index;
+    if (best.lower.length !== best.text.length) {
+      // Some case mappings expand a character (for example İ -> i + dot).
+      // Translate the folded offset before slicing the original visible text.
+      let folded = 0; index = 0;
+      for (const character of best.text) {
+        if (folded >= best.index) break;
+        folded += character.toLocaleLowerCase().length;
+        index += character.length;
+      }
+    }
+    let start = Math.max(0, index - 40), end = Math.min(best.text.length, index + best.keyword.length + 100);
+    const lowSurrogate = code => code >= 0xDC00 && code <= 0xDFFF;
+    if (start && lowSurrogate(best.text.charCodeAt(start))) start--;
+    if (end < best.text.length && lowSurrogate(best.text.charCodeAt(end))) end++;
+    return {kind: best.kind, label: best.label,
+      text: (start ? "…" : "") + best.text.slice(start, end) + (end < best.text.length ? "…" : "")};
+  }
+
   function renderHistory() {
     const bookFilter = $("history-book"), previousBook = bookFilter.value || initialHistoryBook;
     initialHistoryBook = "";
@@ -1173,12 +1214,16 @@ footer details p { margin-top: 6px; text-align: left; }
     if (!matches.length) list.append(element("p", "history-help", records.length ? "没有匹配的记录，试试其他关键词或筛选条件。" : "还没有历史记录，完整返回的问答会自动保存在这里。"));
     for (const record of matches.slice(0, historyLimit)) {
       const item = element("article", "history-item");
+      const match = historyMatchPreview(record, filter.keywords);
+      const preview = element("p", match ? "history-match" : "");
+      if (match) preview.append(element("span", "history-match-label", match.label + "："), document.createTextNode(match.text));
+      else preview.textContent = (record.result.answer || record.result.message || "仅教材片段").slice(0, 100);
       item.append(element("h3", "", record.query),
         element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`
           + (record.review ? ` · 下次复习 ${new Date(record.review.next_review_at).toLocaleDateString()}` : "")),
-        element("p", "", (record.result.answer || record.result.message || "仅教材片段").slice(0, 100)),
+        preview,
         historyActions(record.id, true));
-      if (record.note) item.append(element("p", "", "笔记：" + record.note.slice(0, 100)));
+      if (record.note && match?.kind !== "note") item.append(element("p", "", "笔记：" + record.note.slice(0, 100)));
       list.append(item);
     }
     $("history-more").hidden = matches.length <= historyLimit;

@@ -1010,6 +1010,72 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.capture_page("history-export-mobile.png")
         self.assertEqual(len(self.backend.asks), 2)
 
+    def test_history_search_shows_a_deep_citation_match_as_safe_text(self) -> None:
+        self.open_page()
+        result = answer_result()
+        result["answer"] = "这里是回答开头，不含所查术语。" * 15
+        result["sources"][0]["excerpt"] = "前面的材料。" * 80 + "唯一术语回收机制 <img src=never>" + "后续材料。" * 80
+        self.saved_answer("查阅教材中提到的术语", result=result)
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-search").fill("唯一术语回收机制")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator(".history-item")).to_contain_text("唯一术语回收机制")
+        self.expect(self.page.locator(".history-match")).to_contain_text("引用原文命中")
+        self.expect(self.page.locator(".history-match img")).to_have_count(0)
+        self.assertEqual(self.history_records()[0]["result"]["sources"][0]["excerpt"], result["sources"][0]["excerpt"])
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_history_search_shows_saved_note_context_and_handles_case_expansion(self) -> None:
+        self.page.emulate_media(color_scheme="dark")
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.open_page()
+        self.saved_answer("查找以前写的笔记")
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("İ" * 200 + "🧠UNIQUE_needle🧠" + "后面的笔记。" * 80)
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.page.locator("#clear").click()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-search").fill("unique_needle")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator(".history-match")).to_contain_text("笔记命中")
+        self.expect(self.page.locator(".history-match")).to_contain_text("🧠UNIQUE_needle🧠")
+        self.assertNotIn("\ufffd", self.page.locator(".history-match").inner_text())
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.page.locator(".history-match").evaluate("element => element.scrollIntoView({block:'start'})")
+        self.capture_page("history-search-context-dark-320.png")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_history_search_labels_answer_chapter_and_book_matches_without_changing_filters(self) -> None:
+        self.open_page()
+        result = answer_result()
+        result["answer"] = "前文。" * 80 + "答案专有关键词" + "后文。" * 80
+        result["sources"][0]["book"] = "资料书名专有关键词"
+        result["sources"][0]["section"] = "引用章节专有关键词"
+        self.saved_answer("题目标题专有关键词", result=result)
+        original = self.history_records()
+        self.page.locator("#toggle-history").click()
+        for query, label in (("答案专有关键词", "回答命中"), ("引用章节专有关键词", "引用章节命中"),
+                             ("资料书名专有关键词", "引用教材命中"), ("操作系统", "教材命中")):
+            with self.subTest(query=query):
+                self.page.locator("#history-search").fill(query)
+                self.expect(self.page.locator(".history-item")).to_have_count(1)
+                self.expect(self.page.locator(".history-match")).to_contain_text(label)
+                self.expect(self.page.locator(".history-match")).to_contain_text(query)
+        self.page.locator("#history-search").fill("题目标题专有关键词")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator(".history-match")).to_have_count(0)
+        self.page.locator("#history-search").fill("答案专有关键词 引用章节专有关键词")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.page.locator("#history-search").fill("答案专有关键词 不存在的词语")
+        self.expect(self.page.locator(".history-item")).to_have_count(0)
+        self.expect(self.page.locator("#history-export-md")).to_be_disabled()
+        self.page.locator("#history-search").fill("")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator(".history-match")).to_have_count(0)
+        self.assertEqual(self.history_records(), original)
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_markdown_export_includes_all_matches_beyond_the_visible_page(self) -> None:
         self.open_page()
         self.saved_answer("原始种子问答")
@@ -1256,7 +1322,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#history-notes").check()
         self.page.locator("#history-search").fill("复习要点")
         self.expect(self.page.locator(".history-item")).to_have_count(1)
-        self.expect(self.page.locator(".history-item")).to_contain_text("笔记：复习要点")
+        self.expect(self.page.locator(".history-match")).to_contain_text("笔记命中：复习要点")
         rows = self.history_records()
         canonical = self.page.evaluate("rows => JSON.parse(RagHistoryBackup.serialize(rows)).records", rows)
         self.assertEqual(canonical[0]["note"], note)
