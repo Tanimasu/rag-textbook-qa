@@ -442,6 +442,32 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".note-editor")).to_contain_text("草稿未覆盖最新版本")
         return other
 
+    def block_note_draft_cache(self, *, blocked: bool = True) -> None:
+        self.context.add_init_script("""(() => {
+          window.noteCacheBroken = BLOCKED;
+          const set = Storage.prototype.setItem;
+          Storage.prototype.setItem = function(key, value) {
+            if (window.noteCacheBroken && String(key).startsWith('rag-qa-note-draft-')) {
+              throw new DOMException('fixture note cache unavailable', 'QuotaExceededError');
+            }
+            return set.call(this, key, value);
+          };
+        })();""".replace("BLOCKED", json.dumps(blocked)))
+
+    def uncached_note(self, *, review: bool = False) -> None:
+        self.block_note_draft_cache()
+        self.open_page()
+        self.saved_answer("暂存失败时保护笔记")
+        if review:
+            self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+            self.page.locator("#toggle-history").click()
+            self.page.locator("#history-review-start").click()
+            self.page.locator("#review-reveal").click()
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("没有暂存成功的唯一草稿")
+        self.expect(self.page.locator(".note-draft-storage-warning")).to_be_visible()
+
     def capture_page(self, name: str) -> None:
         screenshot_dir = os.environ.get("RAG_QA_BROWSER_SCREENSHOTS")
         if screenshot_dir:
@@ -2503,6 +2529,113 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.get_by_role("button", name="保存笔记", exact=True).click()
         self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
         self.assertEqual(self.history_records()[0]["note"], "写入被拒绝时应保留的草稿")
+
+    def test_failed_tab_note_cache_keeps_draft_when_clear_close_or_history_switch_is_cancelled(self) -> None:
+        self.uncached_note()
+        dialogs = []
+        self.page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+        self.page.locator("#clear").click()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("没有暂存成功的唯一草稿")
+        self.page.get_by_role("button", name="关闭编辑", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-item").get_by_role("button", name="查看原回答").click()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("没有暂存成功的唯一草稿")
+        self.assertEqual(len(dialogs), 3)
+        self.assertTrue(all("暂存失败" in message for message in dialogs))
+        self.assertEqual(self.history_records()[0]["note"], "")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_uncached_note_reload_can_be_cancelled_and_export_allows_close(self) -> None:
+        from playwright.sync_api import Error
+        self.uncached_note()
+        dialogs = []
+        self.page.once("dialog", lambda dialog: (dialogs.append(dialog.type), dialog.dismiss()))
+        try:
+            self.page.reload()
+        except Error:
+            pass
+        self.assertEqual(dialogs, ["beforeunload"])
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("没有暂存成功的唯一草稿")
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.assertIn("没有暂存成功的唯一草稿", Path(download.value.path()).read_text())
+        self.page.get_by_role("button", name="关闭编辑", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_have_count(0)
+        self.assertEqual(self.history_records()[0]["note"], "")
+
+    def test_saving_uncached_note_makes_clear_safe_without_an_extra_confirmation(self) -> None:
+        self.uncached_note()
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.expect(self.page.locator(".note-draft-storage-warning")).to_be_hidden()
+        dialogs = []
+        self.page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+        self.page.locator("#clear").click()
+        self.expect(self.page.locator(".note-editor")).to_have_count(0)
+        self.assertEqual(dialogs, [])
+        self.assertEqual(self.history_records()[0]["note"], "没有暂存成功的唯一草稿")
+
+    def test_note_cache_recovery_restores_normal_clear_and_draft_reopening(self) -> None:
+        self.uncached_note()
+        self.page.evaluate("window.noteCacheBroken = false")
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("缓存恢复后完整暂存的草稿")
+        self.expect(self.page.locator(".note-draft-storage-warning")).to_be_hidden()
+        dialogs = []
+        self.page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+        self.page.locator("#clear").click()
+        self.expect(self.page.locator(".note-editor")).to_have_count(0)
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-item").get_by_role("button", name="学习笔记", exact=True).click()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("缓存恢复后完整暂存的草稿")
+        self.assertEqual(dialogs, [])
+        self.assertEqual(self.history_records()[0]["note"], "")
+
+    def test_review_with_uncached_note_does_not_count_until_draft_is_preserved(self) -> None:
+        self.uncached_note(review=True)
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-meta")).to_contain_text("本题尚未记次")
+        self.expect(self.page.locator("#review-panel")).to_be_visible()
+        self.assertIsNone(self.history_records()[0].get("review"))
+        with self.page.expect_download():
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertEqual(self.history_records()[0]["review"]["count"], 1)
+        self.assertEqual(self.history_records()[0]["note"], "")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_other_tab_unfavorite_keeps_uncached_review_draft_until_note_is_saved(self) -> None:
+        self.uncached_note(review=True)
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="★ 已收藏").click()
+        self.expect(other.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.expect(self.page.locator("#review-panel")).to_be_visible()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("没有暂存成功的唯一草稿")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertEqual(self.history_records()[0]["note"], "没有暂存成功的唯一草稿")
+        self.assertIsNone(self.history_records()[0].get("review"))
+
+    def test_failed_draft_download_does_not_remove_uncached_note_protection(self) -> None:
+        self.uncached_note()
+        self.page.evaluate("""() => {
+          const create = URL.createObjectURL;
+          URL.createObjectURL = function() { URL.createObjectURL = create; throw new Error('fixture blob failure'); };
+        }""")
+        self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("草稿导出未完成")
+        self.page.once("dialog", lambda dialog: dialog.dismiss())
+        self.page.locator("#clear").click()
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("没有暂存成功的唯一草稿")
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="导出草稿（含原问答）", exact=True).click()
+        self.assertIn("没有暂存成功的唯一草稿", Path(download.value.path()).read_text())
+        self.page.get_by_role("button", name="关闭编辑", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_have_count(0)
 
     def test_committed_review_advances_once_when_library_refresh_fails(self) -> None:
         self.open_page()

@@ -343,11 +343,11 @@ footer details p { margin-top: 6px; text-align: left; }
   let initialHistoryBook = "";
   let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
   let historyChannel = null;
-  let orphanUnloadArmed = false, historyExporting = false;
+  let draftUnloadArmed = false, historyExporting = false;
   let reviewDueTimer = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
-  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
+  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); return true; } catch { return false; } };
   const sessionRemove = key => { try { sessionStorage.removeItem(key); } catch { /* optional */ } };
 
   function queueHistoryRefresh() {
@@ -877,35 +877,44 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function rememberView() { sessionSet(VIEW_KEY, JSON.stringify(visibleIds)); }
 
-  function hasUnexportedDeletedDrafts(editors = thread.querySelectorAll(".note-editor")) {
-    return [...editors].some(editor => editor.querySelector(".note-record-missing")
-      && editor.querySelector("textarea").value.trim()
-      && editor.exportedDraft !== editor.querySelector("textarea").value);
+  function needsDraftProtection(editor) {
+    const text = editor.querySelector("textarea").value;
+    return text.trim() && editor.exportedDraft !== text
+      && (editor.querySelector(".note-record-missing") || editor.hasUncachedDraft?.());
   }
 
-  function confirmLeavingDeletedDrafts(editors) {
-    return !hasUnexportedDeletedDrafts(editors)
-      || window.confirm("有已删除记录的笔记草稿尚未导出，离开后将无法恢复。确定放弃草稿并继续？");
+  function hasUnexportedProtectedDrafts(editors = thread.querySelectorAll(".note-editor")) {
+    return [...editors].some(needsDraftProtection);
   }
 
-  function warnBeforeOrphanUnload(event) {
-    if (!hasUnexportedDeletedDrafts()) return;
+  function confirmLeavingProtectedDrafts(editors = thread.querySelectorAll(".note-editor")) {
+    const pending = [...editors].filter(needsDraftProtection);
+    if (!pending.length) return true;
+    return window.confirm(pending.some(editor => editor.querySelector(".note-record-missing"))
+      ? "有已删除记录的笔记草稿尚未导出，离开后将无法恢复。确定放弃草稿并继续？"
+      : "有笔记草稿暂存失败，离开后可能无法恢复。请先保存或导出草稿。确定放弃当前草稿并继续？");
+  }
+
+  function warnBeforeDraftUnload(event) {
+    if (!hasUnexportedProtectedDrafts()) return;
     event.preventDefault(); event.returnValue = "";
   }
 
-  function updateOrphanUnloadGuard() {
-    const needed = hasUnexportedDeletedDrafts();
-    if (needed === orphanUnloadArmed) return;
-    orphanUnloadArmed = needed;
-    if (needed) window.addEventListener("beforeunload", warnBeforeOrphanUnload);
-    else window.removeEventListener("beforeunload", warnBeforeOrphanUnload);
+  function updateDraftUnloadGuard() {
+    const needed = hasUnexportedProtectedDrafts();
+    if (needed === draftUnloadArmed) return;
+    draftUnloadArmed = needed;
+    if (needed) window.addEventListener("beforeunload", warnBeforeDraftUnload);
+    else window.removeEventListener("beforeunload", warnBeforeDraftUnload);
   }
 
   function clearThread() {
     for (const message of thread.querySelectorAll(".msg")) {
       const card = message.querySelector(".answer");
       if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
-      if (card?.querySelector(".note-record-missing")) sessionRemove(`rag-qa-note-draft-${message.dataset.historyId}`);
+      if (card?.querySelector(".note-record-missing") || card?.querySelector(".note-editor")?.draftStorageFailed) {
+        sessionRemove(`rag-qa-note-draft-${message.dataset.historyId}`);
+      }
       message.remove();
     }
     visibleIds = [];
@@ -913,13 +922,13 @@ footer details p { margin-top: 6px; text-align: left; }
     empty.hidden = false;
     clear.hidden = true;
     document.querySelector(".app").classList.remove("has-reader");
-    updateOrphanUnloadGuard();
+    updateDraftUnloadGuard();
   }
 
   function openSavedRecord(id, editNote = false) {
     if (busy || historyWriting) return;
     const record = records.find(item => item.id === id);
-    if (!record || !confirmLeavingDeletedDrafts()) return;
+    if (!record || !confirmLeavingProtectedDrafts()) return;
     // A library selection is a normal reading action. Never leave the review
     // controls grading the old question while a different answer is visible.
     if (reviewState) endReview(true);
@@ -963,21 +972,37 @@ footer details p { margin-top: 6px; text-align: left; }
       ? "当前已保存笔记有更新。已保留你的草稿，请核对上方最新笔记，可把最新笔记加入草稿后再保存。"
       : restoredDraft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
     status.setAttribute("role", "status");
+    const cacheWarning = element("p", "notice warn note-draft-storage-warning", "当前笔记草稿未能确认暂存在标签页中，离开或刷新可能丢失文字。请先保存笔记或导出草稿。");
+    cacheWarning.hidden = true; cacheWarning.setAttribute("role", "status");
+    editor.hasDirtyDraft = () => !!area.value.trim() && area.value !== baseline;
+    editor.hasUncachedDraft = () => editor.draftStorageFailed && editor.hasDirtyDraft();
+    editor.updateDraftWarning = () => {
+      cacheWarning.hidden = !!editor.querySelector(".note-record-missing") || !editor.hasUncachedDraft() || editor.exportedDraft === area.value;
+    };
+    editor.storeDraft = () => {
+      const payload = JSON.stringify({text: area.value, baseline});
+      const stored = sessionSet(draftKey, payload) || sessionGet(draftKey) === payload;
+      editor.draftStorageFailed = !stored;
+      editor.updateDraftWarning(); updateDraftUnloadGuard();
+      return stored;
+    };
     const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
     const exportDraft = element("button", "action", "导出草稿（含原问答）");
     const mergeNote = element("button", "action", "把最新笔记加入草稿");
     mergeNote.dataset.mergeNote = id; mergeNote.hidden = !draftConflict;
     save.type = cancelNote.type = exportDraft.type = mergeNote.type = "button";
     exportDraft.addEventListener("click", () => {
-      const url = URL.createObjectURL(new Blob([answerRecord(record.query, record.result, area.value)], {type: "text/markdown;charset=utf-8"}));
-      const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
-      document.body.append(link); link.click(); link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      editor.exportedDraft = area.value;
-      status.textContent = "草稿已交给浏览器下载，请确认文件已保存；这不等于写入历史记录。";
-      updateOrphanUnloadGuard();
+      try {
+        const url = URL.createObjectURL(new Blob([answerRecord(record.query, record.result, area.value)], {type: "text/markdown;charset=utf-8"}));
+        const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
+        try { document.body.append(link); link.click(); }
+        finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+        editor.exportedDraft = area.value;
+        status.textContent = "草稿已交给浏览器下载，请确认文件已保存；这不等于写入历史记录。";
+        syncHistoryControls();
+      } catch { status.textContent = "草稿导出未完成，当前文字仍保留。请重试或先保存笔记。"; }
     });
-    actions.append(save, mergeNote, exportDraft, cancelNote); editor.append(label, status, actions); card.append(editor);
+    actions.append(save, mergeNote, exportDraft, cancelNote); editor.append(cacheWarning, label, status, actions); card.append(editor);
     mergeNote.addEventListener("click", async () => {
       if (busy || historyWriting || mergeNote.hidden) return;
       historyWriting = true; syncHistoryControls(); area.disabled = true;
@@ -1001,12 +1026,12 @@ footer details p { margin-top: 6px; text-align: left; }
           return;
         }
         area.value = combined; baseline = latestText;
-        sessionSet(draftKey, JSON.stringify({text: area.value, baseline}));
+        editor.storeDraft();
         mergeNote.hidden = true;
         status.textContent = latestText
           ? "最新笔记已保留在草稿中，请整理重复内容后再保存；保存时仍会检查其他页面的新修改。"
           : "其他页面已清空已保存笔记，当前草稿仍保留。整理后点击保存才会重新写入笔记。";
-        updateOrphanUnloadGuard();
+        updateDraftUnloadGuard();
       } catch { status.textContent = "最新笔记暂时无法读取，当前草稿仍保留。可重试或先导出草稿。"; }
       finally {
         historyWriting = false; area.disabled = false; syncHistoryControls();
@@ -1014,16 +1039,17 @@ footer details p { margin-top: 6px; text-align: left; }
       }
     });
     area.addEventListener("input", () => {
-      sessionSet(draftKey, JSON.stringify({ text: area.value, baseline }));
+      const stored = editor.storeDraft();
       status.textContent = editor.querySelector(".note-record-missing")
         ? "这条问答已删除，草稿只在当前页面保留，请先导出后再离开。"
-        : "草稿尚未保存；刷新后可在当前标签页重新打开笔记继续编辑。";
-      updateOrphanUnloadGuard();
+        : stored ? "草稿已暂存在当前标签页，点击保存才会写入记录。"
+        : "草稿暂存失败，当前文字仍在本页。请先保存笔记或导出草稿。";
     });
     cancelNote.addEventListener("click", async () => {
-      if (!confirmLeavingDeletedDrafts([editor])) return;
+      if (!confirmLeavingProtectedDrafts([editor])) return;
+      if (editor.draftStorageFailed) sessionRemove(draftKey);
       editor.remove();
-      updateOrphanUnloadGuard();
+      syncHistoryControls();
       if (!records.some(item => item.id === id)) {
         sessionRemove(draftKey);
         try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
@@ -1055,7 +1081,7 @@ footer details p { margin-top: 6px; text-align: left; }
           return;
         }
         if (outcome.state === "saved") {
-          baseline = text; area.value = text; sessionSet(draftKey, "");
+          baseline = text; area.value = text; editor.draftStorageFailed = !sessionSet(draftKey, "");
           mergeNote.hidden = true;
         }
         applyKnownHistoryRecord(id, outcome.record);
@@ -1177,6 +1203,7 @@ footer details p { margin-top: 6px; text-align: left; }
       view.querySelector(".note-text").textContent = record?.note || "";
     }
     for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
+    for (const editor of thread.querySelectorAll(".note-editor")) editor.updateDraftWarning?.();
     for (const button of document.querySelectorAll("[data-merge-note]")) {
       button.disabled = busy || historyWriting || !records.some(record => record.id === button.dataset.mergeNote);
     }
@@ -1191,7 +1218,7 @@ footer details p { margin-top: 6px; text-align: left; }
     for (const id of ["review-reveal", "review-skip", "review-end"]) $(id).disabled = busy || historyWriting;
     for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = busy || !!reviewState;
     if (reviewState) clear.hidden = true;
-    updateOrphanUnloadGuard();
+    updateDraftUnloadGuard();
     flushHistoryRefresh();
   }
 
@@ -1361,7 +1388,9 @@ footer details p { margin-top: 6px; text-align: left; }
     clear.hidden = !thread.querySelector(".msg");
     document.querySelector(".app").classList.toggle("has-reader", !!thread.querySelector(".answer.reading"));
     renderHistory();
-    if (reviewState && !protectedIds.has(reviewState.ids[reviewState.index])
+    const currentEditors = reviewState && [...thread.querySelectorAll(".note-editor")]
+      .filter(editor => editor.closest("[data-history-id]").dataset.historyId === reviewState.ids[reviewState.index]);
+    if (reviewState && !protectedIds.has(reviewState.ids[reviewState.index]) && !hasUnexportedProtectedDrafts(currentEditors)
         && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewQuestion();
   }
 
@@ -1488,7 +1517,7 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   function endReview(skipDraftConfirmation = false) {
-    if (!skipDraftConfirmation && !confirmLeavingDeletedDrafts()) return;
+    if (!skipDraftConfirmation && !confirmLeavingProtectedDrafts()) return;
     const completed = reviewState?.completed || 0;
     reviewState = null; reviewRevealed = false; sessionSet(REVIEW_KEY, "");
     $("review-panel").hidden = $("review-controls").hidden = true;
@@ -1527,7 +1556,16 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function rateReview(rating, days) {
     if (!reviewState || !reviewRevealed || busy || historyWriting) return;
+    const editors = [...thread.querySelectorAll(".note-editor")];
+    for (const editor of editors) {
+      if (editor.hasDirtyDraft?.() && editor.exportedDraft !== editor.querySelector("textarea").value && !editor.storeDraft()) {
+        $("review-meta").textContent = "笔记草稿暂存失败，请先保存笔记或导出草稿，再继续自评；本题尚未记次。";
+        return;
+      }
+    }
+    const noteAreas = editors.map(editor => editor.querySelector("textarea")).map(area => [area, area.disabled]);
     const session = reviewState, index = session.index, id = session.ids[index];
+    for (const [area] of noteAreas) area.disabled = true;
     historyWriting = true; syncHistoryControls();
     try {
       let outcome;
@@ -1563,7 +1601,11 @@ footer details p { margin-top: 6px; text-align: left; }
       }
       if (readFailed) historyError((reviewState ? "本题处理已完成。" : $("history-status").textContent)
         + " 历史列表暂时无法刷新，重新打开历史可重试读取。", "read");
-    } finally { historyWriting = false; syncHistoryControls(); }
+    } finally {
+      historyWriting = false;
+      for (const [area, disabled] of noteAreas) area.disabled = disabled;
+      syncHistoryControls();
+    }
   }
 
   function parseEvent(frame) {
@@ -1862,7 +1904,7 @@ footer details p { margin-top: 6px; text-align: left; }
   form.addEventListener("submit", (event) => { event.preventDefault(); ask(); });
   cancel.addEventListener("click", () => activeController?.abort());
   clear.addEventListener("click", () => {
-    if (busy || !confirmLeavingDeletedDrafts()) return;
+    if (busy || !confirmLeavingProtectedDrafts()) return;
     clearThread();
     input.focus();
   });
@@ -1891,7 +1933,7 @@ footer details p { margin-top: 6px; text-align: left; }
   });
   $("history-review-all").addEventListener("change", syncHistoryControls);
   $("history-review-start").addEventListener("click", () => {
-    if (busy || historyWriting || !confirmLeavingDeletedDrafts()) return;
+    if (busy || historyWriting || !confirmLeavingProtectedDrafts()) return;
     const pool = filteredRecords.filter(record => record.favorite
       && ($("history-review-all").checked || !record.review || Date.parse(record.review.next_review_at) <= Date.now()));
     pool.sort((a, b) => (Date.parse(a.review?.next_review_at || a.created_at) - Date.parse(b.review?.next_review_at || b.created_at)));
@@ -1915,7 +1957,7 @@ footer details p { margin-top: 6px; text-align: left; }
     body.focus({preventScroll: true});
   });
   $("review-skip").addEventListener("click", () => {
-    if (!reviewState || busy || historyWriting || !confirmLeavingDeletedDrafts()) return;
+    if (!reviewState || busy || historyWriting || !confirmLeavingProtectedDrafts()) return;
     reviewState.index++; reviewQuestion();
   });
   $("review-end").addEventListener("click", () => endReview());
