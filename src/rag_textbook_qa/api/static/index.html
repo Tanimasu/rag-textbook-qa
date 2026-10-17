@@ -223,10 +223,11 @@ footer details p { margin-top: 6px; text-align: left; }
     <h2 id="history-title">历史与收藏</h2>
     <p class="history-help">问答及引用快照保存在当前浏览器的 IndexedDB。仅此浏览器、此网址可见，不跨设备同步。清除网站数据会丢失记录，重要内容请导出 Markdown。</p>
     <div class="history-filters">
-      <label class="history-search"><input id="history-search" type="search" placeholder="搜索问题、回答或引用原文" aria-label="搜索历史问答"></label>
+      <label class="history-search"><input id="history-search" type="search" maxlength="500" placeholder="搜索问题、回答或引用原文" aria-label="搜索历史问答"></label>
       <label>教材 <select id="history-book"><option value="">全部教材</option></select></label>
       <label><input id="history-favorites" type="checkbox">只看收藏</label>
       <label><input id="history-notes" type="checkbox">有学习笔记</label>
+      <button class="action" id="history-reset-filters" type="button">清除筛选</button>
     </div>
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
     <div id="history-list"></div>
@@ -301,6 +302,7 @@ footer details p { margin-top: 6px; text-align: left; }
   </footer>
 </div>
 <script src="/assets/history-backup.js"></script>
+<script src="/assets/markdown.js"></script>
 <script>
 (() => {
   "use strict";
@@ -314,6 +316,7 @@ footer details p { margin-top: 6px; text-align: left; }
   const VIEW_KEY = "rag-qa-visible-history";
   const REVIEW_KEY = "rag-qa-review-session";
   const DRAFT_KEY = "rag-qa-question-draft";
+  const FILTER_KEY = "rag-qa-history-filters";
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
@@ -321,109 +324,18 @@ footer details p { margin-top: 6px; text-align: left; }
   const answerSnapshots = new WeakMap();
   const readerCleanup = new WeakMap();
   let reviewState = null, reviewRevealed = false;
+  let initialHistoryBook = "";
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
-
-  const escapeHtml = (text) => text.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[character]));
-
-  // Runs on already-escaped text, so every tag it emits is one it chose to emit.
-  function inline(text) {
-    const plain = value => value.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/【参考资料\s*(\d+)】/g, '<button type="button" class="cite" data-cite="$1">资料 $1</button>');
-    let result = "", offset = 0;
-    for (const match of text.matchAll(/`([^`]+)`/g)) {
-      result += plain(text.slice(offset, match.index)) + "<code>" + match[1] + "</code>";
-      offset = match.index + match[0].length;
-    }
-    return result + plain(text.slice(offset));
-  }
-
-  function tableCells(line) {
-    if (!line.includes("|")) return [];
-    const cells = [], value = line.trim();
-    let text = "";
-    for (let index = 0; index < value.length; index++) {
-      if (value[index] === "\\" && value[index + 1] === "|") { text += "|"; index++; }
-      else if (value[index] === "|") { cells.push(text.trim()); text = ""; }
-      else text += value[index];
-    }
-    cells.push(text.trim());
-    if (value.startsWith("|")) cells.shift();
-    if (value.endsWith("|") && !value.endsWith("\\|")) cells.pop();
-    return cells;
-  }
-
-  const codeBlock = lines => '<div class="code-block"><button class="code-copy" type="button" data-copy-code>复制代码</button><pre><code>' + lines.join("\n") + '</code></pre></div>';
+  const sessionRemove = key => { try { sessionStorage.removeItem(key); } catch { /* optional */ } };
 
   function renderMarkdown(source) {
-    const out = [];
-    let list = null, code = null, fence = "", paragraph = [];
-    const lines = escapeHtml(source).split("\n");
-    const flushParagraph = () => {
-      if (paragraph.length) { out.push("<p>" + inline(paragraph.join("<br>")) + "</p>"); paragraph = []; }
-    };
-    const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index];
-      if (code !== null) {
-        const closing = line.match(/^\s*(`{3,}|~{3,})\s*$/);
-        if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) { out.push(codeBlock(code)); code = null; }
-        else code.push(line);
-        continue;
-      }
-      const opening = line.match(/^\s*(`{3,}|~{3,})/);
-      if (opening) { flushParagraph(); closeList(); code = []; fence = opening[1]; continue; }
-      const headers = tableCells(line), separators = tableCells(lines[index + 1] || "");
-      if (headers.length && separators.length === headers.length && separators.every(cell => /^:?-{3,}:?$/.test(cell))) {
-        flushParagraph(); closeList();
-        const align = separators.map(cell => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left");
-        out.push('<div class="table-scroll" tabindex="0" role="region" aria-label="回答中的表格"><table><thead><tr>');
-        headers.forEach((cell, column) => out.push(`<th scope="col" style="text-align:${align[column]}">${inline(cell)}</th>`));
-        out.push("</tr></thead><tbody>");
-        index++;
-        while (index + 1 < lines.length) {
-          const cells = tableCells(lines[index + 1]);
-          if (cells.length !== headers.length) break;
-          index++;
-          out.push("<tr>");
-          cells.forEach((cell, column) => out.push(`<td style="text-align:${align[column]}">${inline(cell)}</td>`));
-          out.push("</tr>");
-        }
-        out.push("</tbody></table></div>");
-        continue;
-      }
-      const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
-      if (heading) {
-        flushParagraph(); closeList();
-        const level = Math.min(heading[1].length + 1, 3);
-        out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-        continue;
-      }
-      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-      const numbered = bullet ? null : line.match(/^\s*(\d+)[.)]\s+(.*)$/);
-      if (bullet || numbered) {
-        flushParagraph();
-        const kind = bullet ? "ul" : "ol";
-        if (list !== kind) {
-          closeList();
-          // Keep the model's own number. A paragraph between items closes the list,
-          // and a fresh <ol> would otherwise restart every item at 1.
-          out.push(numbered ? `<ol start="${numbered[1]}">` : "<ul>");
-          list = kind;
-        }
-        out.push("<li>" + inline(bullet ? bullet[1] : numbered[2]) + "</li>");
-        continue;
-      }
-      if (!line.trim()) { flushParagraph(); closeList(); continue; }
-      closeList();
-      paragraph.push(line);
-    }
-    if (code !== null) out.push(codeBlock(code));
-    flushParagraph(); closeList();
-    return out.join("");
+    if (window.RagMarkdown) return window.RagMarkdown.render(source);
+    const literal = element("div", "", source);
+    literal.style.whiteSpace = "pre-wrap";
+    const notice = element("p", "history-help", "页面加载不完整，暂按文本展示。可尝试刷新页面。");
+    return notice.outerHTML + literal.outerHTML;
   }
 
   function element(tag, className, text) {
@@ -1107,7 +1019,8 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   function renderHistory() {
-    const bookFilter = $("history-book"), previousBook = bookFilter.value;
+    const bookFilter = $("history-book"), previousBook = bookFilter.value || initialHistoryBook;
+    initialHistoryBook = "";
     bookFilter.replaceChildren(new Option("全部教材", ""));
     const books = new Map(records.map(record => [record.book_id, record.book_label]));
     for (const [id, label] of books) bookFilter.add(new Option(label, id));
@@ -1123,6 +1036,8 @@ footer details p { margin-top: 6px; text-align: left; }
       return keywords.every(keyword => text.includes(keyword));
     });
     filteredRecords = matches;
+    sessionSet(FILTER_KEY, JSON.stringify({query: $("history-search").value,
+      book: bookFilter.value, favorites: $("history-favorites").checked, notes: $("history-notes").checked}));
     $("history-count").textContent = `${records.length} 条记录 · ${records.filter(record => record.favorite).length} 条收藏 · 匹配 ${matches.length} 条`;
     const list = $("history-list");
     list.replaceChildren();
@@ -1142,12 +1057,14 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   async function refreshHistory() {
+    const previousIds = records.map(record => record.id);
     records = await historyTransaction("readonly", (store, done) => {
       const request = store.getAll();
       request.onsuccess = () => done(request.result);
     });
     records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
     const ids = new Set(records.map(record => record.id));
+    for (const id of previousIds) if (!ids.has(id)) sessionRemove(`rag-qa-note-draft-${id}`);
     for (const row of thread.querySelectorAll("[data-history-id]")) {
       if (!ids.has(row.dataset.historyId)) {
         const card = row.querySelector(".answer");
@@ -1646,6 +1563,11 @@ footer details p { margin-top: 6px; text-align: left; }
     });
   }
   $("history-more").addEventListener("click", () => { historyLimit += 20; renderHistory(); });
+  $("history-reset-filters").addEventListener("click", () => {
+    $("history-search").value = $("history-book").value = "";
+    $("history-favorites").checked = $("history-notes").checked = false;
+    historyLimit = 20; renderHistory();
+  });
   $("history-review-all").addEventListener("change", syncHistoryControls);
   $("history-review-start").addEventListener("click", () => {
     if (busy || historyWriting) return;
@@ -1746,6 +1668,15 @@ footer details p { margin-top: 6px; text-align: left; }
     changeHistory(store => store.clear());
   });
   reloadBooks.addEventListener("click", loadBooks);
+  try {
+    const filters = JSON.parse(sessionGet(FILTER_KEY) || "null");
+    if (filters && typeof filters === "object") {
+      $("history-search").value = typeof filters.query === "string" ? filters.query.slice(0, 500) : "";
+      initialHistoryBook = typeof filters.book === "string" ? filters.book : "";
+      $("history-favorites").checked = filters.favorites === true;
+      $("history-notes").checked = filters.notes === true;
+    }
+  } catch { /* optional history filters */ }
   input.value = sessionGet(DRAFT_KEY).slice(0, 500);
   if (input.value) {
     $("draft-status").textContent = "已恢复当前标签页的提问草稿。";

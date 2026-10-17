@@ -71,6 +71,10 @@ Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系�
 
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
+聊天页的独立格式渲染位于 `api/static/markdown.js`，历史备份校验位于 `api/static/history-backup.js`，
+均无外部脚本依赖。`/assets/` 只提供这两个固定资源；资源缺失时正文回退为安全文本，问答保存和原文快照仍可使用。
+新增资源必须加入 `scripts/check_distribution.py` 的发布包清单。
+
 ### 本机性能验收
 
 `benchmark_retrieval.py` 使用 dev 题、当前索引副本及本机已缓存的模型，测量真实推理耗时。

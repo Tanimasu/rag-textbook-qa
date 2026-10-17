@@ -580,6 +580,15 @@ class ApiAppTests(unittest.TestCase):
         self.assertFalse(call["use_adjacent_context"])
         self.assertFalse(call["verify_citations"])
 
+    def test_browser_assets_use_a_fixed_allowlist(self):
+        client = self.client()
+        for name in ("markdown.js", "history-backup.js"):
+            response = client.get(f"/assets/{name}")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("application/javascript", response.headers["content-type"])
+        for name in ("app.py", ".env", "../app.py", "%2e%2e%2fapp.py"):
+            self.assertEqual(client.get(f"/assets/{name}").status_code, 404)
+
     def test_invalid_requests_never_reach_the_engine(self):
         client = self.client()
         cases = [

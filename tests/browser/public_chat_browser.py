@@ -25,6 +25,7 @@ PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
 RETRIEVAL_PAGE = ROOT / "src/rag_textbook_qa/api/static/retrieval.html"
 IMPORT_PAGE = ROOT / "src/rag_textbook_qa/api/static/imports.html"
 BACKUP_SCRIPT = ROOT / "src/rag_textbook_qa/api/static/history-backup.js"
+MARKDOWN_SCRIPT = ROOT / "src/rag_textbook_qa/api/static/markdown.js"
 
 
 def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
@@ -153,6 +154,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             self.respond(200, IMPORT_PAGE.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/assets/history-backup.js":
             self.respond(200, BACKUP_SCRIPT.read_bytes(), "application/javascript; charset=utf-8")
+        elif self.path == "/assets/markdown.js":
+            self.respond(200, MARKDOWN_SCRIPT.read_bytes(), "application/javascript; charset=utf-8")
         elif self.path == "/v1/imports":
             if not self.server.imports_enabled:
                 self.json_response({"detail": "教材导入只在本机服务提供"}, 404)
@@ -1307,6 +1310,51 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
         self.page.locator("#send").click()
         self.assertEqual(len(self.backend.asks), 1)
+
+    def test_history_filters_restore_in_current_tab_and_reset_shows_all_records(self) -> None:
+        self.open_page()
+        self.saved_answer("操作系统题目")
+        self.saved_answer("数据库收藏题目", "database")
+        self.page.locator(".answer").last.get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").last.get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-book").select_option("database")
+        self.page.locator("#history-search").fill("数据库")
+        self.page.locator("#history-favorites").check()
+        self.page.reload()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-book")).to_have_value("database")
+        self.expect(self.page.locator("#history-search")).to_have_value("数据库")
+        self.expect(self.page.locator("#history-favorites")).to_be_checked()
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.page.locator("#history-reset-filters").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(2)
+        self.expect(self.page.locator("#history-search")).to_have_value("")
+
+    def test_deleting_record_also_removes_its_unsaved_note_draft(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        record_id = self.history_records()[0]["id"]
+        self.page.locator(".answer").get_by_role("button", name="学习笔记", exact=True).click()
+        self.page.get_by_role("textbox", name="编辑学习笔记", exact=True).fill("跟着记录一起清理的草稿")
+        key = "rag-qa-note-draft-" + record_id
+        self.assertIsNotNone(self.page.evaluate("key => sessionStorage.getItem(key)", key))
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator(".answer").get_by_role("button", name="删除记录", exact=True).click()
+        self.expect(self.page.locator(".answer")).to_have_count(0)
+        self.assertIsNone(self.page.evaluate("key => sessionStorage.getItem(key)", key))
+
+    def test_missing_markdown_asset_falls_back_to_safe_readable_text(self) -> None:
+        self.page.route("**/assets/markdown.js", lambda route: route.fulfill(status=503, body=""))
+        self.open_page()
+        self.saved_answer()
+        body = self.page.locator(".answer .body")
+        self.expect(body).to_contain_text("暂按文本展示")
+        self.expect(body).to_contain_text("<img src=x>")
+        self.expect(body.locator("img")).to_have_count(0)
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.expect(self.page.locator(".reader-quote")).to_be_visible()
+        self.assertEqual(self.history_records()[0]["result"]["answer"], answer_result()["answer"])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
