@@ -668,6 +668,7 @@ def create_api_app(
                 "source_sha256": window["source_sha256"],
                 "previous_chunk_id": window["previous_chunk_id"],
                 "next_chunk_id": window["next_chunk_id"],
+                "navigation_available": bool(window.get("navigation_available", True)),
                 "passages": [
                     {**_public_source(row), "is_anchor": bool(row.get("is_anchor"))}
                     for row in window["passages"]

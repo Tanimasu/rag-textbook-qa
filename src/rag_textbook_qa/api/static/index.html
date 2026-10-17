@@ -738,6 +738,7 @@ footer details p { margin-top: 6px; text-align: left; }
         if (!Array.isArray(data.passages)) throw new Error("invalid passages");
         current.append(element("h3", "", "当前索引中的上下文"),
           element("p", "history-help", "相邻原文只供阅读，未加入这次回答的依据。"));
+        if (data.navigation_available === false) addNotice(current, "本书片段未提供顺序编号，当前只展示准确定位的原文，无法继续向前或向后阅读。", "warn");
         if (chunkId === selected.chunk_id) {
           if (!selected.source_sha256) addNotice(current, "这条旧记录没有原文指纹，无法核对版本。", "warn");
           else if (data.source_sha256 !== selected.source_sha256) addNotice(current, "教材原文已更新；上方保留引用时的快照，以下是当前内容。", "warn");

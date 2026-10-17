@@ -105,6 +105,7 @@ class FakeBackend(ThreadingHTTPServer):
         self.gates: list[threading.Event] = []
         self.book_failures_remaining = 0
         self.reading_changed = False
+        self.reading_unordered = False
         self.reading_failure = False
         self.reading_gate: threading.Event | None = None
         self.reads: list[dict[str, Any]] = []
@@ -189,6 +190,8 @@ class FakeHandler(BaseHTTPRequestHandler):
                 "previous_chunk_id": "chapter_p1" if chunk_id == "chapter_p2" else None,
                 "next_chunk_id": "chapter_p2" if chunk_id == "chapter_p1" else None,
                 "passages": [source, neighbor],
+                **({"navigation_available": False, "previous_chunk_id": None, "next_chunk_id": None,
+                    "passages": [source]} if self.server.reading_unordered else {}),
             })
         elif self.path == "/v1/books":
             with self.server.lock:
@@ -1415,6 +1418,18 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#import-status")).to_have_css("color", "rgb(244, 163, 163)")
         self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
         self.capture_page("imports-dark-320.png")
+
+    def test_reader_explains_missing_source_order_and_keeps_exact_anchor(self) -> None:
+        self.backend.reading_unordered = True
+        self.open_page()
+        self.saved_answer()
+        self.page.get_by_role("button", name="对照原文", exact=True).click()
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("未提供顺序编号")
+        self.expect(self.page.locator(".reader-passage")).to_have_count(1)
+        self.expect(self.page.get_by_role("button", name="向前阅读", exact=True)).to_be_disabled()
+        self.expect(self.page.get_by_role("button", name="向后阅读", exact=True)).to_be_disabled()
+        self.expect(self.page.locator(".reader-quote")).to_have_text(answer_result()["sources"][0]["excerpt"])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

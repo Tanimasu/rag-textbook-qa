@@ -41,3 +41,17 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual([row["content"] for row in result["passages"]], ["一", "二", "三"])
         with self.assertRaises(LookupError):
             engine.read_passages("missing", "chapter_p1")
+
+    def test_opaque_imported_ids_show_exact_anchor_without_inventing_order(self):
+        engine = object.__new__(RAGEngine)
+        engine.vectorizer = SimpleNamespace()
+        engine.bm25_doc_ids = {"os": ["opaque-second", "opaque-first"]}
+        engine.bm25_corpus = {"os": ["另一段正文", "准确定位的正文"]}
+        engine.bm25_metadatas = {"os": [{}, {}]}
+        result = engine.read_passages("os", "opaque-first")
+        self.assertFalse(result["navigation_available"])
+        self.assertEqual([row["content"] for row in result["passages"]], ["准确定位的正文"])
+        self.assertIsNone(result["previous_chunk_id"])
+        self.assertIsNone(result["next_chunk_id"])
+        with self.assertRaises(LookupError):
+            engine.read_passages("os", "missing")

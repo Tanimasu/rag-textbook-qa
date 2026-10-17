@@ -494,12 +494,22 @@ class RAGEngine:
         def read() -> dict[str, Any]:
             if book_name not in self.bm25_corpus:
                 raise LookupError("没有这本教材的索引")
-            rows = order_indexed_chunks({
+            data = {
                 "ids": self.bm25_doc_ids[book_name],
                 "documents": self.bm25_corpus[book_name],
                 "metadatas": self.bm25_metadatas[book_name],
-            }, book_name)
-            return passage_window(rows, chunk_id, radius=radius)
+            }
+            try:
+                rows = order_indexed_chunks(data, book_name)
+            except ValueError:
+                # Imported opaque IDs identify their anchor exactly but cannot
+                # establish textbook order. Never invent adjacent passages.
+                rows = [{**(metadata or {}), "book_name": book_name, "chunk_id": identifier,
+                         "content": content} for identifier, content, metadata in
+                        zip(data["ids"], data["documents"], data["metadatas"], strict=True)
+                        if identifier == chunk_id]
+                return {**passage_window(rows, chunk_id, radius=0), "navigation_available": False}
+            return {**passage_window(rows, chunk_id, radius=radius), "navigation_available": True}
 
         return self._run_with_index_snapshot(read)
 
