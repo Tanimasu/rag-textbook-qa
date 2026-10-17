@@ -96,6 +96,8 @@ uv run --no-sync python scripts/check_import_coordination.py \
 同样使用合成资料和注入的确定性模型，输出两个进程的调用计数、退出状态及服务日志。
 
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
+队列和学习流程验收的 HTTP 客户端直连本机回环服务，不读取环境代理或个人 `netrc`。
+CI 在故意不可用的代理环境下运行这两项检查，避免本机请求被环境中的代理转发而误判验收失败。
 
 聊天页的独立格式渲染位于 `api/static/markdown.js`，历史备份校验位于 `api/static/history-backup.js`，
 均无外部脚本依赖。`/assets/` 只提供这两个固定资源；资源缺失时正文回退为安全文本，问答保存和原文快照仍可使用。

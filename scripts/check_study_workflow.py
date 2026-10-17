@@ -115,7 +115,8 @@ headers = {'X-Access-Code': code}
 server = None
 thread = None
 try:
-    with TemporaryIndexDirectory() as directory:
+    with TemporaryIndexDirectory() as directory, requests.Session() as client:
+        client.trust_env = False
         temporary = Path(directory)
         with RAGEngine(db_path=temporary / 'db', embedding_provider=embedding,
                        reranker_provider=reranker, llm_client=generator, enable_llm=True,
@@ -245,7 +246,7 @@ try:
                     page.once('dialog', lambda dialog: dialog.accept())
                     page.locator('.recent-job').get_by_role('button', name='清理导入副本').click()
                     expect(page.locator('.recent-job')).to_have_count(0)
-                    response = requests.get(base+'/v1/books/os/passages', params={'chunk_id':source['chunk_id']}, headers=headers, timeout=5)
+                    response = client.get(base+'/v1/books/os/passages', params={'chunk_id':source['chunk_id']}, headers=headers, timeout=5)
                     response.raise_for_status()
                     assert response.json()['source_sha256'] == source['source_sha256']
                     report['steps'].append('Import copy cleanup leaves published index readable')

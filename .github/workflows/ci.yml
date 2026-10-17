@@ -64,6 +64,11 @@ jobs:
         run: uv run --no-sync python -m unittest discover -s tests -v
 
       - name: Verify queue saturation and cancellation over real HTTP
+        env:
+          HTTP_PROXY: http://127.0.0.1:1
+          HTTPS_PROXY: http://127.0.0.1:1
+          ALL_PROXY: http://127.0.0.1:1
+          NO_PROXY: ""
         run: uv run --no-sync python scripts/check_serving_queue.py --output artifacts/evaluations/ci/queue-http.json
 
       - name: Verify shared import jobs across two real API processes
@@ -129,6 +134,11 @@ jobs:
         run: uv run --no-sync python tests/browser/public_chat_browser.py -v
 
       - name: Verify complete study workflow over real HTTP with synthetic materials
+        env:
+          HTTP_PROXY: http://127.0.0.1:1
+          HTTPS_PROXY: http://127.0.0.1:1
+          ALL_PROXY: http://127.0.0.1:1
+          NO_PROXY: ""
         run: uv run --no-sync python scripts/check_study_workflow.py --output artifacts/evaluations/ci/study-workflow
 
   package:
