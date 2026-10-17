@@ -1589,6 +1589,24 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".reader-quote")).to_be_visible()
         self.assertEqual(self.history_records()[0]["result"]["answer"], answer_result()["answer"])
 
+    def test_missing_backup_asset_disables_restore_but_keeps_history_and_markdown_export(self) -> None:
+        self.page.route("**/assets/history-backup.js", lambda route: route.fulfill(status=503, body=""))
+        self.open_page()
+        self.saved_answer("备份组件不可用时仍保留问答")
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("备份组件未能加载")
+        for selector in ("#history-backup-all", "#history-backup-filtered", "#history-backup-file", "#history-restore"):
+            self.expect(self.page.locator(selector)).to_be_disabled()
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.page.locator("#toggle-history").click()
+        with self.page.expect_download() as download:
+            self.page.get_by_role("button", name="保存问答（含来源）", exact=True).click()
+        self.assertIn("备份组件不可用时仍保留问答", Path(download.value.path()).read_text())
+        self.page.reload()
+        self.expect(self.page.locator(".answer .body")).to_contain_text("进程")
+        self.assertEqual(len(self.backend.asks), 1)
+
     def test_no_evidence_record_exports_question_and_status_without_fake_answer(self) -> None:
         self.open_page()
         result = answer_result()

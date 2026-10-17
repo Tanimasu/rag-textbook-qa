@@ -320,6 +320,8 @@ footer details p { margin-top: 6px; text-align: left; }
   const REVIEW_KEY = "rag-qa-review-session";
   const DRAFT_KEY = "rag-qa-question-draft";
   const FILTER_KEY = "rag-qa-history-filters";
+  const backupAvailable = ["parse", "serialize"].every(name => typeof window.RagHistoryBackup?.[name] === "function");
+  const backupUnavailableMessage = "备份组件未能加载，请刷新页面后再备份或恢复。现有历史仍保留，也可逐题导出 Markdown。";
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
@@ -1036,9 +1038,10 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
     $("history-delete-all").disabled = busy || historyWriting || !records.length;
-    $("history-backup-all").disabled = busy || historyWriting || !records.length;
-    $("history-backup-filtered").disabled = busy || historyWriting || !filteredRecords.length;
-    $("history-restore").disabled = busy || historyWriting || !restoreRecords?.length || !historyDB;
+    $("history-backup-all").disabled = !backupAvailable || busy || historyWriting || !records.length;
+    $("history-backup-filtered").disabled = !backupAvailable || busy || historyWriting || !filteredRecords.length;
+    $("history-backup-file").disabled = !backupAvailable || historyWriting;
+    $("history-restore").disabled = !backupAvailable || busy || historyWriting || !restoreRecords?.length || !historyDB;
     for (const view of document.querySelectorAll(".saved-note")) {
       const record = records.find(item => item.id === view.dataset.noteId);
       view.hidden = !record?.note;
@@ -1674,6 +1677,7 @@ footer details p { margin-top: 6px; text-align: left; }
   $("review-again").addEventListener("click", () => rateReview("again", 1));
   $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
   async function exportHistory(filtered) {
+    if (!backupAvailable) { $("history-backup-preview").textContent = backupUnavailableMessage; return; }
     try {
       await refreshHistory();
       const text = window.RagHistoryBackup.serialize(filtered ? filteredRecords : records);
@@ -1688,6 +1692,7 @@ footer details p { margin-top: 6px; text-align: left; }
   $("history-backup-all").addEventListener("click", () => exportHistory(false));
   $("history-backup-filtered").addEventListener("click", () => exportHistory(true));
   $("history-backup-file").addEventListener("change", async () => {
+    if (!backupAvailable) { $("history-backup-preview").textContent = backupUnavailableMessage; return; }
     const token = ++backupReading;
     restoreRecords = null; syncHistoryControls();
     const file = $("history-backup-file").files[0];
@@ -1707,7 +1712,7 @@ footer details p { margin-top: 6px; text-align: left; }
     syncHistoryControls();
   });
   $("history-restore").addEventListener("click", async () => {
-    if (busy || historyWriting || !restoreRecords?.length) return;
+    if (!backupAvailable || busy || historyWriting || !restoreRecords?.length) return;
     const incoming = restoreRecords;
     historyWriting = true; syncHistoryControls();
     try {
@@ -1761,6 +1766,10 @@ footer details p { margin-top: 6px; text-align: left; }
     $("draft-status").hidden = false;
   }
   autosize();
+  if (!backupAvailable) {
+    $("history-backup-preview").textContent = backupUnavailableMessage;
+    $("history-backup-preview").className = "notice warn";
+  }
   send.disabled = true;
   initHistory();
   loadBooks();
