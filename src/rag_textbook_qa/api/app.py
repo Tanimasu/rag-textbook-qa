@@ -46,7 +46,7 @@ from rag_textbook_qa.timing import finite_seconds
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import HTMLResponse, StreamingResponse
+    from fastapi.responses import HTMLResponse, Response, StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - only without the api extra
     raise MissingOptionalDependencyError("启动问答服务需要安装：uv sync --extra api") from exc
@@ -423,6 +423,7 @@ def create_api_app(
     )
     retrieval_page = resources.files("rag_textbook_qa.api").joinpath("static/retrieval.html").read_text(encoding="utf-8")
     import_page = resources.files("rag_textbook_qa.api").joinpath("static/imports.html").read_text(encoding="utf-8")
+    backup_script = resources.files("rag_textbook_qa.api").joinpath("static/history-backup.js").read_text(encoding="utf-8")
 
     app = FastAPI(
         title="计算机教材 RAG 问答",
@@ -552,6 +553,10 @@ def create_api_app(
     @app.get("/imports", response_class=HTMLResponse, include_in_schema=False)
     def imports_index() -> HTMLResponse:
         return HTMLResponse(import_page)
+
+    @app.get("/assets/history-backup.js", include_in_schema=False)
+    def history_backup_script() -> Response:
+        return Response(backup_script, media_type="application/javascript")
 
     @app.get("/health", summary="服务状态")
     def health() -> dict[str, Any]:

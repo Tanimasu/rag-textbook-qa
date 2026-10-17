@@ -104,8 +104,10 @@ main { flex: 1; padding: 16px 0; }
 .history-item h3 { margin: 0; font-size: 14px; white-space: pre-wrap; }
 .history-item p { margin: 4px 0; font-size: 13px; color: var(--muted); }
 .action[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.history-cleanup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
-.history-cleanup summary { cursor: pointer; }
+.history-cleanup, .history-backup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
+.history-cleanup summary, .history-backup summary { cursor: pointer; }
+.history-backup label { display: block; margin-top: 10px; }
+.history-backup input[type=file] { width: 100%; font: inherit; margin-top: 6px; }
 #history-status { font-size: 13px; }
 .answer.reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .answer-content { min-width: 0; }
@@ -211,6 +213,17 @@ footer details p { margin-top: 6px; text-align: left; }
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
     <div id="history-list"></div>
     <button class="action" id="history-more" type="button" hidden>显示更多</button>
+    <details class="history-backup">
+      <summary>备份与恢复</summary>
+      <p class="history-help">JSON 备份包含问题、回答、引用和收藏，下载到你选择的位置。恢复时只新增记录，相同编号保留当前浏览器的版本。</p>
+      <div class="actions">
+        <button class="action" id="history-backup-all" type="button" disabled>备份全部记录</button>
+        <button class="action" id="history-backup-filtered" type="button" disabled>备份筛选结果</button>
+      </div>
+      <label class="history-help">选择备份文件 <input id="history-backup-file" type="file" accept=".json,application/json"></label>
+      <p class="history-help" id="history-backup-preview" role="status"></p>
+      <button class="action" id="history-restore" type="button" disabled>确认合并恢复</button>
+    </details>
     <details class="history-cleanup">
       <summary>清理记录</summary>
       <p class="history-help">清空对话只收起当前显示；删除记录会同时删除它的引用快照，无法撤销。</p>
@@ -247,6 +260,7 @@ footer details p { margin-top: 6px; text-align: left; }
     <details><summary>对话与反馈如何保存</summary><p>完整返回的问答及引用自动保存在当前浏览器，刷新后恢复当前显示的记录；停止或断流的片段不自动保存。访问口令不写入历史记录。主动提交反馈时，服务端另行保存本次问题、回答、引用、耗时和反馈内容，不保存 IP 或访问口令。历史记录中的旧回答不能再次提交反馈。未通过验收的实验功能在公开版中关闭。</p></details>
   </footer>
 </div>
+<script src="/assets/history-backup.js"></script>
 <script>
 (() => {
   "use strict";
@@ -261,6 +275,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
+  let filteredRecords = [], restoreRecords = null, backupReading = 0;
   const answerSnapshots = new WeakMap();
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
@@ -858,6 +873,9 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
     $("history-delete-all").disabled = busy || historyWriting || !records.length;
+    $("history-backup-all").disabled = busy || historyWriting || !records.length;
+    $("history-backup-filtered").disabled = busy || historyWriting || !filteredRecords.length;
+    $("history-restore").disabled = busy || historyWriting || !restoreRecords?.length || !historyDB;
   }
 
   function showRecord(record) {
@@ -886,6 +904,7 @@ footer details p { margin-top: 6px; text-align: left; }
         .join("\n").toLocaleLowerCase();
       return keywords.every(keyword => text.includes(keyword));
     });
+    filteredRecords = matches;
     $("history-count").textContent = `${records.length} 条记录 · ${records.filter(record => record.favorite).length} 条收藏 · 匹配 ${matches.length} 条`;
     const list = $("history-list");
     list.replaceChildren();
@@ -1319,6 +1338,61 @@ footer details p { margin-top: 6px; text-align: left; }
     });
   }
   $("history-more").addEventListener("click", () => { historyLimit += 20; renderHistory(); });
+  async function exportHistory(filtered) {
+    try {
+      await refreshHistory();
+      const text = window.RagHistoryBackup.serialize(filtered ? filteredRecords : records);
+      const url = URL.createObjectURL(new Blob([text], {type: "application/json;charset=utf-8"}));
+      const link = element("a");
+      link.href = url; link.download = `教材问答备份-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $("history-backup-preview").textContent = "备份已交给浏览器下载，请确认文件已保存。";
+    } catch (error) { $("history-backup-preview").textContent = error.message || "备份失败，请刷新后重试。"; }
+  }
+  $("history-backup-all").addEventListener("click", () => exportHistory(false));
+  $("history-backup-filtered").addEventListener("click", () => exportHistory(true));
+  $("history-backup-file").addEventListener("change", async () => {
+    const token = ++backupReading;
+    restoreRecords = null; syncHistoryControls();
+    const file = $("history-backup-file").files[0];
+    if (!file) { $("history-backup-preview").textContent = ""; return; }
+    $("history-backup-preview").textContent = "正在校验备份，尚未写入记录…";
+    try {
+      if (file.size > window.RagHistoryBackup.maxBytes) throw new Error("单个备份最多 64 MB。");
+      const incoming = window.RagHistoryBackup.parse(await file.text());
+      if (token !== backupReading) return;
+      restoreRecords = incoming;
+      const existing = new Set(records.map(record => record.id));
+      const duplicate = incoming.filter(record => existing.has(record.id)).length;
+      $("history-backup-preview").textContent = `备份校验通过：${incoming.length} 条记录，${incoming.filter(record => record.favorite).length} 条收藏；预计新增 ${incoming.length - duplicate} 条，相同编号 ${duplicate} 条。确认后合并，已有记录不会覆盖。`;
+    } catch (error) {
+      if (token === backupReading) $("history-backup-preview").textContent = error.message || "备份校验失败，未写入记录。";
+    }
+    syncHistoryControls();
+  });
+  $("history-restore").addEventListener("click", async () => {
+    if (busy || historyWriting || !restoreRecords?.length) return;
+    const incoming = restoreRecords;
+    historyWriting = true; syncHistoryControls();
+    try {
+      const added = await historyTransaction("readwrite", (store, done) => {
+        const request = store.getAllKeys();
+        request.onsuccess = () => {
+          try {
+            const existing = new Set(request.result);
+            let count = 0;
+            for (const record of incoming) if (!existing.has(record.id)) { store.add(record); count++; }
+            done(count);
+          } catch { store.transaction.abort(); }
+        };
+      });
+      await refreshHistory();
+      $("history-backup-preview").textContent = `恢复完成：新增 ${added} 条，保留当前已有编号 ${incoming.length - added} 条。`;
+      restoreRecords = null; $("history-backup-file").value = "";
+    } catch { $("history-backup-preview").textContent = "恢复失败，已有记录保持原样。请检查浏览器存储空间后重试。"; }
+    finally { historyWriting = false; syncHistoryControls(); }
+  });
   $("history-clean").addEventListener("click", () => {
     if (busy || historyWriting || !window.confirm("删除所有未收藏的问答及引用快照？收藏将保留，操作无法撤销。")) return;
     changeHistory(store => {

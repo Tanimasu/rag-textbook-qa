@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
 RETRIEVAL_PAGE = ROOT / "src/rag_textbook_qa/api/static/retrieval.html"
 IMPORT_PAGE = ROOT / "src/rag_textbook_qa/api/static/imports.html"
+BACKUP_SCRIPT = ROOT / "src/rag_textbook_qa/api/static/history-backup.js"
 
 
 def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
@@ -143,6 +144,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             self.respond(200, RETRIEVAL_PAGE.read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/imports":
             self.respond(200, IMPORT_PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/assets/history-backup.js":
+            self.respond(200, BACKUP_SCRIPT.read_bytes(), "application/javascript; charset=utf-8")
         elif self.path == "/v1/imports":
             if not self.server.imports_enabled:
                 self.json_response({"detail": "教材导入只在本机服务提供"}, 404)
@@ -819,6 +822,112 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#import-status")).to_contain_text("不超过 8 MB")
         self.assertEqual(self.backend.uploads, [])
         self.assertEqual(self.backend.import_starts, [])
+
+    def backup_file(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"name": "教材问答备份.json", "mimeType": "application/json",
+                "buffer": json.dumps({"format": "rag-qa-history", "version": 1, "records": records}).encode()}
+
+    def test_history_backup_round_trip_keeps_sources_favorites_and_existing_versions(self) -> None:
+        self.backend.access_code_required = True
+        self.open_page()
+        self.page.locator("#code").fill("never-export-this-code")
+        self.saved_answer("第一条记录")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.saved_answer("另一条记录", "database")
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        with self.page.expect_download() as info:
+            self.page.locator("#history-backup-all").click()
+        data = Path(info.value.path()).read_text()
+        backup = json.loads(data)
+        self.assertEqual(backup["format"], "rag-qa-history")
+        self.assertEqual(len(backup["records"]), 2)
+        self.assertNotIn("never-export-this-code", data)
+        self.assertNotIn("answer_id", data)
+        self.page.locator(".history-cleanup summary").click()
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator("#history-delete-all").click()
+        self.expect(self.page.locator(".history-item")).to_have_count(0)
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(backup["records"]))
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("预计新增 2 条")
+        self.assertEqual(self.history_records(), [])
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("恢复完成：新增 2 条")
+        self.assertEqual(len(self.history_records()), 2)
+        self.assertEqual(sum(row["favorite"] for row in self.history_records()), 1)
+        self.assertEqual(self.history_records()[0]["result"]["sources"], backup["records"][0]["result"]["sources"])
+        favorite = self.page.locator(".history-item").filter(has=self.page.get_by_role("heading", name="第一条记录"))
+        favorite.get_by_role("button", name="★ 已收藏").click()
+        self.expect(favorite.get_by_role("button", name="☆ 收藏")).to_be_visible()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(backup["records"]))
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("相同编号 2 条")
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("新增 0 条")
+        self.assertEqual(sum(row["favorite"] for row in self.history_records()), 0)
+        self.assertEqual(len(self.backend.asks), 2)
+
+    def test_filtered_backup_and_invalid_backup_never_modify_current_library(self) -> None:
+        self.open_page()
+        self.saved_answer("操作系统的问题")
+        self.saved_answer("数据库的问题", "database")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-book").select_option("database")
+        self.page.locator(".history-backup summary").click()
+        with self.page.expect_download() as info:
+            self.page.locator("#history-backup-filtered").click()
+        backup = json.loads(Path(info.value.path()).read_text())
+        self.assertEqual([row["query"] for row in backup["records"]], ["数据库的问题"])
+        original = self.history_records()
+        incoming = [dict(original[0], id="valid-incoming"), dict(original[0], id="bad-incoming", favorite="yes")]
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("无效记录")
+        self.expect(self.page.locator("#history-restore")).to_be_disabled()
+        self.assertEqual(self.history_records(), original)
+        incoming = [dict(original[0], id="repeated-id")] * 2
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("无效记录")
+        self.assertEqual(self.history_records(), original)
+
+    def test_history_restore_transaction_aborts_all_new_rows_when_storage_write_fails(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        original = self.history_records()
+        incoming = [dict(original[0], id="incoming-one"), dict(original[0], id="incoming-two")]
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
+        self.expect(self.page.locator("#history-restore")).to_be_enabled()
+        self.page.evaluate("""() => {
+          const add = IDBObjectStore.prototype.add; let count = 0;
+          IDBObjectStore.prototype.add = function(...args) {
+            if (++count === 2) throw new DOMException('Full', 'QuotaExceededError');
+            return add.apply(this, args);
+          };
+        }""")
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("恢复失败")
+        self.assertEqual(self.history_records(), original)
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("新增 2 条")
+        self.assertEqual(len(self.history_records()), 3)
+
+    def test_backup_parser_rejects_unknown_versions_bad_sources_and_private_fields(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        original = self.history_records()[0]
+        result = self.page.evaluate("""record => {
+          const attempt = value => { try { RagHistoryBackup.parse(JSON.stringify(value)); return false; } catch { return true; } };
+          const envelope = records => ({ format:'rag-qa-history', version:1, records });
+          const badCitation = structuredClone(record); badCitation.result.sources[0].citation_id = 0;
+          const badTiming = structuredClone(record); badTiming.result.timing.total_seconds = -1;
+          const secret = structuredClone(record); secret.result.answer_id = 'private-answer-id'; secret.result.prompt = 'private-prompt';
+          return { rejected:[attempt({ ...envelope([record]), version:2 }), attempt(envelope([badCitation])), attempt(envelope([badTiming]))],
+            exported:RagHistoryBackup.serialize([secret]) };
+        }""", original)
+        self.assertEqual(result["rejected"], [True, True, True])
+        self.assertNotIn("private-prompt", result["exported"])
+        self.assertNotIn("private-answer-id", result["exported"])
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
