@@ -1610,7 +1610,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.17"
+version = "0.3.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },

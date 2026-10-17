@@ -804,12 +804,12 @@ def run_api_server(
     )
     engine = RAGEngine(db_path=db_path, verbose=False, enable_hyde=False)
     importer = None
-    if is_loopback_host(host) and not public:
-        def build_import(chunks_file: Path, book_id: str, progress: Callable[[int, int, str], None]) -> None:
-            engine.vectorizer.vectorize_book(chunks_file, book_id, on_progress=progress)
-
-        importer = ImportManager(Path(db_path).expanduser().resolve().parent / "product" / "imports", build_import)
     try:
+        if is_loopback_host(host) and not public:
+            def build_import(chunks_file: Path, book_id: str, progress: Callable[[int, int, str], None]) -> None:
+                engine.vectorizer.vectorize_book(chunks_file, book_id, on_progress=progress)
+
+            importer = ImportManager(Path(db_path).expanduser().resolve().parent / "product" / "imports", build_import)
         if warmup and books:
             # Load both retrieval models now rather than inside the first visitor's request.
             print("正在预热检索模型...", flush=True)
@@ -826,6 +826,8 @@ def run_api_server(
             port=port,
         )
     finally:
-        if importer is not None:
-            importer.close()
-        engine.close()
+        try:
+            if importer is not None:
+                importer.close()
+        finally:
+            engine.close()

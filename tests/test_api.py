@@ -847,6 +847,42 @@ class StreamStopTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_import_setup_failure_still_closes_the_created_engine(self):
+        fake_uvicorn = SimpleNamespace(run=MagicMock())
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch("rag_textbook_qa.indexing.list_indexed_books", return_value=[]),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
+                patch("rag_textbook_qa.api.app.ImportManager", side_effect=OSError("import setup failed")),
+                self.assertRaises(OSError),
+            ):
+                run_api_server(host="127.0.0.1", port=7860, db_path=Path(directory) / "db", warmup=False)
+            engine_class.return_value.close.assert_called_once_with()
+            fake_uvicorn.run.assert_not_called()
+
+    def test_import_cleanup_failure_still_closes_engine_after_imports(self):
+        fake_uvicorn = SimpleNamespace(run=MagicMock())
+        importer = MagicMock()
+        closed = []
+        def fail_import_close():
+            closed.append("imports")
+            raise OSError("cleanup failed")
+        importer.close.side_effect = fail_import_close
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch("rag_textbook_qa.indexing.list_indexed_books", return_value=[]),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
+                patch("rag_textbook_qa.api.app.ImportManager", return_value=importer),
+                self.assertRaises(OSError),
+            ):
+                engine_class.return_value.close.side_effect = lambda: closed.append("engine")
+                run_api_server(host="127.0.0.1", port=7860, db_path=Path(directory) / "db", warmup=False)
+            self.assertEqual(closed, ["imports", "engine"])
+
     def test_an_open_public_bind_is_refused_before_any_model_loads(self):
         with (
             patch.dict(os.environ, {}, clear=True),
