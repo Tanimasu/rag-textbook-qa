@@ -116,6 +116,18 @@ class ImportManager:
         job_id = uuid.uuid4().hex
         folder = self._folder(job_id)
         folder.mkdir(parents=True, exist_ok=False)
+        try:
+            return self._prepare_files(job_id, folder, book_id, name, extension, content, text, chunks)
+        except Exception:
+            # No prepared job was returned, so these files cannot be managed
+            # from the UI. Only remove this request's newly created folder.
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+
+    def _prepare_files(
+        self, job_id: str, folder: Path, book_id: str, name: str, extension: str,
+        content: bytes, text: str, chunks: list[Any] | None,
+    ) -> dict[str, Any]:
         (folder / ("source" + extension)).write_bytes(content)
         if chunks is None:
             markdown = folder / "parsed.md"

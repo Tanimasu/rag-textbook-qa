@@ -82,6 +82,16 @@ class ImportManagerTests(unittest.TestCase):
         self.manager.start(first["job_id"])
         self.manager._build.assert_called_once()
 
+    def test_invalid_schema_leaves_no_unmanageable_upload_and_preserves_other_jobs(self):
+        existing = self.prepare()
+        before = {path.name for path in self.root.iterdir()}
+        with self.assertRaisesRegex(ValueError, "缺少字段"):
+            self.manager.prepare("os", "bad.json", b'[{"content":"incomplete"}]')
+        self.assertEqual({path.name for path in self.root.iterdir()}, before)
+        self.assertEqual(self.manager.status(existing["job_id"]), existing)
+        self.assertEqual(self.manager.list_jobs()["unreadable_count"], 0)
+        self.builder.assert_not_called()
+
     def test_failed_build_redacts_details_and_can_retry_preserved_input(self):
         self.builder.side_effect = [RuntimeError("private-worker-token"), None]
         job = self.prepare()
