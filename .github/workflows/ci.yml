@@ -116,14 +116,17 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install locked browser test dependencies
-        run: uv sync --locked --only-group browser
+      - name: Install locked browser and application test dependencies
+        run: uv sync --locked --group browser --extra api
 
       - name: Install Chromium and system libraries
         run: uv run --no-sync python -m playwright install --with-deps chromium
 
       - name: Run public chat in a real browser with a local fake backend
         run: uv run --no-sync python tests/browser/public_chat_browser.py -v
+
+      - name: Verify complete study workflow over real HTTP with synthetic materials
+        run: uv run --no-sync python scripts/check_study_workflow.py --output artifacts/evaluations/ci/study-workflow
 
   package:
     name: Build and inspect package

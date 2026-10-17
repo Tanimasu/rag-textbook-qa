@@ -84,7 +84,8 @@ RAG_QA_BROWSER_CHANNEL=chrome .venv/bin/python scripts/check_study_workflow.py \
 ```
 
 也可以设置 `PYTHONPATH` 指向临时安装的 wheel 目录，检查发布包的相同流程。
-该脚本默认读取仓库中的操作系统片段；从其他位置运行时用 `--workspace` 指定仓库。
+2026-10-18 起，脚本默认使用内置合成资料，便于全新仓库与 CI 复跑；本页上面的历史验收确实使用了实际文件。
+重做实际片段检查时加上 `--chunks data/chunks/操作系统_mineru_chunks.json`；`--workspace` 控制报告中显示的相对路径。
 
 ## 尚未提供
 

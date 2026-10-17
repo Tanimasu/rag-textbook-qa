@@ -69,6 +69,19 @@ Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系�
 本机已有 Chrome 时可设置 `RAG_QA_BROWSER_CHANNEL=chrome`，省去浏览器下载。
 `--only-group browser` 创建的环境仅含浏览器测试依赖，运行核心测试前需重新执行上面的完整同步命令。
 
+CI 还会以真实 HTTP、Chrome / Chromium 和临时 Chroma 索引串联导入、问答、原文阅读、笔记、复习、导出与检索观察。
+使用内置的三个合成片段和本地模型模拟器，不依赖本机教材，也不读取已有索引。
+本机复跑这项检查需完整应用依赖：
+
+```bash
+uv sync --locked --extra api --group browser
+RAG_QA_BROWSER_CHANNEL=chrome uv run --no-sync python scripts/check_study_workflow.py \
+  --output artifacts/evaluations/study-workflow-new-run
+```
+
+输出目录必须不存在。需要复核实际操作系统片段时，可以额外传入 `--chunks data/chunks/操作系统_mineru_chunks.json`，
+原文件只读，报告区分合成资料与实际文件，并保存输入散列。
+
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
 聊天页的独立格式渲染位于 `api/static/markdown.js`，历史备份校验位于 `api/static/history-backup.js`，

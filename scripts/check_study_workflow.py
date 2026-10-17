@@ -35,22 +35,39 @@ from rag_textbook_qa.rag.engine import RAGEngine
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[1],
-                    help="Workspace containing data/chunks/操作系统_mineru_chunks.json")
+                    help="Workspace used to label an optional source file in the report")
+parser.add_argument("--chunks", type=Path,
+                    help="Optional real operating-system chunks JSON; default uses synthetic passages")
 parser.add_argument("--output", type=Path, required=True, help="New directory for logs, screenshots and exports")
 args = parser.parse_args()
 ROOT = args.workspace.expanduser().resolve()
 OUT = args.output.expanduser().resolve()
 if OUT.exists():
     raise RuntimeError('Use a new output directory; previous evidence is preserved')
-OUT.mkdir(parents=True)
-source_path = ROOT / 'data/chunks/操作系统_mineru_chunks.json'
-source_bytes = source_path.read_bytes()
+source_path = args.chunks.expanduser().resolve() if args.chunks else None
+if source_path is not None:
+    source_bytes = source_path.read_bytes()
+    all_rows = json.loads(source_bytes)
+    selected = [row for row in all_rows if '进程是' in row['content'] and len(row['content']) > 150][:3]
+    if len(selected) != 3:
+        parser.error("The supplied chunks must contain three process passages longer than 150 characters")
+    source_label = str(source_path.relative_to(ROOT)) if source_path.is_relative_to(ROOT) else str(source_path)
+else:
+    selected = []
+    for index, topic in enumerate(("进程与程序", "进程状态", "进程调度"), 1):
+        text = (f"这是用于软件流程验收的合成片段，主题为{topic}，不作为教材内容或正确答案。"
+                "进程是此测试的检索关键词。这里只检查上传、索引发布、引用定位和页面交互是否连接正确。"
+                "本次模型调用全部由本地确定性模拟器替代，不进行知识准确性或模型能力评测。")
+        selected.append({"chunk_id": f"fixture_p{index}", "chapter": "流程测试合成资料",
+                         "section_h2": topic, "content": text, "level": 2, "char_count": len(text),
+                         "has_code": False, "has_image": False})
+    source_bytes = json.dumps(selected, ensure_ascii=False).encode()
+    source_label = "builtin:study-workflow-v1"
 source_hash = hashlib.sha256(source_bytes).hexdigest()
-all_rows = json.loads(source_bytes)
-selected = [row for row in all_rows if '进程是' in row['content'] and len(row['content']) > 150][:3]
-assert len(selected) == 3
 payload = json.dumps(selected, ensure_ascii=False).encode()
-report = {'complete': False, 'version': rag_textbook_qa.__version__, 'package_path': str(Path(rag_textbook_qa.__file__).parent), 'source_file': str(source_path.relative_to(ROOT)),
+OUT.mkdir(parents=True)
+report = {'complete': False, 'version': rag_textbook_qa.__version__, 'package_path': str(Path(rag_textbook_qa.__file__).parent), 'source_file': source_label,
+          'synthetic_fixture': source_path is None,
           'source_sha256': source_hash, 'source_chunk_ids': [row['chunk_id'] for row in selected],
           'real_application_and_chroma': True, 'inference': 'local deterministic simulators',
           'paid_model_calls': 0, 'remote_worker_calls': 0, 'steps': []}
@@ -238,7 +255,8 @@ try:
                 sock.close()
                 importer.close()
                 assert not thread.is_alive(), 'Server did not stop'
-    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_hash
+    if source_path is not None:
+        assert hashlib.sha256(source_path.read_bytes()).hexdigest() == source_hash
 finally:
     report['application_sha256'] = {name: hashlib.sha256((Path(rag_textbook_qa.__file__).parent / name).read_bytes()).hexdigest() for name in ['api/app.py','api/imports.py','api/static/index.html','api/static/retrieval.html','api/static/imports.html','api/static/history-backup.js','api/static/markdown.js','rag/engine.py','rag/context.py','indexing/vectorizer.py']}
     (OUT/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2)+'\n')
