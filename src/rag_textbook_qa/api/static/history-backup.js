@@ -74,9 +74,15 @@
   function record(value) {
     if (!object(value) || typeof value.id !== "string" || !/^[\w-]{1,128}$/.test(value.id)
         || typeof value.created_at !== "string" || !Number.isFinite(Date.parse(value.created_at))) fail();
-    return { id: value.id, created_at: new Date(value.created_at).toISOString(),
+    const result = { id: value.id, created_at: new Date(value.created_at).toISOString(),
       query: string(value.query, 500, false), book_id: string(value.book_id, 503, false),
-      book_label: string(value.book_label, 200, false), favorite: boolean(value.favorite), result: snapshot(value.result) };
+      book_label: string(value.book_label, 200, false), favorite: boolean(value.favorite),
+      note: string(value.note ?? "", 4000), result: snapshot(value.result) };
+    if (value.note_updated_at != null) {
+      if (typeof value.note_updated_at !== "string" || !Number.isFinite(Date.parse(value.note_updated_at))) fail();
+      result.note_updated_at = new Date(value.note_updated_at).toISOString();
+    }
+    return result;
   }
   function normalize(value) {
     if (!object(value) || value.format !== "rag-qa-history" || value.version !== 1

@@ -108,6 +108,12 @@ main { flex: 1; padding: 16px 0; }
 .history-cleanup summary, .history-backup summary { cursor: pointer; }
 .history-backup label { display: block; margin-top: 10px; }
 .history-backup input[type=file] { width: 100%; font: inherit; margin-top: 6px; }
+.saved-note { margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 6px; }
+.saved-note h3 { margin: 0 0 4px; font-size: 14px; }
+.saved-note .note-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.note-editor { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.note-editor label { display: block; font-size: 13px; }
+.note-editor textarea { width: 100%; min-height: 110px; margin-top: 6px; resize: vertical; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 #history-status { font-size: 13px; }
 .answer.reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .answer-content { min-width: 0; }
@@ -209,6 +215,7 @@ footer details p { margin-top: 6px; text-align: left; }
       <label class="history-search"><input id="history-search" type="search" placeholder="搜索问题、回答或引用原文" aria-label="搜索历史问答"></label>
       <label>教材 <select id="history-book"><option value="">全部教材</option></select></label>
       <label><input id="history-favorites" type="checkbox">只看收藏</label>
+      <label><input id="history-notes" type="checkbox">有学习笔记</label>
     </div>
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
     <div id="history-list"></div>
@@ -496,7 +503,7 @@ footer details p { margin-top: 6px; text-align: left; }
     return `${fence}text\n${value}\n${fence}`;
   }
 
-  function answerRecord(query, result) {
+  function answerRecord(query, result, note = "") {
     const lines = ["# 教材问答记录", "", "## 问题", "", literalBlock(query), "",
       "## 回答", "", result.answer, "", "## 核对提示", "",
       "资料编号用于定位原文，请结合教材片段核对回答。", ""];
@@ -510,6 +517,7 @@ footer details p { margin-top: 6px; text-align: left; }
       lines.push(literalBlock(source.excerpt), "");
     }
     if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");
+    if (note) lines.push("## 我的学习笔记", "", literalBlock(note), "");
     return lines.join("\n");
   }
 
@@ -539,7 +547,8 @@ footer details p { margin-top: 6px; text-align: left; }
       const save = element("button", "action", "保存问答（含来源）");
       save.type = "button";
       save.addEventListener("click", () => {
-        const blob = new Blob([answerRecord(query, result)], { type: "text/markdown;charset=utf-8" });
+        const record = records.find(item => item.id === card.parentElement.dataset.historyId);
+        const blob = new Blob([answerRecord(query, result, record?.note || "")], { type: "text/markdown;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const link = element("a");
         link.href = url;
@@ -678,6 +687,7 @@ footer details p { margin-top: 6px; text-align: left; }
       card.dataset.readerTab = "source";
       [...card.querySelector(".reader-tabs").children].forEach((tab, index) => tab.setAttribute("aria-pressed", String(index === 1)));
       pane.selectCitation(citationId);
+      if (window.matchMedia("(max-width: 800px)").matches) pane.scrollIntoView({block: "start"});
       return;
     }
     const content = element("div", "answer-content");
@@ -790,6 +800,7 @@ footer details p { margin-top: 6px; text-align: left; }
     card.dataset.readerTab = "source";
     document.querySelector(".app").classList.add("has-reader");
     pane.selectCitation(citationId);
+    if (window.matchMedia("(max-width: 800px)").matches) pane.scrollIntoView({block: "start"});
   }
 
   // One IndexedDB object store, scoped by the browser to this origin. Transactions
@@ -824,6 +835,88 @@ footer details p { margin-top: 6px; text-align: left; }
     document.querySelector(".app").classList.remove("has-reader");
   }
 
+  function openSavedRecord(id, editNote = false) {
+    if (busy || historyWriting) return;
+    const record = records.find(item => item.id === id);
+    if (!record) return;
+    clearThread();
+    const card = showRecord(record);
+    rememberView();
+    $("history-panel").hidden = true;
+    $("toggle-history").setAttribute("aria-expanded", "false");
+    if (editNote) noteEditor(card, id);
+    thread.scrollIntoView({ block: "start" });
+  }
+
+  function noteView(id) {
+    const view = element("section", "saved-note");
+    view.dataset.noteId = id;
+    view.append(element("h3", "", "我的学习笔记"), element("div", "note-text"));
+    return view;
+  }
+
+  function noteEditor(card, id) {
+    const existing = card.querySelector(".note-editor");
+    if (existing) { existing.querySelector("textarea").focus(); return; }
+    const record = records.find(item => item.id === id);
+    if (!record) return;
+    const draftKey = `rag-qa-note-draft-${id}`;
+    let baseline = record.note || "", draft = null;
+    try { draft = JSON.parse(sessionGet(draftKey) || "null"); } catch { /* optional draft */ }
+    const editor = element("div", "note-editor"), label = element("label", "", "我的学习笔记");
+    const area = element("textarea"); area.maxLength = 4000;
+    area.setAttribute("aria-label", "编辑学习笔记");
+    area.value = typeof draft?.text === "string" ? draft.text : baseline;
+    if (typeof draft?.baseline === "string") baseline = draft.baseline;
+    label.append(area);
+    const status = element("p", "history-help", draft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
+    status.setAttribute("role", "status");
+    const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
+    save.type = cancelNote.type = "button";
+    actions.append(save, cancelNote); editor.append(label, status, actions); card.append(editor);
+    area.addEventListener("input", () => {
+      sessionSet(draftKey, JSON.stringify({ text: area.value, baseline }));
+      status.textContent = "草稿尚未保存；刷新后可在当前标签页重新打开笔记继续编辑。";
+    });
+    cancelNote.addEventListener("click", () => { editor.remove(); card.querySelector("[data-note]")?.focus({preventScroll: true}); });
+    save.addEventListener("click", async () => {
+      if (busy || historyWriting) return;
+      const text = area.value.trim();
+      if (text.length > 4000) { status.textContent = "学习笔记最多 4000 字。"; return; }
+      historyWriting = true; syncHistoryControls();
+      area.disabled = save.disabled = cancelNote.disabled = true;
+      try {
+        const outcome = await historyTransaction("readwrite", (store, done) => {
+          const request = store.get(id);
+          request.onsuccess = () => {
+            const latest = request.result;
+            if (!latest) { done("missing"); return; }
+            if ((latest.note || "") !== baseline) { done("conflict"); return; }
+            try {
+              store.put({ ...latest, note: text, note_updated_at: new Date().toISOString() });
+              done("saved");
+            } catch { store.transaction.abort(); }
+          };
+        });
+        if (outcome === "missing") status.textContent = "这条记录已被删除，笔记未保存。请先复制草稿。";
+        else {
+          await refreshHistory();
+          if (outcome === "conflict") status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。请复制草稿，再关闭并重新打开编辑。";
+          else {
+            baseline = text; area.value = text; sessionSet(draftKey, "");
+            status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
+          }
+        }
+      } catch { status.textContent = "笔记没有保存成功，草稿仍在。请检查浏览器存储后重试。"; }
+      finally {
+        historyWriting = false; syncHistoryControls();
+        area.disabled = save.disabled = cancelNote.disabled = false;
+      }
+    });
+    area.focus({preventScroll: true});
+    editor.scrollIntoView({block: "nearest"});
+  }
+
   function historyActions(id, view = false) {
     const actions = element("div", "actions history-actions");
     actions.dataset.record = id;
@@ -831,17 +924,7 @@ footer details p { margin-top: 6px; text-align: left; }
       const open = element("button", "action", "查看原回答");
       open.type = "button";
       open.dataset.historyView = id;
-      open.addEventListener("click", () => {
-        if (busy || historyWriting) return;
-        const record = records.find(item => item.id === id);
-        if (!record) return;
-        clearThread();
-        showRecord(record);
-        rememberView();
-        $("history-panel").hidden = true;
-        $("toggle-history").setAttribute("aria-expanded", "false");
-        thread.scrollIntoView({ block: "start" });
-      });
+      open.addEventListener("click", () => openSavedRecord(id));
       actions.append(open);
     }
     const favorite = element("button", "action");
@@ -854,12 +937,19 @@ footer details p { margin-top: 6px; text-align: left; }
       };
     }));
     const remove = element("button", "action", "删除记录");
+    const note = element("button", "action", "学习笔记");
+    note.type = "button"; note.dataset.note = id;
+    note.addEventListener("click", () => {
+      if (busy || historyWriting) return;
+      if (view) openSavedRecord(id, true);
+      else noteEditor(actions.closest(".answer"), id);
+    });
     remove.type = "button";
     remove.addEventListener("click", () => {
       if (busy || historyWriting || !window.confirm("删除这条问答及引用快照？无法撤销。")) return;
       changeHistory(store => store.delete(id));
     });
-    actions.append(favorite, remove);
+    actions.append(favorite, note, remove);
     return actions;
   }
 
@@ -869,6 +959,7 @@ footer details p { margin-top: 6px; text-align: left; }
       const favorite = actions.querySelector("[data-favorite]");
       favorite.textContent = record?.favorite ? "★ 已收藏" : "☆ 收藏";
       favorite.setAttribute("aria-pressed", String(!!record?.favorite));
+      actions.querySelector("[data-note]").textContent = record?.note ? "编辑笔记" : "学习笔记";
       for (const button of actions.querySelectorAll("button")) button.disabled = busy || historyWriting || !record;
     }
     $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
@@ -876,6 +967,12 @@ footer details p { margin-top: 6px; text-align: left; }
     $("history-backup-all").disabled = busy || historyWriting || !records.length;
     $("history-backup-filtered").disabled = busy || historyWriting || !filteredRecords.length;
     $("history-restore").disabled = busy || historyWriting || !restoreRecords?.length || !historyDB;
+    for (const view of document.querySelectorAll(".saved-note")) {
+      const record = records.find(item => item.id === view.dataset.noteId);
+      view.hidden = !record?.note;
+      view.querySelector(".note-text").textContent = record?.note || "";
+    }
+    for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
   }
 
   function showRecord(record) {
@@ -885,8 +982,11 @@ footer details p { margin-top: 6px; text-align: left; }
     finish(card, record.result, record.query);
     card.prepend(element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()} · 已保存的回答`));
     card.append(historyActions(record.id));
+    card.append(noteView(record.id));
     if (record.result.status === "failed") addRetry(card, record.query, record.book_id);
     visibleIds.push(record.id);
+    syncHistoryControls();
+    return card;
   }
 
   function renderHistory() {
@@ -899,7 +999,8 @@ footer details p { margin-top: 6px; text-align: left; }
     const matches = records.filter(record => {
       if (bookFilter.value && record.book_id !== bookFilter.value) return false;
       if ($("history-favorites").checked && !record.favorite) return false;
-      const text = [record.query, record.result.answer || "", record.book_label,
+      if ($("history-notes").checked && !record.note) return false;
+      const text = [record.query, record.result.answer || "", record.book_label, record.note || "",
         ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
         .join("\n").toLocaleLowerCase();
       return keywords.every(keyword => text.includes(keyword));
@@ -915,6 +1016,7 @@ footer details p { margin-top: 6px; text-align: left; }
         element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`),
         element("p", "", (record.result.answer || record.result.message || "仅教材片段").slice(0, 100)),
         historyActions(record.id, true));
+      if (record.note) item.append(element("p", "", "笔记：" + record.note.slice(0, 100)));
       list.append(item);
     }
     $("history-more").hidden = matches.length <= historyLimit;
@@ -971,7 +1073,7 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     const id = crypto.randomUUID?.() || `${Date.now()}-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
     const record = { id, created_at: new Date().toISOString(),
-      query, book_id: bookId, book_label: bookLabel, favorite: false, result: snapshot };
+      query, book_id: bookId, book_label: bookLabel, favorite: false, note: "", result: snapshot };
     const notice = element("div", "history-meta", "正在保存到此浏览器…");
     card.append(notice);
     const persist = async () => {
@@ -983,6 +1085,7 @@ footer details p { margin-top: 6px; text-align: left; }
         rememberView();
         notice.textContent = "已保存到此浏览器";
         card.append(historyActions(record.id));
+        card.append(noteView(record.id));
         syncHistoryControls();
       } catch {
         notice.replaceChildren(element("span", "", "未能保存历史记录，可能是浏览器禁用存储或空间不足。可导出本题后清理空间。 "));
@@ -1331,7 +1434,7 @@ footer details p { margin-top: 6px; text-align: left; }
       $("history-search").focus();
     }
   });
-  for (const id of ["history-search", "history-book", "history-favorites"]) {
+  for (const id of ["history-search", "history-book", "history-favorites", "history-notes"]) {
     $(id).addEventListener(id === "history-search" ? "input" : "change", () => {
       historyLimit = 20;
       renderHistory();
