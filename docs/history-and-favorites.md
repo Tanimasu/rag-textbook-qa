@@ -46,7 +46,7 @@ Streamlit 仍作为调试工作台，本版历史功能只在 FastAPI 聊天页�
 无效记录、重复编号、不支持的备份版本会拒绝整批文件；写入采用单个事务，空间不足等失败不会留下半份新增记录。
 备份本身不认证回答质量或来源真实性，请只导入自己信任的文件。
 
-备份格式为 `format="rag-qa-history"`、`version=1`、`exported_at` 和 `records`。
+备份格式为 `format="rag-qa-history"`、`version=2`、`exported_at` 和 `records`，兼容恢复 `version=1` 的旧备份。
 记录在恢复时按公开字段重新构建，不将文件里的额外请求头、提示词或反馈编号写入历史库。
 
 ## 学习笔记
@@ -77,3 +77,4 @@ RAG_QA_BROWSER_CHANNEL=chrome uv run --no-sync python tests/browser/public_chat_
 
 原文对照、检索观察台和教材导入已分别提供，见 [原文阅读](reading.md)、
 [检索观察台](retrieval-observatory.md) 和 [教材导入](textbook-import.md)。实验性上下文策略继续保持实验状态。
+收藏还可以进入[复习模式](favorite-review.md)，先回忆问题，再看原回答和引用。

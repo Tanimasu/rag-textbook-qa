@@ -114,6 +114,10 @@ main { flex: 1; padding: 16px 0; }
 .note-editor { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .note-editor label { display: block; font-size: 13px; }
 .note-editor textarea { width: 100%; min-height: 110px; margin-top: 6px; resize: vertical; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.review-panel { padding: 14px 16px; margin-top: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.review-panel h2 { margin: 0; font-size: 16px; }
+.review-panel .question { font-size: 17px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
+.review-controls { position: sticky; bottom: 0; padding: 12px 0; background: var(--bg); display: flex; flex-wrap: wrap; gap: 8px; }
 #history-status { font-size: 13px; }
 .answer.reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .answer-content { min-width: 0; }
@@ -220,6 +224,12 @@ footer details p { margin-top: 6px; text-align: left; }
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
     <div id="history-list"></div>
     <button class="action" id="history-more" type="button" hidden>显示更多</button>
+    <div class="history-cleanup">
+      <p class="history-help" id="history-review-count"></p>
+      <label class="history-help"><input id="history-review-all" type="checkbox">包括未到期收藏</label>
+      <button class="action" id="history-review-start" type="button" disabled>复习收藏</button>
+      <p class="history-help">按当前筛选，先回忆问题，再展开已保存的回答和教材引用。按自评安排下次复习日期，不调用模型。</p>
+    </div>
     <details class="history-backup">
       <summary>备份与恢复</summary>
       <p class="history-help">JSON 备份包含问题、回答、引用和收藏，下载到你选择的位置。恢复时只新增记录，相同编号保留当前浏览器的版本。</p>
@@ -241,6 +251,17 @@ footer details p { margin-top: 6px; text-align: left; }
     </details>
   </section>
 
+  <section id="review-panel" class="review-panel" aria-labelledby="review-title" hidden>
+    <h2 id="review-title">复习收藏</h2>
+    <p class="history-help" id="review-meta" role="status"></p>
+    <div class="question" id="review-question"></div>
+    <div class="actions">
+      <button class="action" id="review-reveal" type="button">显示回答与引用</button>
+      <button class="action" id="review-skip" type="button">跳过这一题</button>
+      <button class="action" id="review-end" type="button">结束复习</button>
+    </div>
+  </section>
+
   <main id="thread">
     <div class="empty" id="empty">
       <div>可以问概念、比较或原理类的问题，回答会标注它依据的教材片段。</div>
@@ -254,6 +275,10 @@ footer details p { margin-top: 6px; text-align: left; }
     </div>
   </main>
 
+  <div id="review-controls" class="review-controls" hidden>
+    <button class="action" id="review-again" type="button">还不熟 · 明天复习</button>
+    <button class="action" id="review-familiar" type="button">已熟悉 · 一周后复习</button>
+  </div>
   <div class="composer">
     <form id="form">
       <textarea id="input" rows="1" maxlength="500" placeholder="输入教材问题…" aria-label="输入教材问题" aria-describedby="composer-hint"></textarea>
@@ -279,11 +304,13 @@ footer details p { margin-top: 6px; text-align: left; }
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
   const VIEW_KEY = "rag-qa-visible-history";
+  const REVIEW_KEY = "rag-qa-review-session";
   let busy = false, activeController = null;
   let historyDB = null, historyLoading = true, historyWriting = false;
   let records = [], visibleIds = [], historyLimit = 20;
   let filteredRecords = [], restoreRecords = null, backupReading = 0;
   const answerSnapshots = new WeakMap();
+  let reviewState = null, reviewRevealed = false;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -973,6 +1000,14 @@ footer details p { margin-top: 6px; text-align: left; }
       view.querySelector(".note-text").textContent = record?.note || "";
     }
     for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
+    const due = filteredRecords.filter(record => record.favorite && (!record.review || Date.parse(record.review.next_review_at) <= Date.now()));
+    const candidates = $("history-review-all").checked ? filteredRecords.filter(record => record.favorite) : due;
+    $("history-review-count").textContent = `当前筛选中有 ${filteredRecords.filter(record => record.favorite).length} 条收藏，${due.length} 条待复习；每轮最多 20 条。`;
+    $("history-review-start").disabled = busy || historyWriting || !candidates.length;
+    for (const id of ["review-again", "review-familiar"]) $(id).disabled = busy || historyWriting || !reviewRevealed;
+    for (const id of ["review-reveal", "review-skip", "review-end"]) $(id).disabled = busy || historyWriting;
+    for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = busy || !!reviewState;
+    if (reviewState) clear.hidden = true;
   }
 
   function showRecord(record) {
@@ -1013,7 +1048,8 @@ footer details p { margin-top: 6px; text-align: left; }
     for (const record of matches.slice(0, historyLimit)) {
       const item = element("article", "history-item");
       item.append(element("h3", "", record.query),
-        element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`),
+        element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`
+          + (record.review ? ` · 下次复习 ${new Date(record.review.next_review_at).toLocaleDateString()}` : "")),
         element("p", "", (record.result.answer || record.result.message || "仅教材片段").slice(0, 100)),
         historyActions(record.id, true));
       if (record.note) item.append(element("p", "", "笔记：" + record.note.slice(0, 100)));
@@ -1128,6 +1164,16 @@ footer details p { margin-top: 6px; text-align: left; }
         if (record) showRecord(record);
       }
       rememberView();
+      try {
+        const saved = JSON.parse(sessionGet(REVIEW_KEY) || "null");
+        if (saved && Array.isArray(saved.ids) && saved.ids.length <= 20
+            && saved.ids.every(id => typeof id === "string") && Number.isInteger(saved.index)
+            && saved.index >= 0 && saved.index < saved.ids.length && Number.isInteger(saved.completed)
+            && saved.completed >= 0 && saved.completed <= saved.index) {
+          reviewState = saved;
+          reviewQuestion();
+        }
+      } catch { /* optional review session */ }
       syncHistoryControls();
     } catch {
       historyError("此浏览器暂时无法读取或保存历史记录。仍可提问并导出 Markdown；请检查网站存储权限后刷新。");
@@ -1136,6 +1182,66 @@ footer details p { margin-top: 6px; text-align: left; }
       historyLoading = false;
       send.disabled = busy || bookSelect.disabled;
     }
+  }
+
+  function endReview() {
+    const completed = reviewState?.completed || 0;
+    reviewState = null; reviewRevealed = false; sessionSet(REVIEW_KEY, "");
+    $("review-panel").hidden = $("review-controls").hidden = true;
+    document.querySelector(".composer").hidden = false;
+    clearThread();
+    $("history-status").className = "history-help";
+    $("history-status").textContent = `本轮已复习 ${completed} 条收藏，下次可从“历史与收藏”继续。`;
+    $("history-status").hidden = false;
+    syncHistoryControls();
+    input.focus({preventScroll: true});
+  }
+
+  function reviewQuestion() {
+    if (!reviewState) return;
+    while (reviewState.index < reviewState.ids.length
+        && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewState.index++;
+    if (reviewState.index >= reviewState.ids.length) { endReview(); return; }
+    const record = records.find(item => item.id === reviewState.ids[reviewState.index]);
+    reviewRevealed = false;
+    clearThread(); empty.hidden = true;
+    $("history-panel").hidden = true;
+    $("toggle-history").setAttribute("aria-expanded", "false");
+    document.querySelector(".composer").hidden = true;
+    $("review-panel").hidden = false;
+    $("review-controls").hidden = true;
+    $("review-question").hidden = false;
+    $("review-question").textContent = record.query;
+    $("review-meta").textContent = `${reviewState.index + 1} / ${reviewState.ids.length} · ${record.book_label} · 已复习 ${reviewState.completed} 条。先回忆，再展开原回答核对。`;
+    $("review-reveal").hidden = false;
+    sessionSet(REVIEW_KEY, JSON.stringify(reviewState));
+    syncHistoryControls();
+    $("review-panel").scrollIntoView({block: "start"});
+  }
+
+  async function rateReview(rating, days) {
+    if (!reviewState || !reviewRevealed || busy || historyWriting) return;
+    const id = reviewState.ids[reviewState.index];
+    historyWriting = true; syncHistoryControls();
+    try {
+      const saved = await historyTransaction("readwrite", (store, done) => {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          if (!request.result) { done(false); return; }
+          const now = new Date(), next = new Date(now);
+          next.setDate(next.getDate() + days);
+          const review = { last_reviewed_at: now.toISOString(), next_review_at: next.toISOString(),
+            count: Math.min((request.result.review?.count || 0) + 1, Number.MAX_SAFE_INTEGER), last_rating: rating };
+          try { store.put({...request.result, review}); done(true); }
+          catch { store.transaction.abort(); }
+        };
+      });
+      await refreshHistory();
+      if (saved) reviewState.completed++;
+      reviewState.index++;
+      reviewQuestion();
+    } catch { $("review-meta").textContent = "复习进度未保存，请检查浏览器存储后重试；当前问题仍保留。"; }
+    finally { historyWriting = false; syncHistoryControls(); }
   }
 
   function parseEvent(frame) {
@@ -1178,7 +1284,7 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function ask() {
     const query = input.value.trim();
-    if (!query || busy || historyLoading || historyWriting || bookSelect.disabled) return;
+    if (!query || busy || historyLoading || historyWriting || reviewState || bookSelect.disabled) return;
     const bookId = bookSelect.value;
     const bookLabel = bookSelect.selectedOptions[0]?.textContent || bookId;
     if (!bookId) {
@@ -1441,6 +1547,34 @@ footer details p { margin-top: 6px; text-align: left; }
     });
   }
   $("history-more").addEventListener("click", () => { historyLimit += 20; renderHistory(); });
+  $("history-review-all").addEventListener("change", syncHistoryControls);
+  $("history-review-start").addEventListener("click", () => {
+    if (busy || historyWriting) return;
+    const pool = filteredRecords.filter(record => record.favorite
+      && ($("history-review-all").checked || !record.review || Date.parse(record.review.next_review_at) <= Date.now()));
+    pool.sort((a, b) => (Date.parse(a.review?.next_review_at || a.created_at) - Date.parse(b.review?.next_review_at || b.created_at)));
+    if (!pool.length) return;
+    reviewState = {ids: pool.slice(0, 20).map(record => record.id), index: 0, completed: 0};
+    reviewQuestion();
+  });
+  $("review-reveal").addEventListener("click", () => {
+    if (!reviewState || busy || historyWriting) return;
+    const record = records.find(item => item.id === reviewState.ids[reviewState.index]);
+    if (!record) { reviewState.index++; reviewQuestion(); return; }
+    clearThread(); showRecord(record); rememberView();
+    reviewRevealed = true;
+    $("review-question").hidden = $("review-reveal").hidden = true;
+    $("review-controls").hidden = false;
+    $("review-meta").textContent = `${reviewState.index + 1} / ${reviewState.ids.length} · 对照原文和自己的笔记，再选择下次复习时间。`;
+    syncHistoryControls();
+  });
+  $("review-skip").addEventListener("click", () => {
+    if (!reviewState || busy || historyWriting) return;
+    reviewState.index++; reviewQuestion();
+  });
+  $("review-end").addEventListener("click", endReview);
+  $("review-again").addEventListener("click", () => rateReview("again", 1));
+  $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
   async function exportHistory(filtered) {
     try {
       await refreshHistory();

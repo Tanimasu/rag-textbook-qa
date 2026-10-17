@@ -82,10 +82,21 @@
       if (typeof value.note_updated_at !== "string" || !Number.isFinite(Date.parse(value.note_updated_at))) fail();
       result.note_updated_at = new Date(value.note_updated_at).toISOString();
     }
+    if (value.review != null) {
+      const review = value.review;
+      if (!object(review) || !Number.isSafeInteger(review.count) || review.count < 1
+          || !["again", "familiar"].includes(review.last_rating)) fail();
+      for (const key of ["last_reviewed_at", "next_review_at"]) {
+        if (typeof review[key] !== "string" || !Number.isFinite(Date.parse(review[key]))) fail();
+      }
+      result.review = {count: review.count, last_rating: review.last_rating,
+        last_reviewed_at: new Date(review.last_reviewed_at).toISOString(),
+        next_review_at: new Date(review.next_review_at).toISOString()};
+    }
     return result;
   }
   function normalize(value) {
-    if (!object(value) || value.format !== "rag-qa-history" || value.version !== 1
+    if (!object(value) || value.format !== "rag-qa-history" || ![1, 2].includes(value.version)
         || !Array.isArray(value.records)) fail();
     if (value.records.length > 5000) throw new Error("单个备份最多 5000 条记录，请按教材筛选后分批备份。");
     const records = value.records.map(record);
@@ -98,8 +109,8 @@
     catch (error) { if (error instanceof SyntaxError) fail(); throw error; }
   }
   function serialize(records) {
-    const canonical = normalize({ format: "rag-qa-history", version: 1, records });
-    const text = JSON.stringify({ format: "rag-qa-history", version: 1,
+    const canonical = normalize({ format: "rag-qa-history", version: 2, records });
+    const text = JSON.stringify({ format: "rag-qa-history", version: 2,
       exported_at: new Date().toISOString(), records: canonical }, null, 2);
     if (new Blob([text]).size > MAX_BYTES) throw new Error("备份超过 64 MB，请按教材筛选后分批备份。");
     return text;

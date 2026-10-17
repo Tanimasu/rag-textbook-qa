@@ -922,7 +922,7 @@ class PublicChatBrowserTests(unittest.TestCase):
           const badCitation = structuredClone(record); badCitation.result.sources[0].citation_id = 0;
           const badTiming = structuredClone(record); badTiming.result.timing.total_seconds = -1;
           const secret = structuredClone(record); secret.result.answer_id = 'private-answer-id'; secret.result.prompt = 'private-prompt';
-          return { rejected:[attempt({ ...envelope([record]), version:2 }), attempt(envelope([badCitation])), attempt(envelope([badTiming]))],
+          return { rejected:[attempt({ ...envelope([record]), version:3 }), attempt(envelope([badCitation])), attempt(envelope([badTiming]))],
             exported:RagHistoryBackup.serialize([secret]) };
         }""", original)
         self.assertEqual(result["rejected"], [True, True, True])
@@ -1013,6 +1013,78 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".reader select")).to_have_value("10")
         self.expect(self.page.locator(".reader-heading")).to_be_in_viewport()
         self.expect(self.page.locator(".reader-quote")).to_be_visible()
+
+    def test_review_hides_answer_until_reveal_then_schedules_next_review_without_model(self) -> None:
+        self.open_page()
+        self.saved_answer("需要复习的进程问题")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.expect(self.page.locator("#review-question")).to_have_text("需要复习的进程问题")
+        self.expect(self.page.locator(".answer")).to_have_count(0)
+        self.expect(self.page.locator(".composer")).to_be_hidden()
+        self.page.locator("#review-reveal").click()
+        self.expect(self.page.locator(".answer .body")).to_contain_text("进程")
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.expect(self.page.locator("#history-status")).to_contain_text("已复习 1 条")
+        self.expect(self.page.locator(".composer")).to_be_visible()
+        saved = self.history_records()[0]
+        self.assertEqual(saved["review"]["last_rating"], "again")
+        self.assertEqual(saved["review"]["count"], 1)
+        self.assertTrue(self.page.evaluate("value => Date.parse(value.next_review_at) > Date.parse(value.last_reviewed_at)", saved["review"]))
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-review-start")).to_be_disabled()
+        self.page.locator("#history-review-all").check()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.page.locator("#review-familiar").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertEqual(self.history_records()[0]["review"]["count"], 2)
+        self.assertEqual(self.history_records()[0]["review"]["last_rating"], "familiar")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_review_session_restores_next_question_after_refresh_and_skip_does_not_grade(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page()
+        for question in ("第一条收藏", "第二条收藏"):
+            self.saved_answer(question)
+            self.page.locator(".answer").last.get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").last.get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-review-start").click()
+        self.page.locator("#review-reveal").click()
+        self.page.locator("#review-again").click()
+        self.expect(self.page.locator("#review-meta")).to_contain_text("2 / 2")
+        question = self.page.locator("#review-question").inner_text()
+        self.page.reload()
+        self.expect(self.page.locator("#review-question")).to_have_text(question)
+        self.expect(self.page.locator(".answer")).to_have_count(0)
+        self.expect(self.page.locator("#review-meta")).to_contain_text("已复习 1 条")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("review-mobile.png")
+        self.page.locator("#review-skip").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertEqual(sum(bool(row.get("review")) for row in self.history_records()), 1)
+        canonical = self.page.evaluate("rows => JSON.parse(RagHistoryBackup.serialize(rows))", self.history_records())
+        self.assertEqual(canonical["version"], 2)
+        self.assertEqual(sum(bool(row.get("review")) for row in canonical["records"]), 1)
+
+    def test_review_respects_book_filter_and_end_does_not_mark_question(self) -> None:
+        self.open_page()
+        for query, book in (("操作系统收藏", "os"), ("数据库收藏", "database")):
+            self.saved_answer(query, book)
+            self.page.locator(".answer").last.get_by_role("button", name="☆ 收藏").click()
+            self.expect(self.page.locator(".answer").last.get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-book").select_option("database")
+        self.page.locator("#history-review-start").click()
+        self.expect(self.page.locator("#review-question")).to_have_text("数据库收藏")
+        self.expect(self.page.locator("#review-meta")).to_contain_text("1 / 1")
+        self.page.locator("#review-end").click()
+        self.expect(self.page.locator("#review-panel")).to_be_hidden()
+        self.assertFalse(any(row.get("review") for row in self.history_records()))
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()
