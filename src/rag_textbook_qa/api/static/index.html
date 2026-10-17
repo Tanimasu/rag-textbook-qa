@@ -1303,6 +1303,7 @@ footer details p { margin-top: 6px; text-align: left; }
           if (!request.result?.favorite) { done(false); return; }
           const now = new Date(), next = new Date(now);
           next.setDate(next.getDate() + days);
+          next.setHours(0, 0, 0, 0);
           const review = { last_reviewed_at: now.toISOString(), next_review_at: next.toISOString(),
             count: Math.min((request.result.review?.count || 0) + 1, Number.MAX_SAFE_INTEGER), last_rating: rating };
           try { store.put({...request.result, review}); done(true); }

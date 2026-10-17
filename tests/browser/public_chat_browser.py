@@ -15,6 +15,7 @@ import threading
 import unittest
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -333,6 +334,7 @@ class PublicChatBrowserTests(unittest.TestCase):
                 self.external_requests.append(route.request.url)
                 route.abort()
 
+        self.local_only = local_only
         self.context.route("**/*", local_only)
 
     def tearDown(self) -> None:
@@ -1129,6 +1131,39 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#review-end").click()
         self.expect(self.page.locator("#review-panel")).to_be_hidden()
         self.assertFalse(any(row.get("review") for row in self.history_records()))
+
+    def test_review_is_due_from_start_of_target_local_day_including_dst_change(self) -> None:
+        for zone, days, rating, initial, target in (
+            ("Australia/Perth", 1, "#review-again", "2026-10-18T22:15:00+08:00", "2026-10-19T00:00:00+08:00"),
+            ("America/New_York", 7, "#review-familiar", "2026-10-31T22:15:00-04:00", "2026-11-07T00:00:00-05:00"),
+        ):
+            with self.subTest(zone=zone, days=days):
+                context = self.browser.new_context(timezone_id=zone)
+                context.route("**/*", self.local_only)
+                original_page = self.page
+                try:
+                    self.page = context.new_page()
+                    self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+                    start = datetime.fromisoformat(initial)
+                    self.page.clock.set_fixed_time(start)
+                    self.open_page()
+                    self.saved_answer("晚上复习后，目标日期早上应已到期")
+                    self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+                    self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+                    self.page.locator("#toggle-history").click()
+                    self.page.locator("#history-review-start").click()
+                    self.page.locator("#review-reveal").click()
+                    self.page.locator(rating).click()
+                    self.expect(self.page.locator("#review-panel")).to_be_hidden()
+                    scheduled = self.history_records()[0]["review"]["next_review_at"]
+                    expected = datetime.fromisoformat(target)
+                    self.assertEqual(datetime.fromisoformat(scheduled), expected)
+                    self.page.clock.set_fixed_time(expected.replace(hour=8))
+                    self.page.locator("#toggle-history").click()
+                    self.expect(self.page.locator("#history-review-start")).to_be_enabled()
+                finally:
+                    self.page = original_page
+                    context.close()
 
     def test_opening_another_history_record_ends_review_before_showing_its_answer(self) -> None:
         self.open_page()
