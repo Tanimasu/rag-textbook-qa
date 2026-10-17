@@ -9,6 +9,7 @@ import shutil
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ class ImportManager:
         self._lock = threading.RLock()
         self._active: set[str] = set()
         self._threads: list[threading.Thread] = []
+        self._pending_metadata: dict[str, dict[str, Any]] = {}
 
     def _folder(self, job_id: str) -> Path:
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -48,10 +50,23 @@ class ImportManager:
         temporary = folder / "job.tmp"
         temporary.write_text(json.dumps(job, ensure_ascii=False, allow_nan=False), encoding="utf-8")
         temporary.replace(folder / "job.json")
+        self._pending_metadata.pop(job["job_id"], None)
+
+    def _save_terminal(self, job: dict[str, Any]) -> None:
+        try:
+            self._write(job)
+        except Exception as exc:  # noqa: BLE001 - retain the known outcome, not private errors
+            print(f"导入进度保存失败: {type(exc).__name__}", flush=True)
+            self._pending_metadata[job["job_id"]] = dict(job)
 
     def _load(self, job_id: str) -> dict[str, Any]:
+        folder = self._folder(job_id)
+        if job_id in self._pending_metadata:
+            if not folder.is_dir():
+                raise LookupError("没有这个导入任务")
+            return dict(self._pending_metadata[job_id])
         try:
-            job = loads_strict((self._folder(job_id) / "job.json").read_text(encoding="utf-8"))
+            job = loads_strict((folder / "job.json").read_text(encoding="utf-8"))
             if not isinstance(job, dict) or job.get("job_id") != job_id:
                 raise ValueError("导入任务记录不完整")
             return job
@@ -60,10 +75,16 @@ class ImportManager:
 
     def status(self, job_id: str) -> dict[str, Any]:
         with self._lock:
+            if job_id in self._pending_metadata:
+                with suppress(Exception):
+                    self._write(self._load(job_id))
             job = self._load(job_id)
             if job["state"] == "building" and job_id not in self._active:
                 job.update(state="interrupted", message="任务执行已中断，未确认完成；请检查教材列表后重试。")
                 self._write(job)
+            if job_id in self._pending_metadata:
+                return {**job, "metadata_persisted": False,
+                        "message": job["message"] + " 进度未能保存到磁盘；当前结果仅由本次服务保留，请恢复存储后重新读取进度。"}
             return job
 
     def list_jobs(self, limit: int = 20) -> dict[str, Any]:
@@ -93,14 +114,18 @@ class ImportManager:
             if job_id in self._active:
                 raise ImportBusyError("任务仍在建立索引，不能清理导入副本")
             shutil.rmtree(self._folder(job_id))
+            self._pending_metadata.pop(job_id, None)
 
     def prepare(self, book_id: str, filename: str, content: bytes) -> dict[str, Any]:
         if book_id not in BOOK_LABELS:
             raise ValueError("请选择支持的教材")
-        name = filename.replace("\\", "/").rsplit("/", 1)[-1][:160]
-        extension = Path(name).suffix.lower()
+        name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+        suffix = Path(name).suffix
+        extension = suffix.lower()
         if extension not in {".md", ".json"}:
             raise ValueError("本版支持 UTF-8 Markdown（.md）或已有分块 JSON（.json）")
+        if len(name) > 160:
+            name = name[:160 - len(suffix)] + suffix
         if not content or len(content) > MAX_UPLOAD_BYTES:
             raise ValueError("教材文件不能为空，且不能超过 8 MB")
         try:
@@ -159,7 +184,7 @@ class ImportManager:
         with self._lock:
             job = self._load(job_id)
             if job["state"] in {"complete", "building"} and (job["state"] == "complete" or job_id in self._active):
-                return job
+                return self.status(job_id)
             if self._active:
                 raise ImportBusyError("另一个教材正在建立索引，请等待它完成")
             chunks_file = self._folder(job_id) / "chunks.json"
@@ -170,14 +195,23 @@ class ImportManager:
             job.update(state="building", stage="embedding", completed_chunks=0, message="开始建立索引…")
             self._write(job)
             self._active.add(job_id)
-            thread = threading.Thread(target=self._run, args=(job_id,), daemon=True,
-                                      name=f"textbook-import-{job_id[:8]}")
-            self._threads = [previous for previous in self._threads if previous.is_alive()]
-            self._threads.append(thread)
-            thread.start()
+            thread = None
+            try:
+                thread = threading.Thread(target=self._run, args=(dict(job),), daemon=True,
+                                          name=f"textbook-import-{job_id[:8]}")
+                self._threads = [previous for previous in self._threads if previous.is_alive()]
+                self._threads.append(thread)
+                thread.start()
+            except Exception:
+                self._active.discard(job_id)
+                self._threads = [previous for previous in self._threads if previous is not thread]
+                job.update(state="failed", message="索引任务暂时无法启动，上传与预览已保留，可稍后重试。")
+                self._save_terminal(job)
+                raise
             return job
 
-    def _run(self, job_id: str) -> None:
+    def _run(self, job: dict[str, Any]) -> None:
+        job_id = job["job_id"]
         def progress(done: int, total: int, stage: str) -> None:
             with self._lock:
                 job = self._load(job_id)
@@ -185,19 +219,22 @@ class ImportManager:
                            message="正在发布索引…" if stage == "publishing" else "正在向量化教材片段…")
                 self._write(job)
         try:
-            job = self.status(job_id)
-            self._build(self._folder(job_id) / "chunks.json", job["book_id"], progress)
+            try:
+                self._build(self._folder(job_id) / "chunks.json", job["book_id"], progress)
+            except Exception as exc:  # noqa: BLE001 - do not expose model or filesystem details
+                print(f"教材导入失败: {type(exc).__name__}", flush=True)
+                outcome = "failed"
+            else:
+                outcome = "complete"
             with self._lock:
-                job = self._load(job_id)
-                job.update(state="complete", stage="complete", completed_chunks=job["total_chunks"],
-                           message="索引已建立，可以返回聊天选择这本教材。")
-                self._write(job)
-        except Exception as exc:  # noqa: BLE001 - do not expose model or filesystem details
-            print(f"教材导入失败: {type(exc).__name__}", flush=True)
-            with self._lock:
-                job = self._load(job_id)
-                job.update(state="failed", message="建索引失败，原始上传和分块已保留。可检查服务配置后重试。")
-                self._write(job)
+                with suppress(Exception):
+                    job = self._load(job_id)
+                if outcome == "complete":
+                    job.update(state="complete", stage="complete", completed_chunks=job["total_chunks"],
+                               message="索引已建立，可以返回聊天选择这本教材。")
+                else:
+                    job.update(state="failed", message="建索引失败，原始上传和分块已保留。可检查服务配置后重试。")
+                self._save_terminal(job)
         finally:
             with self._lock:
                 self._active.discard(job_id)

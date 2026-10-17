@@ -2,8 +2,10 @@
 
 import contextlib
 import io
+import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -28,6 +30,40 @@ class OfflineEmbedding:
 
 
 class StudyWorkflowTests(unittest.TestCase):
+    def test_published_index_stays_usable_when_completion_metadata_cannot_be_written(self):
+        with (TemporaryIndexDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO())):
+            root = Path(temporary)
+            with RAGEngine(db_path=root / "db", embedding_provider=OfflineEmbedding(),
+                           enable_llm=False, enable_reranker=False, enable_hyde=False,
+                           verbose=False) as engine:
+                builds = []
+                def build(path, book, progress):
+                    builds.append(book)
+                    engine.vectorizer.vectorize_book(path, book, on_progress=progress)
+                manager = ImportManager(root / "imports", build)
+                try:
+                    job = manager.prepare("os", "fixture.md", ("# 进程\n" + "进程是本地流程测试的关键词。" * 20).encode())
+                    chunks = json.loads((manager.root / job["job_id"] / "chunks.json").read_text())
+                    original_write = manager._write
+                    def fail_completion(value):
+                        if value["state"] == "complete":
+                            raise OSError("simulated storage failure")
+                        original_write(value)
+                    with patch.object(manager, "_write", side_effect=fail_completion):
+                        manager.start(job["job_id"])
+                        manager.close()
+                        result = manager.status(job["job_id"])
+                        self.assertEqual(result["state"], "complete")
+                        self.assertFalse(result["metadata_persisted"])
+                        self.assertIn("进程", engine.read_passages("os", chunks[0]["chunk_id"])["passages"][0]["content"])
+                        manager.start(job["job_id"])
+                        self.assertEqual(builds, ["os"])
+                    self.assertEqual(manager.status(job["job_id"])["state"], "complete")
+                    self.assertEqual(ImportManager(manager.root, build).status(job["job_id"])["state"], "complete")
+                finally:
+                    manager.close()
+
     def test_imported_book_refreshes_chat_reading_and_all_inspection_stages(self):
         with (TemporaryIndexDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()),
               contextlib.redirect_stderr(io.StringIO())):

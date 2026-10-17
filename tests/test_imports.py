@@ -3,7 +3,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from rag_textbook_qa.api.imports import MAX_UPLOAD_BYTES, ImportBusyError, ImportManager
 
@@ -144,3 +144,44 @@ class ImportManagerTests(unittest.TestCase):
             self.manager.discard(job["job_id"])
         self.assertTrue((self.root / job["job_id"] / "chunks.json").is_file())
         release.set()
+
+    def test_long_upload_name_preserves_supported_extension(self):
+        job = self.manager.prepare("os", "a" * 200 + ".json", json.dumps(CHUNKS).encode())
+        self.assertLessEqual(len(job["filename"]), 160)
+        self.assertTrue(job["filename"].endswith(".json"))
+        self.assertEqual(job["total_chunks"], 1)
+
+    def test_thread_start_failure_does_not_block_later_import_or_retry(self):
+        first, second = self.prepare(), self.prepare()
+        with (patch("rag_textbook_qa.api.imports.threading.Thread.start", side_effect=RuntimeError("no thread")),
+              self.assertRaises(RuntimeError)):
+            self.manager.start(first["job_id"])
+        self.assertEqual(self.manager.status(first["job_id"])["state"], "failed")
+        self.manager.start(second["job_id"])
+        self.manager.close()
+        self.assertEqual(self.manager.status(second["job_id"])["state"], "complete")
+        self.manager.start(first["job_id"])
+        self.manager.close()
+        self.assertEqual(self.manager.status(first["job_id"])["state"], "complete")
+        self.assertEqual(self.builder.call_count, 2)
+
+    def test_completed_build_is_not_reported_failed_when_completion_metadata_write_fails(self):
+        job = self.prepare()
+        original_write = self.manager._write
+        def disk_full_on_completion(value):
+            if value["state"] == "complete":
+                raise OSError("private disk path")
+            original_write(value)
+        with patch.object(self.manager, "_write", side_effect=disk_full_on_completion):
+            self.manager.start(job["job_id"])
+            self.manager.close()
+            observed = self.manager.status(job["job_id"])
+            self.assertEqual(observed["state"], "complete")
+            self.assertFalse(observed["metadata_persisted"])
+            self.assertNotIn("private disk path", observed["message"])
+            self.manager.start(job["job_id"])
+            self.builder.assert_called_once()
+        # Once storage is available, reading progress persists the known result.
+        self.assertEqual(self.manager.status(job["job_id"])["state"], "complete")
+        restored = ImportManager(self.root, self.builder)
+        self.assertEqual(restored.status(job["job_id"])["state"], "complete")
