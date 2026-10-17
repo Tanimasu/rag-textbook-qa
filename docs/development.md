@@ -84,6 +84,17 @@ RAG_QA_BROWSER_CHANNEL=chrome uv run --no-sync python scripts/check_study_workfl
 输出目录必须不存在。需要复核实际操作系统片段时，可以额外传入 `--chunks data/chunks/操作系统_mineru_chunks.json`，
 原文件只读，报告区分合成资料与实际文件，并保存输入散列。
 
+导入任务还会通过两个独立 API 进程共用临时索引和导入目录验收：运行中不误报中断、不重复建立、
+不能清理正在使用的文件；发布后另一个进程可读取和检索，清理上传副本后两边仍可阅读。
+该检查也已加入核心 CI 矩阵，本机无需浏览器即可复跑：
+
+```bash
+uv run --no-sync python scripts/check_import_coordination.py \
+  --output artifacts/evaluations/import-coordination-new-run
+```
+
+同样使用合成资料和注入的确定性模型，输出两个进程的调用计数、退出状态及服务日志。
+
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
 
 聊天页的独立格式渲染位于 `api/static/markdown.js`，历史备份校验位于 `api/static/history-backup.js`，
