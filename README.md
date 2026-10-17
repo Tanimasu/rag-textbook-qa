@@ -17,7 +17,7 @@
 - **引用可追溯**：回答逐条标注资料编号，点击跳到原文；缺少编号或编号对不上时，页面会提示。
   支持[回答与原文对照](docs/reading.md)、按教材顺序阅读相邻片段，并提示引用后原文发生的变化。
 - **历史、笔记与收藏**：在当前浏览器保存问答和引用，支持搜索筛选、个人笔记、收藏复习、清理和完整备份，
-  重要问答可导出 Markdown。[保存位置与使用说明](docs/history-and-favorites.md)、[复习收藏](docs/favorite-review.md)。
+  可按筛选批量整理问答、引用和笔记为 Markdown。[保存位置与使用说明](docs/history-and-favorites.md)、[复习收藏](docs/favorite-review.md)。
 - **检索观察台**：按阶段查看关键词、向量、融合、重排及最终上下文，追踪同一片段的排名变化，不调用生成模型。
   [使用说明](docs/retrieval-observatory.md)。
 - **本机导入向导**：选择 Markdown 或分块 JSON，先核对解析预览，再确认建立或替换教材索引，刷新可继续查看进度。

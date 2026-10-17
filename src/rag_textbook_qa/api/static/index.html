@@ -233,6 +233,9 @@ footer details p { margin-top: 6px; text-align: left; }
       <button class="action" id="history-reset-filters" type="button">清除筛选</button>
     </div>
     <p id="history-count" class="history-help" role="status">正在读取记录…</p>
+    <button class="action" id="history-export-md" type="button" disabled>导出筛选结果（Markdown）</button>
+    <p class="history-help">导出全部匹配记录和已保存笔记，不受列表分页影响；需要恢复到浏览器时请使用 JSON 备份。</p>
+    <p id="history-export-status" class="history-help" role="status"></p>
     <div id="history-list"></div>
     <button class="action" id="history-more" type="button" hidden>显示更多</button>
     <div class="history-cleanup">
@@ -332,7 +335,7 @@ footer details p { margin-top: 6px; text-align: left; }
   let initialHistoryBook = "";
   let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
   let historyChannel = null;
-  let orphanUnloadArmed = false;
+  let orphanUnloadArmed = false, historyExporting = false;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
@@ -528,21 +531,26 @@ footer details p { margin-top: 6px; text-align: left; }
     return `${fence}text\n${value}\n${fence}`;
   }
 
-  function answerRecord(query, result, note = "") {
-    const lines = ["# 教材问答记录", "", "## 问题", "", literalBlock(query), "",
-      "## 回答", "", result.answer || "本次没有完整的生成回答。", "", "## 核对提示", "",
+  function answerRecord(query, result, note = "", {level = 1, title = "教材问答记录", metadata = ""} = {}) {
+    const heading = "#".repeat(level);
+    const answer = result.answer || "本次没有完整的生成回答。";
+    // Keep model-authored headings within this record in a collected document.
+    const formattedAnswer = level > 1 ? answer.split("\n").map(line => "> " + line).join("\n") : answer;
+    const lines = [`${heading} ${title}`, "", ...(metadata ? [literalBlock(metadata), ""] : []),
+      `${heading}# 问题`, "", literalBlock(query), "",
+      `${heading}# 回答`, "", formattedAnswer, "", `${heading}# 核对提示`, "",
       "资料编号用于定位原文，请结合教材片段核对回答。", ""];
     for (const [message] of answerNotices(result)) lines.push(message, "");
-    lines.push("## 参考教材片段", "");
+    lines.push(`${heading}# 参考教材片段`, "");
     for (const source of result.sources || []) {
-      lines.push(`### 参考资料 ${source.citation_id} · ${source.book}`, "",
+      lines.push(`${heading}## 参考资料 ${source.citation_id} · ${source.book}`, "",
         source.section || "未标注章节", "");
       if (source.truncated) lines.push("片段已截断。", "");
       if (source.table_compacted) lines.push("表格按行整理。", "");
       lines.push(literalBlock(source.excerpt), "");
     }
     if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");
-    if (note) lines.push("## 我的学习笔记", "", literalBlock(note), "");
+    if (note) lines.push(`${heading}# 我的学习笔记`, "", literalBlock(note), "");
     return lines.join("\n");
   }
 
@@ -1092,6 +1100,7 @@ footer details p { margin-top: 6px; text-align: left; }
     $("history-delete-all").disabled = busy || historyWriting || !records.length;
     $("history-backup-all").disabled = !backupAvailable || busy || historyWriting || !records.length;
     $("history-backup-filtered").disabled = !backupAvailable || busy || historyWriting || !filteredRecords.length;
+    $("history-export-md").disabled = busy || historyWriting || historyExporting || !historyDB || !filteredRecords.length;
     $("history-backup-file").disabled = !backupAvailable || historyWriting;
     $("history-restore").disabled = !backupAvailable || busy || historyWriting || !restoreRecords?.length || !historyDB;
     for (const view of document.querySelectorAll(".saved-note")) {
@@ -1129,6 +1138,23 @@ footer details p { margin-top: 6px; text-align: left; }
     return card;
   }
 
+  function currentHistoryFilter() {
+    return {book: $("history-book").value, favorites: $("history-favorites").checked,
+      notes: $("history-notes").checked,
+      keywords: $("history-search").value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)};
+  }
+
+  function historyMatches(record, filter) {
+    if (filter.book && record.book_id !== filter.book) return false;
+    if (filter.favorites && !record.favorite) return false;
+    if (filter.notes && !record.note) return false;
+    if (!filter.keywords.length) return true;
+    const text = [record.query, record.result.answer || "", record.book_label, record.note || "",
+      ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
+      .join("\n").toLocaleLowerCase();
+    return filter.keywords.every(keyword => text.includes(keyword));
+  }
+
   function renderHistory() {
     const bookFilter = $("history-book"), previousBook = bookFilter.value || initialHistoryBook;
     initialHistoryBook = "";
@@ -1136,17 +1162,8 @@ footer details p { margin-top: 6px; text-align: left; }
     const books = new Map(records.map(record => [record.book_id, record.book_label]));
     for (const [id, label] of books) bookFilter.add(new Option(label, id));
     if (books.has(previousBook)) bookFilter.value = previousBook;
-    const keywords = $("history-search").value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    const matches = records.filter(record => {
-      if (bookFilter.value && record.book_id !== bookFilter.value) return false;
-      if ($("history-favorites").checked && !record.favorite) return false;
-      if ($("history-notes").checked && !record.note) return false;
-      if (!keywords.length) return true;
-      const text = [record.query, record.result.answer || "", record.book_label, record.note || "",
-        ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
-        .join("\n").toLocaleLowerCase();
-      return keywords.every(keyword => text.includes(keyword));
-    });
+    const filter = currentHistoryFilter();
+    const matches = records.filter(record => historyMatches(record, filter));
     filteredRecords = matches;
     sessionSet(FILTER_KEY, JSON.stringify({query: $("history-search").value,
       book: bookFilter.value, favorites: $("history-favorites").checked, notes: $("history-notes").checked}));
@@ -1788,6 +1805,45 @@ footer details p { margin-top: 6px; text-align: left; }
   $("review-end").addEventListener("click", () => endReview());
   $("review-again").addEventListener("click", () => rateReview("again", 1));
   $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
+  $("history-export-md").addEventListener("click", async () => {
+    if (busy || historyWriting || historyExporting || !historyDB) return;
+    const filter = currentHistoryFilter(), status = $("history-export-status");
+    historyExporting = true; syncHistoryControls();
+    status.textContent = "正在整理已保存记录…";
+    try {
+      // Capture the chosen filters before waiting. Read one fresh snapshot
+      // without replacing the current answer, review state or note drafts.
+      const loaded = await historyTransaction("readonly", (store, done) => {
+        const request = store.getAll();
+        request.onsuccess = () => done(request.result);
+      });
+      const selected = loaded.filter(record => historyMatches(record, filter))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+      if (!selected.length) { status.textContent = "当前筛选已没有记录，请重新打开历史查看最新内容。"; return; }
+      if (selected.length > 5000) { status.textContent = "单次最多导出 5000 条，请按教材或关键词分批导出。"; return; }
+      const now = new Date();
+      const parts = [`# 学习问答整理\n\n导出时间：${now.toLocaleString()}\n\n共 ${selected.length} 条记录，按保存时间倒序。仅包含已保存笔记，不含当前编辑草稿。\n\n此文件供阅读整理，恢复到浏览器请使用 JSON 备份。\n\n`];
+      let bytes = new Blob(parts).size;
+      for (const [index, record] of selected.entries()) {
+        const metadata = [`教材：${record.book_label}`, `保存时间：${new Date(record.created_at).toLocaleString()}`,
+          `收藏：${record.favorite ? "是" : "否"}`, `记录编号：${record.id}`];
+        if (record.review) metadata.push(`下次复习：${new Date(record.review.next_review_at).toLocaleString()}`);
+        const part = answerRecord(record.query, record.result, record.note || "",
+          {level: 2, title: `第 ${index + 1} 条 · 教材问答记录`, metadata: metadata.join("\n")}) + "\n---\n\n";
+        bytes += new Blob([part]).size;
+        if (bytes > 64 * 1024 * 1024) { status.textContent = "导出超过 64 MB，请按教材或关键词分批导出。"; return; }
+        parts.push(part);
+      }
+      const url = URL.createObjectURL(new Blob(parts, {type: "text/markdown;charset=utf-8"}));
+      const link = element("a"); link.href = url;
+      const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+      link.download = `教材问答整理-${date}.md`;
+      try { document.body.append(link); link.click(); }
+      finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      status.textContent = `已将 ${selected.length} 条记录交给浏览器下载，请确认文件已保存；当前草稿未写入导出。`;
+    } catch { status.textContent = "导出未完成，暂时无法读取历史或创建文件。请重新打开历史后重试。"; }
+    finally { historyExporting = false; syncHistoryControls(); }
+  });
   async function exportHistory(filtered) {
     if (!backupAvailable) { $("history-backup-preview").textContent = backupUnavailableMessage; return; }
     try {

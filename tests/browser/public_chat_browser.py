@@ -579,6 +579,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".answer")).to_contain_text("未能保存历史记录")
         self.expect(self.page.get_by_role("button", name="保存问答（含来源）")).to_be_enabled()
         self.expect(self.page.get_by_role("button", name="重试保存")).to_be_enabled()
+        self.expect(self.page.locator("#history-export-md")).to_be_disabled()
 
     def test_failed_storage_write_can_retry_without_duplicating_record(self) -> None:
         self.context.add_init_script("""(() => {
@@ -972,6 +973,191 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
         self.expect(self.page.locator("#history-backup-preview")).to_contain_text("无效记录")
         self.assertEqual(self.history_records(), original)
+
+    def test_filtered_markdown_export_keeps_saved_notes_and_citations_only(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.backend.access_code_required = True
+        self.open_page()
+        self.page.locator("#code").fill("bulk-export-private-code")
+        self.saved_answer("需要整理的操作系统题目")
+        self.page.locator(".answer").get_by_role("button", name="☆ 收藏").click()
+        self.expect(self.page.locator(".answer").get_by_role("button", name="★ 已收藏")).to_be_visible()
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("整理关键词\n````\n这是已保存的笔记")
+        self.page.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(self.page.locator(".note-editor")).to_contain_text("笔记已保存")
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("不能混入导出的未保存草稿")
+        self.saved_answer("不匹配的数据库题目", "database")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-book").select_option("os")
+        self.page.locator("#history-favorites").check()
+        self.page.locator("#history-notes").check()
+        self.page.locator("#history-search").fill("整理关键词 进程")
+        original = self.history_records()
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").click()
+        exported = Path(download.value.path()).read_text()
+        self.assertTrue(download.value.suggested_filename.endswith(".md"))
+        for text in ("# 学习问答整理", "共 1 条记录", "需要整理的操作系统题目", "这是已保存的笔记",
+                     "收藏：是", "操作系统", "进程是程序在一个数据集合上的一次执行。", "### 我的学习笔记"):
+            self.assertIn(text, exported)
+        for text in ("不能混入导出的未保存草稿", "不匹配的数据库题目", "answer_id", "bulk-export-private-code"):
+            self.assertNotIn(text, exported)
+        self.assertEqual(self.history_records(), original)
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("不能混入导出的未保存草稿")
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("1 条记录交给浏览器下载")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("history-export-mobile.png")
+        self.assertEqual(len(self.backend.asks), 2)
+
+    def test_markdown_export_includes_all_matches_beyond_the_visible_page(self) -> None:
+        self.open_page()
+        self.saved_answer("原始种子问答")
+        seed = self.history_records()[0]
+        incoming = [dict(seed, id=f"batch-{index}", query=f"批量题目 {index:02}",
+                         created_at=f"2026-10-{index + 1:02}T00:00:00Z") for index in range(21)]
+        self.page.locator("#toggle-history").click()
+        self.page.locator(".history-backup summary").click()
+        self.page.locator("#history-backup-file").set_input_files(self.backup_file(incoming))
+        self.expect(self.page.locator("#history-restore")).to_be_enabled()
+        self.page.locator("#history-restore").click()
+        self.expect(self.page.locator("#history-backup-preview")).to_contain_text("新增 21 条")
+        self.page.locator("#history-search").fill("批量题目")
+        self.expect(self.page.locator(".history-item")).to_have_count(20)
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").click()
+        exported = Path(download.value.path()).read_text()
+        self.assertIn("共 21 条记录", exported)
+        self.assertEqual(exported.count(" · 教材问答记录"), 21)
+        self.assertLess(exported.index("批量题目 20"), exported.index("批量题目 00"))
+        self.assertNotIn("原始种子问答", exported)
+        self.expect(self.page.locator(".history-item")).to_have_count(20)
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_markdown_export_reads_latest_saved_note_without_replacing_current_draft(self) -> None:
+        self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.open_page()
+        self.saved_answer("跨页导出已保存版本")
+        self.page.locator(".answer").get_by_role("button", name="学习笔记").click()
+        self.page.get_by_role("textbox", name="编辑学习笔记").fill("本页未保存的内容")
+        self.page.locator("#input").fill("下一题的问题草稿")
+        self.page.locator("#toggle-history").click()
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="学习笔记")).to_be_visible()
+        other.locator(".answer").get_by_role("button", name="学习笔记").click()
+        other.get_by_role("textbox", name="编辑学习笔记").fill("另一页刚保存的最新笔记")
+        other.get_by_role("button", name="保存笔记", exact=True).click()
+        self.expect(other.locator(".note-editor")).to_contain_text("笔记已保存")
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").dispatch_event("click")
+        exported = Path(download.value.path()).read_text()
+        self.assertIn("另一页刚保存的最新笔记", exported)
+        self.assertNotIn("本页未保存的内容", exported)
+        self.expect(self.page.get_by_role("textbox", name="编辑学习笔记")).to_have_value("本页未保存的内容")
+        self.expect(self.page.locator("#input")).to_have_value("下一题的问题草稿")
+        self.assertEqual(len(self.backend.asks), 1)
+
+    def test_markdown_export_read_failure_leaves_library_unchanged_and_allows_retry(self) -> None:
+        self.open_page()
+        self.saved_answer()
+        self.page.locator("#toggle-history").click()
+        original = self.history_records()
+        self.page.evaluate("""() => {
+          const getAll = IDBObjectStore.prototype.getAll;
+          IDBObjectStore.prototype.getAll = function() {
+            IDBObjectStore.prototype.getAll = getAll;
+            throw new DOMException('fixture read failure', 'UnknownError');
+          };
+        }""")
+        downloads = []
+        self.page.on("download", lambda download: downloads.append(download))
+        self.page.locator("#history-export-md").click()
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("导出未完成")
+        self.assertEqual(downloads, [])
+        self.assertEqual(self.history_records(), original)
+        with self.page.expect_download():
+            self.page.locator("#history-export-md").click()
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("1 条记录交给浏览器下载")
+        self.assertEqual(self.history_records(), original)
+
+    def test_markdown_export_keeps_clicked_filters_when_the_ui_changes_during_read(self) -> None:
+        self.open_page()
+        self.saved_answer("最初选择的操作系统题目")
+        self.saved_answer("后来切换到的数据库题目", "database")
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#history-book").select_option("os")
+        self.page.evaluate("""() => {
+          const getAll = IDBObjectStore.prototype.getAll;
+          IDBObjectStore.prototype.getAll = function(...args) {
+            IDBObjectStore.prototype.getAll = getAll;
+            const request = getAll.apply(this, args);
+            request.addEventListener('success', () => {
+              const select = document.querySelector('#history-book');
+              select.value = 'database'; select.dispatchEvent(new Event('change'));
+            });
+            return request;
+          };
+        }""")
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").click()
+        exported = Path(download.value.path()).read_text()
+        self.assertIn("最初选择的操作系统题目", exported)
+        self.assertNotIn("后来切换到的数据库题目", exported)
+        self.expect(self.page.locator("#history-book")).to_have_value("database")
+        self.assertEqual(len(self.history_records()), 2)
+
+    def test_markdown_export_with_many_records_requires_filtering_then_can_continue(self) -> None:
+        self.open_page()
+        self.page.evaluate("""() => new Promise(resolve => {
+          const request = indexedDB.open('rag-qa-history', 1);
+          request.onsuccess = () => {
+            const db = request.result, transaction = db.transaction('records', 'readwrite');
+            const store = transaction.objectStore('records');
+            for (let i = 0; i < 5001; i++) store.put({
+              id:'export-limit-' + i, created_at:'2026-10-18T00:00:00.000Z',
+              query:'批量编号 ' + i, book_id:'os', book_label:'操作系统', favorite:false, note:'',
+              result:{status:'retrieval_only', answer:null, sources:[]}
+            });
+            transaction.oncomplete = () => { db.close(); resolve(); };
+          };
+        })""")
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-count")).to_contain_text("5001 条记录")
+        downloads = []
+        self.page.on("download", lambda download: downloads.append(download))
+        self.page.locator("#history-export-md").click()
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("单次最多导出 5000 条")
+        self.assertEqual(downloads, [])
+        self.assertEqual(len(self.history_records()), 5001)
+        self.page.locator("#history-search").fill("批量编号 5000")
+        self.expect(self.page.locator(".history-item")).to_have_count(1)
+        with self.page.expect_download() as download:
+            self.page.locator("#history-export-md").click()
+        exported = Path(download.value.path()).read_text()
+        self.assertIn("共 1 条记录", exported)
+        self.assertIn("本次没有完整的生成回答。", exported)
+        self.assertIn("本次记录未包含教材片段。", exported)
+        self.assertEqual(len(self.history_records()), 5001)
+        self.assertEqual(self.backend.asks, [])
+
+    def test_markdown_export_does_not_download_records_deleted_by_another_tab(self) -> None:
+        self.context.add_init_script("window.BroadcastChannel = undefined")
+        self.open_page()
+        self.saved_answer()
+        self.page.locator("#toggle-history").click()
+        other = self.context.new_page()
+        other.goto(self.base_url)
+        self.expect(other.locator(".answer").get_by_role("button", name="删除记录")).to_be_visible()
+        other.once("dialog", lambda dialog: dialog.accept())
+        other.locator(".answer").get_by_role("button", name="删除记录").click()
+        self.expect(other.locator(".answer")).to_have_count(0)
+        downloads = []
+        self.page.on("download", lambda download: downloads.append(download))
+        self.page.locator("#history-export-md").dispatch_event("click")
+        self.expect(self.page.locator("#history-export-status")).to_contain_text("当前筛选已没有记录")
+        self.assertEqual(downloads, [])
+        self.assertEqual(self.history_records(), [])
 
     def test_history_restore_transaction_aborts_all_new_rows_when_storage_write_fails(self) -> None:
         self.open_page()
@@ -1979,6 +2165,10 @@ class PublicChatBrowserTests(unittest.TestCase):
         for selector in ("#history-backup-all", "#history-backup-filtered", "#history-backup-file", "#history-restore"):
             self.expect(self.page.locator(selector)).to_be_disabled()
         self.expect(self.page.locator(".history-item")).to_have_count(1)
+        self.expect(self.page.locator("#history-export-md")).to_be_enabled()
+        with self.page.expect_download() as collected:
+            self.page.locator("#history-export-md").click()
+        self.assertIn("备份组件不可用时仍保留问答", Path(collected.value.path()).read_text())
         self.page.locator("#toggle-history").click()
         with self.page.expect_download() as download:
             self.page.get_by_role("button", name="保存问答（含来源）", exact=True).click()

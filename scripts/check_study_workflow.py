@@ -193,6 +193,13 @@ try:
                     download.value.save_as(OUT/'answer.md')
                     report['steps'].append('Actual SSE answer / indexed reader / notes / Markdown export')
                     page.locator('#toggle-history').click()
+                    with page.expect_download() as download:
+                        page.locator('#history-export-md').click()
+                    download.value.save_as(OUT/'study-collection.md')
+                    collection = (OUT/'study-collection.md').read_text()
+                    assert '共 1 条记录' in collection and '离线学习流程验收笔记' in collection
+                    assert code not in collection
+                    report['steps'].append('Filtered Markdown collection preserves saved notes and sources without generation')
                     page.locator('.history-backup summary').click()
                     with page.expect_download() as download:
                         page.locator('#history-backup-all').click()
