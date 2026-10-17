@@ -369,6 +369,27 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(client.post("/v1/ask", json={"query": "进程", "book_id": "os"},
                                      headers={"X-Access-Code": "reader-code"}).status_code, 200)
 
+    def test_inspection_uses_bounded_queue_and_never_reserves_generation(self):
+        engine = FakeEngine()
+        engine.inspect_retrieval = MagicMock(return_value={
+            "stages": {"keyword": [{**SOURCE, "prompt": SECRET}]},
+            "context_budget": 4000, "reranker_enabled": False,
+        })
+        client = self.client(engine=engine, access_code="inspect-code")
+        payload = {"query": "进程", "book_id": "os", "top_k": 3}
+        self.assertEqual(client.post("/v1/retrieval/inspect", json=payload).status_code, 401)
+        engine.inspect_retrieval.assert_not_called()
+        response = client.post("/v1/retrieval/inspect", json=payload,
+                               headers={"X-Access-Code": "inspect-code"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["generation_calls"], 0)
+        self.assertEqual(len(response.json()["stages"]), 5)
+        self.assertNotIn(SECRET, response.text)
+        self.assertEqual(engine.calls, [])
+        self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
+        self.assertEqual(self.guard.status()["requests_in_flight"], 0)
+        self.assertEqual(client.get("/retrieval").status_code, 200)
+
     def test_reading_missing_or_updating_index_keeps_provider_details_private(self):
         engine = FakeEngine()
         engine.read_passages = MagicMock(side_effect=LookupError(SECRET))

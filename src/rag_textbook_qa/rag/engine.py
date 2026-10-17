@@ -733,6 +733,7 @@ class RAGEngine:
     def _search_single_book(
         self, book_name: str, query: str, top_k: int, use_hyde: bool | None,
         use_reranker: bool, *, _query_embedding: list[list[float]] | None,
+        _stages: dict[str, list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
         _require_positive_integer(top_k, "top_k")
         rerank_enabled = self.reranker is not None and use_reranker
@@ -748,9 +749,47 @@ class RAGEngine:
             limit=candidate_count,
             weights=self.fusion_weights,
         )
+        if _stages is not None:
+            _stages.update({
+                "embedding": [dict(row) for row in semantic],
+                "keyword": [dict(row) for row in keyword],
+                "fusion": [dict(row) for row in combined],
+            })
         if rerank_enabled:
-            return self._rerank(query, combined, top_k)
-        return combined[:top_k]
+            results = self._rerank(query, combined, top_k)
+        else:
+            results = combined[:top_k]
+        if _stages is not None:
+            _stages["rerank"] = [dict(row) for row in results]
+        return results
+
+    def inspect_retrieval(
+        self, query: str, book_name: str, top_k: int = 5,
+        *, should_stop: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Observe one ordinary single-book retrieval; never invoke generation or HyDE."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("问题不能为空")
+        _require_positive_integer(top_k, "top_k")
+        started = time.monotonic()
+
+        def inspect() -> dict[str, Any]:
+            if should_stop and should_stop():
+                raise GenerationCancelled(request_sent=False)
+            stages: dict[str, list[dict[str, Any]]] = {}
+            results = self._search_single_book(
+                book_name, query, top_k, False, True, _query_embedding=None, _stages=stages,
+            )
+            if should_stop and should_stop():
+                raise GenerationCancelled(request_sent=False)
+            _, sources = select_context(results, self.context_budget)
+            stages["context"] = sources
+            return {"stages": stages, "reranker_enabled": self.reranker is not None,
+                    "context_budget": self.context_budget, "fusion_weights": dict(self.fusion_weights)}
+
+        with provider_trace():
+            result = self._run_with_index_snapshot(inspect)
+        return {**result, "elapsed_seconds": time.monotonic() - started}
 
     def search_all_books(
         self,

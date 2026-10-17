@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT / "src/rag_textbook_qa/api/static/index.html"
+RETRIEVAL_PAGE = ROOT / "src/rag_textbook_qa/api/static/retrieval.html"
 
 
 def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
@@ -43,6 +44,24 @@ def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
         ],
         "citation_integrity": {"status": "linked"},
         "timing": {"retrieval_seconds": 0.1, "total_seconds": 0.2},
+    }
+
+
+def retrieval_result() -> dict[str, Any]:
+    first = {**answer_result()["sources"][0], "position": 1, "scores": {"rrf_score": .02},
+             "source_ranks": {"embedding": 1, "bm25": 2}, "preview_truncated": False}
+    other = {**first, "chunk_id": "chapter_p2", "excerpt": "程序是静态代码。", "position": 2}
+    return {
+        "context_budget": 4000, "elapsed_seconds": .2, "reranker_enabled": True,
+        "generation_calls": 0, "fusion_weights": {"embedding": 1, "bm25": .5},
+        "stages": [
+            {"id": key, "label": label, "count": len(items), "items": items}
+            for key, label, items in (
+                ("keyword", "关键词", [first, other]), ("embedding", "向量", [first, other]),
+                ("fusion", "融合", [first, other]), ("rerank", "重排", [first]),
+                ("context", "最终上下文", [first]),
+            )
+        ],
     }
 
 
@@ -72,6 +91,9 @@ class FakeBackend(ThreadingHTTPServer):
         self.reading_changed = False
         self.reading_failure = False
         self.reads: list[dict[str, Any]] = []
+        self.inspections: list[dict[str, Any]] = []
+        self.inspection_gate: threading.Event | None = None
+        self.inspection_status = 200
 
     def enqueue(self, reply: Reply) -> None:
         with self.lock:
@@ -100,6 +122,8 @@ class FakeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/":
             self.respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+        elif self.path == "/retrieval":
+            self.respond(200, RETRIEVAL_PAGE.read_bytes(), "text/html; charset=utf-8")
         elif self.path.startswith("/v1/books/os/passages?"):
             chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
             self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
@@ -154,6 +178,16 @@ class FakeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/v1/retrieval/inspect":
+            self.server.inspections.append({"payload": payload, "access_code": self.headers.get("X-Access-Code")})
+            if self.server.inspection_gate:
+                self.server.inspection_gate.wait(timeout=10)
+            try:
+                self.json_response(retrieval_result() if self.server.inspection_status == 200
+                                   else {"detail": "需要正确的访问口令"}, self.server.inspection_status)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if self.path == "/v1/feedback":
             with self.server.lock:
                 self.server.feedback.append(payload)
@@ -612,6 +646,73 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator(".reader-quote")).to_be_visible()
         self.expect(self.page.get_by_role("button", name="读取相邻原文", exact=True)).to_be_disabled()
         self.assertEqual(self.backend.reads, [])
+
+    def test_retrieval_observatory_shows_stages_rank_changes_and_actual_context(self) -> None:
+        self.open_page()
+        self.page.get_by_role("link", name="检索观察台", exact=True).click()
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("进程和程序的区别")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-status")).to_contain_text("检索观察完成")
+        self.expect(self.page.locator("#inspect-stages button")).to_have_count(5)
+        self.expect(self.page.locator(".candidate")).to_have_count(1)
+        self.expect(self.page.locator(".excerpt")).to_have_text(answer_result()["sources"][0]["excerpt"])
+        self.page.get_by_role("button", name="关键词 2", exact=True).click()
+        self.expect(self.page.locator(".candidate")).to_have_count(2)
+        self.expect(self.page.locator(".candidate").last).to_contain_text("未入选上下文")
+        self.page.get_by_role("button", name="融合 2", exact=True).click()
+        self.expect(self.page.locator("#inspect-explanation")).to_contain_text("关键词权重 0.5")
+        self.page.get_by_text("同一片段的排名变化", exact=True).click()
+        self.expect(self.page.locator("#inspect-ranks table tr")).to_have_count(3)
+        self.capture_page("retrieval-desktop.png")
+        self.assertEqual(self.backend.inspections[0]["payload"],
+                         {"query": "进程和程序的区别", "book_id": "os", "top_k": 5})
+        self.assertEqual(self.backend.asks, [])
+        self.assertEqual(self.backend.feedback, [])
+
+    def test_retrieval_observatory_keeps_request_book_when_next_draft_changes(self) -> None:
+        gate = threading.Event()
+        self.backend.inspection_gate = gate
+        self.backend.gates.append(gate)
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("进程")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-send")).to_be_disabled()
+        self.page.locator("#inspect-book").select_option("database")
+        self.page.locator("#inspect-query").fill("下一次准备问主键")
+        gate.set()
+        self.expect(self.page.locator("#inspect-title")).to_have_text("进程")
+        self.expect(self.page.locator("#inspect-summary")).to_contain_text("操作系统")
+        self.expect(self.page.locator("#inspect-query")).to_have_value("下一次准备问主键")
+
+    def test_retrieval_mobile_access_code_retry_and_stop(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.backend.inspection_status = 401
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.page.locator("#inspect-book").select_option("os")
+        self.page.locator("#inspect-query").fill("进程")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-code")).to_be_visible()
+        self.expect(self.page.locator("#inspect-status")).to_contain_text("访问口令")
+        self.page.locator("#inspect-code").fill("inspect-test-code")
+        self.backend.inspection_status = 200
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-result")).to_be_visible()
+        self.assertEqual(self.backend.inspections[-1]["access_code"], "inspect-test-code")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("retrieval-mobile.png")
+        gate = threading.Event()
+        self.backend.inspection_gate = gate
+        self.backend.gates.append(gate)
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-stop")).to_be_visible()
+        self.page.locator("#inspect-stop").click()
+        self.expect(self.page.locator("#inspect-status")).to_contain_text("已停止等待")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
 
     def test_unknown_compute_time_keeps_answer_actions_available(self) -> None:
         result = answer_result()

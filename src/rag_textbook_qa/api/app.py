@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import re
 import sys
 import threading
@@ -208,6 +209,42 @@ def _log_failure(exc: BaseException) -> None:
     print(f"问答失败: {type(exc).__name__}", file=sys.stderr, flush=True)
 
 
+def public_retrieval(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Show bounded, source-only stage snapshots without engine internals."""
+    stages = []
+    for key, label in (("keyword", "关键词"), ("embedding", "向量"), ("fusion", "融合"),
+                       ("rerank", "重排"), ("context", "最终上下文")):
+        rows = result.get("stages", {}).get(key, [])
+        items = []
+        for position, row in enumerate(rows[:30], 1):
+            source = _public_source(row)
+            source["preview_truncated"] = len(source["excerpt"]) > 12000
+            source["excerpt"] = source["excerpt"][:12000]
+            scores = {
+                name: float(value) for name in ("similarity", "bm25_score", "rrf_score", "rerank_score")
+                if isinstance(value := row.get(name), (int, float))
+                and not isinstance(value, bool) and math.isfinite(value)
+            }
+            ranks = {
+                name: rank for name in ("bm25", "embedding")
+                if type(rank := row.get("source_ranks", {}).get(name)) is int and rank > 0
+            }
+            items.append({**source, "position": position, "scores": scores, "source_ranks": ranks})
+        stages.append({"id": key, "label": label, "count": len(rows), "items": items})
+    return {
+        "stages": stages,
+        "reranker_enabled": bool(result.get("reranker_enabled")),
+        "context_budget": result.get("context_budget"),
+        "elapsed_seconds": finite_seconds(result.get("elapsed_seconds")),
+        "generation_calls": 0,
+        "fusion_weights": {
+            key: float(value) for key in ("embedding", "bm25")
+            if isinstance(value := result.get("fusion_weights", {}).get(key), (int, float))
+            and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+        },
+    }
+
+
 def _client_address(request: Request, *, trust_proxy: bool) -> str:
     """Identify a caller for rate limiting.
 
@@ -378,6 +415,7 @@ def create_api_app(
         .joinpath("static/index.html")
         .read_text(encoding="utf-8")
     )
+    retrieval_page = resources.files("rag_textbook_qa.api").joinpath("static/retrieval.html").read_text(encoding="utf-8")
 
     app = FastAPI(
         title="计算机教材 RAG 问答",
@@ -488,6 +526,10 @@ def create_api_app(
     def index() -> HTMLResponse:
         return HTMLResponse(page)
 
+    @app.get("/retrieval", response_class=HTMLResponse, include_in_schema=False)
+    def retrieval_index() -> HTMLResponse:
+        return HTMLResponse(retrieval_page)
+
     @app.get("/health", summary="服务状态")
     def health() -> dict[str, Any]:
         return {
@@ -545,6 +587,29 @@ def create_api_app(
         except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
             _log_failure(exc)
             raise HTTPException(status_code=500, detail=PUBLIC_FAILURE) from None
+
+    @app.post("/v1/retrieval/inspect", summary="观察关键词、向量、融合、重排和上下文")
+    async def inspect_retrieval(payload: AskRequest, request: Request) -> dict[str, Any]:
+        query, book_id, top_k = await admit(payload, request)
+        if book_id is None:
+            raise HTTPException(status_code=422, detail="观察检索过程需要先选择一本教材")
+        inspect = getattr(engine, "inspect_retrieval", None)
+        if not callable(inspect):
+            raise HTTPException(status_code=503, detail="当前服务不提供检索观察")
+        try:
+            admission = guard.admit_request()
+            return await _answer_once(
+                lambda sink, should_stop: public_retrieval(
+                    inspect(query, book_id, top_k, should_stop=should_stop)
+                ), admission, request,
+            )
+        except Busy as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - keep provider details private
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="检索观察暂时失败，请稍后重试") from None
 
     @app.post("/v1/ask/stream", summary="提问，以服务器推送事件（SSE）流式返回")
     async def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
