@@ -15,6 +15,7 @@ from rag_textbook_qa.rag.context import select_context
 from scripts.replay_context_expansion import (
     bridge_parent_context,
     compact_parent_context,
+    focused_parent_context,
     load_index_corpora,
     parent_neighbours,
     question_parent_context,
@@ -123,6 +124,62 @@ class ParentNeighbourTests(unittest.TestCase):
 
 
 class BridgeSelectionTests(unittest.TestCase):
+    def test_composition_does_not_take_priority_over_the_questions_explanation(self):
+        anchor = {**chunk("x_p1", "调度器"), "content":
+                  "调度器由等待队列和执行队列组成，这里列出组成名称但不说明处理过程。"}
+        composition = {**chunk("x_p2", "等待队列"), "content":
+                       "等待队列保存尚未就绪的任务，由系统维护相应的节点和元素，这里只介绍结构定义和背景知识。" * 24}
+        mechanism = {**chunk("x_p3", "调度器"), "content":
+                     "调度器恢复运行时需要先读取任务保存的现场，再将处理器分配给就绪任务。" * 12}
+        corpus = {"os": [anchor, composition, mechanism]}
+        query = "调度器如何恢复运行？"
+        self.assertLessEqual(len(composition["content"]), 1200)
+        self.assertGreater(len(composition["content"]) + len(mechanism["content"]), 1200)
+        _, sources = focused_parent_context(query, [anchor], corpus)
+        self.assertIn(mechanism["content"], [s["content"] for s in sources])
+        _, old_sources = bridge_parent_context(query, [anchor], corpus)
+        self.assertNotIn(mechanism["content"], [s["content"] for s in old_sources])
+
+    def test_explicit_dependency_still_delivers_the_definition_and_complete_flow(self):
+        anchor = {**chunk("x_p1", "调度器"), "content":
+                  "调度器通过优先级来分配处理器时间，以下正文提供概要而没有展开处理步骤。"}
+        dependency = {**chunk("x_p2", "优先级"), "content":
+                      "优先级表示一个任务获得处理器的先后顺序，是调度决策的一个依据。"}
+        flow = {**chunk("x_p3", "调度器"), "content": (
+            "调度器先接收就绪任务，并记录任务到达的时间，作为后续处理的数据依据。\n\n"
+            "调度器再比较任务优先级，从全部就绪任务中选择下一个可以运行的任务。\n\n"
+            "调度器最后把处理器分配给选中的任务，并保存原任务的现场以便恢复运行。"
+        )}
+        _, sources = focused_parent_context(
+            "调度器工作流程是什么？", [anchor], {"os": [anchor, dependency, flow]},
+        )
+        self.assertEqual([s["content"] for s in sources[1:]],
+                         [dependency["content"], flow["content"]])
+
+    def test_prerequisites_and_negated_dependencies_do_not_create_priority(self):
+        for content in (
+            "调度器是在队列的基础上构建的结构，这句话只提到前置知识而没有说明依赖机制。",
+            "调度器并不依赖队列执行这个操作，这句话明确否认使用该机制来完成任务。",
+        ):
+            with self.subTest(content=content):
+                anchor = {**chunk("x_p1", "调度器"), "content": content}
+                neighbour = {**chunk("x_p2", "队列"), "content":
+                             "队列负责按进入顺序保存任务，这是一段足够完整的结构定义和背景说明。"}
+                corpus = {"os": [anchor, neighbour]}
+                self.assertEqual(focused_parent_context("调度器？", [anchor], corpus),
+                                 question_parent_context("调度器？", [anchor], corpus))
+
+    def test_code_mentions_do_not_create_explanatory_dependency_priority(self):
+        anchor = {**chunk("x_p1", "调度器"), "content": (
+            "调度器负责选择就绪任务并分配处理器时间，这个概述没有解释额外的依据。\n\n"
+            "```text\n通过优先级计算下一次运行顺序，这只是代码块内的示意文字。\n```"
+        )}
+        neighbour = {**chunk("x_p2", "优先级"), "content":
+                     "优先级表示一个任务获得处理器的先后顺序，是比较任务顺序的一个依据。"}
+        corpus = {"os": [anchor, neighbour]}
+        self.assertEqual(focused_parent_context("调度器？", [anchor], corpus),
+                         question_parent_context("调度器？", [anchor], corpus))
+
     def test_named_dependency_uses_the_query_relevant_parent_before_other_anchors(self):
         broad = {**chunk("a_p1", "概述", section="1.1 内存简介"),
                  "content": "计算机内存可以通过接口来接收数据，这是一段概述中的完整解释。"}
