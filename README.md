@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml)
 
 基于五本计算机专业教材（操作系统、计算机组成原理、计算机网络、数据结构、数据库）的检索增强问答系统。
-回答里的每个结论都标注出处，点击编号就能对照教材原文。
+回答通过资料编号关联教材原文，点击编号可以对照；具体主张与引用是否对应仍需核对。
 
 ![演示：选择教材提问，回答流式输出并标注引用，点击编号跳到对应的教材原文](docs/images/demo.gif)
 

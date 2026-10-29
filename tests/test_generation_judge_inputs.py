@@ -65,8 +65,28 @@ class FormattingTolerantQuoteTests(unittest.TestCase):
     def test_words_stitched_from_different_places_do_not_count(self):
         self.assertFalse(quote_found("假脱机管理进程申请空闲的请求打印表", SPOOLING))
 
+    def test_near_verbatim_quotes_cannot_change_numbers_negations_or_symbols(self):
+        for quote, source in (
+            ("存储器地址的有效范围为0到1023并且不能访问其余区域",
+             "存储器地址的有效范围为0到1024并且不能访问其余区域"),
+            ("设备中断不需要轮询设备状态而且能够减少轮询开销",
+             "设备中断需要轮询设备状态而且能够减少轮询开销"),
+            ("命中时的访问时间记为t_c且包含查找时间和cache访问时间",
+             "命中时的访问时间记为t_m且包含查找时间和cache访问时间"),
+            ("这个示例中存储器的访问时间规定为15毫秒且不能忽略",
+             "这个示例中存储器的访问时间规定为1.5毫秒且不能忽略"),
+            ("这个示例中账户余额的下限规定为1000元且必须检查",
+             "这个示例中账户余额的下限规定为-1000元且必须检查"),
+        ):
+            with self.subTest(quote=quote):
+                self.assertFalse(quote_found(quote, source))
+                self.assertTrue(quote_found(source, source))
+
 
 class JudgeInputTests(unittest.TestCase):
+    def test_unnumbered_legacy_context_keeps_supplied_source(self):
+        self.assertEqual(context_blocks(SOURCE["content"], [SOURCE]), [SOURCE])
+
     def test_persistently_ambiguous_judgment_does_not_publish_a_score(self):
         calls = []
 

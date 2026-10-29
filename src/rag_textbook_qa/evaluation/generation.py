@@ -149,6 +149,7 @@ def validate_generation_cases(cases: Sequence[GenerationCase]) -> None:
                 _text(content, "资料正文")
                 if content not in variant.context:
                     raise ValueError(f"{case.case_id}/{name}：资料内容必须出自实际上下文")
+            context_blocks(variant.context, variant.sources)
             for answer in _sequence(variant.answers, "已存答案"):
                 # Empty stored outputs remain valid records of incomplete runs.
                 if not isinstance(answer, str):
@@ -344,6 +345,7 @@ _CIRCLED_NUMBER = re.compile(r"[\u2460-\u249b\u24eb-\u24ff\u2776-\u2793]")
 _ENUMERATION = re.compile(r"\(\d{1,2}\)")
 _MARKUP = str.maketrans("", "", "$\\{}*_`#|>~")
 _BLOCK = re.compile(r"【参考资料 (\d+)】")
+_QUOTE_PROTECTED = re.compile(r"[a-z0-9]+|[不未无非否勿没\ue000-\ue002]")
 APPROXIMATE_QUOTE_MATCH = 0.9
 
 
@@ -357,7 +359,12 @@ def _normalized(text: str) -> str:
 
     text = _CIRCLED_NUMBER.sub("", _LATEX_COMMAND.sub("", text))
     folded = _ENUMERATION.sub("", unicodedata.normalize("NFKC", text))
-    folded = folded.translate(_PUNCTUATION).translate(_MARKUP)
+    folded = folded.translate(_MARKUP)
+    # A decimal point or numeric sign is content, not disposable punctuation.
+    folded = re.sub(r"(?<=\d)\s*\.\s*(?=\d)", "\ue000", folded)
+    folded = re.sub(r"[-−]\s*(?=\d)", "\ue001", folded)
+    folded = re.sub(r"\+\s*(?=\d)", "\ue002", folded)
+    folded = folded.translate(_PUNCTUATION)
     return re.sub(r"\s+", "", folded).lower()
 
 
@@ -378,9 +385,18 @@ def _approximate_find(needle: str, haystack: str, start: int) -> int:
     slack = len(needle) // 10 + 1
     low = max(0, core.a - core.b - slack)
     high = min(len(region), core.a + len(needle) - core.b + slack)
-    blocks = difflib.SequenceMatcher(None, region[low:high], needle, autojunk=False)
-    matched = sum(block.size for block in blocks.get_matching_blocks())
-    return start + low if matched >= APPROXIMATE_QUOTE_MATCH * len(needle) else -1
+    candidate = region[low:high]
+    blocks = difflib.SequenceMatcher(None, candidate, needle, autojunk=False)
+    runs = [block for block in blocks.get_matching_blocks() if block.size]
+    matched = sum(block.size for block in runs)
+    if matched < APPROXIMATE_QUOTE_MATCH * len(needle):
+        return -1
+    copied = candidate[runs[0].a:runs[-1].a + runs[-1].size]
+    # Formatting tolerance must not turn changed numbers, symbols/Latin terms
+    # or negations into a matching quote. This is a lexical guard, not entailment.
+    if _QUOTE_PROTECTED.findall(needle) != _QUOTE_PROTECTED.findall(copied):
+        return -1
+    return start + low
 
 
 def quote_found(quote: str, content: str) -> bool:
@@ -415,10 +431,18 @@ def context_blocks(
     """
 
     starts = [(int(match[1]), match.start()) for match in _BLOCK.finditer(context)]
-    ends = [start for _, start in starts[1:]] + [len(context)]
+    identifiers = [number for number, _ in starts]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("上下文资料编号重复")
+    if starts and set(identifiers) != {source["citation_id"] for source in sources}:
+        raise ValueError("上下文资料编号与来源清单不一致")
+    ends = [start for _, start in starts[1:]] + ([len(context)] if starts else [])
     blocks = {
         number: context[start:end] for (number, start), end in zip(starts, ends, strict=True)
     }
+    for source in sources:
+        if starts and source["content"] not in blocks[source["citation_id"]]:
+            raise ValueError("资料正文必须属于声明编号的上下文块")
     return [
         {
             "citation_id": source["citation_id"],
