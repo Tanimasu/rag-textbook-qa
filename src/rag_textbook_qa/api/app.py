@@ -10,7 +10,9 @@ returned, because it can carry upstream detail.
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import math
 import re
 import sys
 import threading
@@ -33,6 +35,7 @@ from rag_textbook_qa.api.guard import (
     RateLimited,
     RequestAdmission,
 )
+from rag_textbook_qa.api.imports import MAX_UPLOAD_BYTES, ImportBusyError, ImportManager
 from rag_textbook_qa.catalog import BOOK_LABELS
 from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError, MissingOptionalDependencyError
@@ -43,7 +46,7 @@ from rag_textbook_qa.timing import finite_seconds
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import HTMLResponse, StreamingResponse
+    from fastapi.responses import HTMLResponse, Response, StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - only without the api extra
     raise MissingOptionalDependencyError("启动问答服务需要安装：uv sync --extra api") from exc
@@ -91,6 +94,10 @@ class FeedbackRequest(BaseModel):
         "other",
     ] | None = None
     comment: str = Field(default="", max_length=500)
+
+
+class ImportStartRequest(BaseModel):
+    confirm_replace: Literal[True]
 
 
 def public_result(result: Mapping[str, Any], *, retrieval_only: str | None) -> dict[str, Any]:
@@ -184,9 +191,16 @@ def _citation_integrity(answer: str, sources: Sequence[Mapping[str, Any]]) -> di
 
 def _public_source(source: Mapping[str, Any]) -> dict[str, Any]:
     book_id = str(source.get("book_name") or "")
+    fingerprint = source.get("source_sha256")
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        fingerprint = None
+        if not source.get("truncated") and not source.get("table_compacted"):
+            fingerprint = hashlib.sha256(str(source.get("content") or "").strip().encode()).hexdigest()
     return {
         "citation_id": source.get("citation_id"),
         "book_id": book_id,
+        "chunk_id": str(source.get("chunk_id") or ""),
+        "source_sha256": fingerprint,
         "book": BOOK_LABELS.get(book_id, book_id),
         "section": " > ".join(str(source[field]) for field in _HEADING_FIELDS if source.get(field)),
         "excerpt": str(source.get("content") or ""),
@@ -198,6 +212,42 @@ def _public_source(source: Mapping[str, Any]) -> dict[str, Any]:
 def _log_failure(exc: BaseException) -> None:
     # The type name only: the message can carry provider detail or the question itself.
     print(f"问答失败: {type(exc).__name__}", file=sys.stderr, flush=True)
+
+
+def public_retrieval(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Show bounded, source-only stage snapshots without engine internals."""
+    stages = []
+    for key, label in (("keyword", "关键词"), ("embedding", "向量"), ("fusion", "融合"),
+                       ("rerank", "重排"), ("context", "最终上下文")):
+        rows = result.get("stages", {}).get(key, [])
+        items = []
+        for position, row in enumerate(rows[:30], 1):
+            source = _public_source(row)
+            source["preview_truncated"] = len(source["excerpt"]) > 12000
+            source["excerpt"] = source["excerpt"][:12000]
+            scores = {
+                name: float(value) for name in ("similarity", "bm25_score", "rrf_score", "rerank_score")
+                if isinstance(value := row.get(name), (int, float))
+                and not isinstance(value, bool) and math.isfinite(value)
+            }
+            ranks = {
+                name: rank for name in ("bm25", "embedding")
+                if type(rank := row.get("source_ranks", {}).get(name)) is int and rank > 0
+            }
+            items.append({**source, "position": position, "scores": scores, "source_ranks": ranks})
+        stages.append({"id": key, "label": label, "count": len(rows), "items": items})
+    return {
+        "stages": stages,
+        "reranker_enabled": bool(result.get("reranker_enabled")),
+        "context_budget": result.get("context_budget"),
+        "elapsed_seconds": finite_seconds(result.get("elapsed_seconds")),
+        "generation_calls": 0,
+        "fusion_weights": {
+            key: float(value) for key in ("embedding", "bm25")
+            if isinstance(value := result.get("fusion_weights", {}).get(key), (int, float))
+            and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+        },
+    }
 
 
 def _client_address(request: Request, *, trust_proxy: bool) -> str:
@@ -360,6 +410,7 @@ def create_api_app(
     books: Sequence[Mapping[str, Any]],
     *,
     feedback_store: FeedbackStore,
+    import_manager: ImportManager | None = None,
 ) -> FastAPI:
     """Build the public app around one shared engine and one guard."""
 
@@ -370,6 +421,12 @@ def create_api_app(
         .joinpath("static/index.html")
         .read_text(encoding="utf-8")
     )
+    retrieval_page = resources.files("rag_textbook_qa.api").joinpath("static/retrieval.html").read_text(encoding="utf-8")
+    import_page = resources.files("rag_textbook_qa.api").joinpath("static/imports.html").read_text(encoding="utf-8")
+    browser_scripts = {
+        name: resources.files("rag_textbook_qa.api").joinpath(f"static/{name}").read_text(encoding="utf-8")
+        for name in ("history-backup.js", "markdown.js")
+    }
 
     app = FastAPI(
         title="计算机教材 RAG 问答",
@@ -407,6 +464,18 @@ def create_api_app(
             ) from exc
         except AccessDenied as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def local_imports(request: Request, *, rate_scope: str = "imports") -> ImportManager:
+        if import_manager is None:
+            raise HTTPException(status_code=404, detail="教材导入只在本机服务提供")
+        if request.client is None or not is_loopback_host(request.client.host):
+            raise HTTPException(status_code=403, detail="教材导入只接受本机连接")
+        origin = request.headers.get("Origin")
+        if (not is_loopback_host(request.url.hostname or "")
+                or (origin is not None and origin != str(request.base_url).rstrip("/"))):
+            raise HTTPException(status_code=403, detail="请从本机服务页面操作教材导入")
+        authorize(request, rate_scope=rate_scope)
+        return import_manager
 
     async def admit(payload: AskRequest, request: Request) -> tuple[str, str | None, int]:
         authorize(request)
@@ -448,6 +517,7 @@ def create_api_app(
                 use_llm=retrieval_only is None,
                 use_hyde=False,
                 use_decomposition=False,
+                use_adjacent_context=False,
                 verify_citations=False,
                 on_answer_chunk=sink if retrieval_only is None else None,
                 should_stop=should_stop,
@@ -480,18 +550,135 @@ def create_api_app(
     def index() -> HTMLResponse:
         return HTMLResponse(page)
 
+    @app.get("/retrieval", response_class=HTMLResponse, include_in_schema=False)
+    def retrieval_index() -> HTMLResponse:
+        return HTMLResponse(retrieval_page)
+
+    @app.get("/imports", response_class=HTMLResponse, include_in_schema=False)
+    def imports_index() -> HTMLResponse:
+        return HTMLResponse(import_page)
+
+    @app.get("/assets/{filename}", include_in_schema=False)
+    def browser_script(filename: str) -> Response:
+        if filename not in browser_scripts:
+            raise HTTPException(status_code=404, detail="没有这个页面资源")
+        return Response(browser_scripts[filename], media_type="application/javascript")
+
     @app.get("/health", summary="服务状态")
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "version": __version__,
             "books": len(current_books()),
+            "imports_enabled": import_manager is not None,
             **guard.status(),
         }
 
     @app.get("/v1/books", summary="已索引的教材")
     def list_books() -> list[dict[str, Any]]:
         return current_books()
+
+    @app.get("/v1/imports", summary="本机教材导入能力")
+    def import_capabilities(request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        return {"max_upload_bytes": MAX_UPLOAD_BYTES, "formats": [".md", ".json"],
+                "storage_path": str(manager.root),
+                "books": [{"book_id": key, "label": label} for key, label in BOOK_LABELS.items()]}
+
+    @app.get("/v1/imports/jobs", summary="最近的本机教材导入任务")
+    def recent_imports(request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        try:
+            return manager.list_jobs()
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入任务列表暂时无法读取") from None
+
+    @app.post("/v1/imports/prepare", summary="上传教材并解析预览，不建立索引")
+    async def prepare_import(book_id: str, filename: str, request: Request) -> dict[str, Any]:
+        manager = local_imports(request)
+        if len(filename) > 1024:
+            raise HTTPException(status_code=422, detail="文件名太长")
+        content = bytearray()
+        async for part in request.stream():
+            if len(content) + len(part) > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="教材文件不能超过 8 MB")
+            content.extend(part)
+        try:
+            return await run_in_threadpool(manager.prepare, book_id, filename, bytes(content))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="教材解析失败，请检查文件格式、UTF-8 编码和分块字段") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="教材暂时无法解析，请检查本机存储后重试") from None
+
+    @app.get("/v1/imports/{job_id}", summary="本机教材解析和索引进度")
+    def import_status(job_id: str, request: Request) -> dict[str, Any]:
+        manager = local_imports(request, rate_scope="import_status")
+        try:
+            return manager.status(job_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入进度暂时无法读取") from None
+
+    @app.post("/v1/imports/{job_id}/start", summary="确认建立或替换本机教材索引")
+    def start_import(job_id: str, payload: ImportStartRequest, request: Request) -> dict[str, Any]:
+        manager = local_imports(request)
+        try:
+            return manager.start(job_id)
+        except ImportBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except (ValueError, FileNotFoundError):
+            raise HTTPException(status_code=422, detail="导入预览文件已改变或丢失，请重新上传") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入暂时无法启动") from None
+
+    @app.delete("/v1/imports/{job_id}", summary="清理本机导入副本，保留已发布索引")
+    def discard_import(job_id: str, request: Request) -> dict[str, str]:
+        manager = local_imports(request)
+        try:
+            manager.discard(job_id)
+            return {"status": "deleted"}
+        except ImportBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except LookupError:
+            raise HTTPException(status_code=404, detail="没有这个导入任务") from None
+        except Exception as exc:  # noqa: BLE001 - do not expose local paths
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="导入副本暂时无法清理") from None
+
+    @app.get("/v1/books/{book_id}/passages", summary="按引用位置阅读教材及相邻片段")
+    def read_passages(book_id: str, chunk_id: str, request: Request) -> dict[str, Any]:
+        authorize(request, rate_scope="reading")
+        if not chunk_id.strip() or len(chunk_id) > 512 or len(book_id) > 503:
+            raise HTTPException(status_code=422, detail="教材或片段编号格式不正确")
+        read = getattr(engine, "read_passages", None)
+        if not callable(read):
+            raise HTTPException(status_code=404, detail="当前服务不提供原文阅读")
+        try:
+            window = read(book_id, chunk_id)
+            return {
+                "book_id": book_id,
+                "anchor_chunk_id": window["anchor_chunk_id"],
+                "source_sha256": window["source_sha256"],
+                "previous_chunk_id": window["previous_chunk_id"],
+                "next_chunk_id": window["next_chunk_id"],
+                "navigation_available": bool(window.get("navigation_available", True)),
+                "passages": [
+                    {**_public_source(row), "is_anchor": bool(row.get("is_anchor"))}
+                    for row in window["passages"]
+                ],
+            }
+        except LookupError:
+            raise HTTPException(status_code=404, detail="原文位置已不存在，可能是教材索引已经更新") from None
+        except Exception as exc:  # noqa: BLE001 - keep provider details private
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="原文暂时无法读取，请稍后重试") from None
 
     @app.post("/v1/ask", summary="提问，一次性返回回答与引用")
     async def ask(payload: AskRequest, request: Request) -> dict[str, Any]:
@@ -510,6 +697,29 @@ def create_api_app(
         except Exception as exc:  # noqa: BLE001 - public responses never carry provider text
             _log_failure(exc)
             raise HTTPException(status_code=500, detail=PUBLIC_FAILURE) from None
+
+    @app.post("/v1/retrieval/inspect", summary="观察关键词、向量、融合、重排和上下文")
+    async def inspect_retrieval(payload: AskRequest, request: Request) -> dict[str, Any]:
+        query, book_id, top_k = await admit(payload, request)
+        if book_id is None:
+            raise HTTPException(status_code=422, detail="观察检索过程需要先选择一本教材")
+        inspect = getattr(engine, "inspect_retrieval", None)
+        if not callable(inspect):
+            raise HTTPException(status_code=503, detail="当前服务不提供检索观察")
+        try:
+            admission = guard.admit_request()
+            return await _answer_once(
+                lambda sink, should_stop: public_retrieval(
+                    inspect(query, book_id, top_k, should_stop=should_stop)
+                ), admission, request,
+            )
+        except Busy as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - keep provider details private
+            _log_failure(exc)
+            raise HTTPException(status_code=503, detail="检索观察暂时失败，请稍后重试") from None
 
     @app.post("/v1/ask/stream", summary="提问，以服务器推送事件（SSE）流式返回")
     async def ask_stream(payload: AskRequest, request: Request) -> StreamingResponse:
@@ -593,7 +803,13 @@ def run_api_server(
         Path(db_path).expanduser().resolve().parent / "product" / "feedback.sqlite3"
     )
     engine = RAGEngine(db_path=db_path, verbose=False, enable_hyde=False)
+    importer = None
     try:
+        if is_loopback_host(host) and not public:
+            def build_import(chunks_file: Path, book_id: str, progress: Callable[[int, int, str], None]) -> None:
+                engine.vectorizer.vectorize_book(chunks_file, book_id, on_progress=progress)
+
+            importer = ImportManager(Path(db_path).expanduser().resolve().parent / "product" / "imports", build_import)
         if warmup and books:
             # Load both retrieval models now rather than inside the first visitor's request.
             print("正在预热检索模型...", flush=True)
@@ -604,9 +820,14 @@ def run_api_server(
                 AccessGuard(settings),
                 books,
                 feedback_store=feedback_store,
+                import_manager=importer,
             ),
             host=host,
             port=port,
         )
     finally:
-        engine.close()
+        try:
+            if importer is not None:
+                importer.close()
+        finally:
+            engine.close()

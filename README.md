@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanimasu/rag-textbook-qa/actions/workflows/ci.yml)
 
 基于五本计算机专业教材（操作系统、计算机组成原理、计算机网络、数据结构、数据库）的检索增强问答系统。
-回答里的每个结论都标注出处，点击编号就能对照教材原文。
+回答通过资料编号关联教材原文，点击编号可以对照；具体主张与引用是否对应仍需核对。
 
 ![演示：选择教材提问，回答流式输出并标注引用，点击编号跳到对应的教材原文](docs/images/demo.gif)
 
@@ -15,6 +15,14 @@
 - **混合检索 + 重排**：BM25 与 `bge-large-zh-v1.5` 向量检索按名次（RRF）融合，再由 `bge-reranker-base`
   精排。BM25 用词加字符二元组分词，避免教材术语被切碎（散列表 → 散/列表）。
 - **引用可追溯**：回答逐条标注资料编号，点击跳到原文；缺少编号或编号对不上时，页面会提示。
+  支持[回答与原文对照](docs/reading.md)、按教材顺序阅读相邻片段，并提示引用后原文发生的变化。
+- **历史、笔记与收藏**：在当前浏览器保存问答和引用，支持搜索筛选、个人笔记、收藏复习、清理和完整备份，
+  可按筛选批量整理问答、引用和笔记为 Markdown。[保存位置与使用说明](docs/history-and-favorites.md)、[复习收藏](docs/favorite-review.md)。
+- **检索观察台**：按阶段查看关键词、向量、融合、重排及最终上下文，追踪同一片段的排名变化，不调用生成模型。
+  已完成的观察可连同展示片段和排名变化导出 Markdown。
+  [使用说明](docs/retrieval-observatory.md)。
+- **本机导入向导**：选择 Markdown 或分块 JSON，先核对解析预览，再确认建立或替换教材索引，刷新可继续查看进度。
+  [支持格式与保存位置](docs/textbook-import.md)。
 - **不掩盖教材矛盾**：一处已核实的教材自相矛盾（UNIQUE 允许几个 NULL），两侧原文都被检索到时，
   要求回答并列给出两种说法。
 - **分层评测**：确定性的检索评测（Recall、MRR、nDCG，配对检验）用来迭代，RAGAS 只做阶段验收；
@@ -76,6 +84,8 @@ rag-qa serve                           # 聊天页 http://127.0.0.1:8000，接�
 
 本地调试也可以用 Streamlit 工作台：`rag-qa app`（需要额外安装 `--extra ui`）。
 
+已能正常启动时，可直接按 [每天用它学一节](docs/personal-study-quickstart.md) 完成提问、核对、笔记、复习和备份。
+
 ## 文档
 
 | 文档 | 内容 |
@@ -85,6 +95,8 @@ rag-qa serve                           # 聊天页 http://127.0.0.1:8000，接�
 | [评测方法与结果](docs/evaluation-methodology.md) | 各层评测的口径、依据和历次结果 |
 | [远程 Worker](docs/remote-worker.md) | 在 Windows GPU 上运行 Embedding 和 Reranker |
 | [开发说明](docs/development.md) | 目录结构、CI、工具脚本、评测数据集 |
+| [个人学习工作流](docs/iteration-personal-study-20261018.md) | 历史、笔记、复习、导入故障恢复、跨页与跨服务一致性的功能与验收 |
+| [小版本记录](docs/release-notes.md) | 本轮功能和后续修复 |
 | [本地验收与评分复核](docs/local-acceptance.md) | 缓存模型 HTTP 测试、候选预算正文差异、评分导入 |
 
 ## 已知限制

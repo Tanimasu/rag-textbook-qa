@@ -36,7 +36,7 @@ GitHub Actions 会在每次 push 和 pull request 时执行以下离线验收：
 - 完整的无模型、无外部 API 单元与集成测试
 - 真实 HTTP 连接验证队列饱和、排队断连及取消线程的执行槽释放
 - 回环 Worker 截断响应的整批回退与恢复，以及真实 SDK 的生成终止标记处理
-- Chromium 中运行真实聊天页，验证提交、流式回答、引用、重试、停止和反馈
+- Chromium 中运行真实聊天页，验证提交、流式回答、引用、重试、停止、反馈，以及历史保存、筛选、收藏和清理
 - Python 源码编译检查
 - source distribution 与 wheel 构建
 - 发布包清单检查：wheel 与源码包中必需文件齐全，且不含本地数据、索引或密钥
@@ -56,6 +56,8 @@ uv run --no-sync python -m compileall -q src tests project
 CI 通过 `uv.lock` 安装固定依赖，锁文件与 `pyproject.toml` 不一致时直接失败。
 矩阵任务显式设置 `UV_PYTHON` 并断言实际解释器版本，避免 `.python-version` 的本机 3.11 设置覆盖 3.12。
 构建使用锁定的 `build` 分组和 `python -m build --no-isolation`，避免构建时另行解析依赖。
+发布清单检查还会核对源码项目、锁文件中的本项目、wheel 元数据和运行时版本是否一致；
+只解析归档中的 TOML、元数据和 Python 常量，不执行归档代码。依赖锁完整性仍由 `uv lock --check` / `uv sync --locked` 检查。
 
 浏览器测试独立运行，后端为本机假服务，浏览器执行仓库中的原始 HTML / JavaScript：
 
@@ -69,7 +71,37 @@ Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系�
 本机已有 Chrome 时可设置 `RAG_QA_BROWSER_CHANNEL=chrome`，省去浏览器下载。
 `--only-group browser` 创建的环境仅含浏览器测试依赖，运行核心测试前需重新执行上面的完整同步命令。
 
+CI 还会以真实 HTTP、Chrome / Chromium 和临时 Chroma 索引串联导入、问答、原文阅读、笔记、复习、导出与检索观察。
+使用内置的三个合成片段和本地模型模拟器，不依赖本机教材，也不读取已有索引。
+本机复跑这项检查需完整应用依赖：
+
+```bash
+uv sync --locked --extra api --group browser
+RAG_QA_BROWSER_CHANNEL=chrome uv run --no-sync python scripts/check_study_workflow.py \
+  --output artifacts/evaluations/study-workflow-new-run
+```
+
+输出目录必须不存在。需要复核实际操作系统片段时，可以额外传入 `--chunks data/chunks/操作系统_mineru_chunks.json`，
+原文件只读，报告区分合成资料与实际文件，并保存输入散列。
+
+导入任务还会通过两个独立 API 进程共用临时索引和导入目录验收：运行中不误报中断、不重复建立、
+不能清理正在使用的文件；发布后另一个进程可读取和检索，清理上传副本后两边仍可阅读。
+该检查也已加入核心 CI 矩阵，本机无需浏览器即可复跑：
+
+```bash
+uv run --no-sync python scripts/check_import_coordination.py \
+  --output artifacts/evaluations/import-coordination-new-run
+```
+
+同样使用合成资料和注入的确定性模型，输出两个进程的调用计数、退出状态及服务日志。
+
 CI 不读取 `project/.env`，也不会连接远程 Worker、调用 LLM API 或下载模型权重。
+队列和学习流程验收的 HTTP 客户端直连本机回环服务，不读取环境代理或个人 `netrc`。
+CI 在故意不可用的代理环境下运行这两项检查，避免本机请求被环境中的代理转发而误判验收失败。
+
+聊天页的独立格式渲染位于 `api/static/markdown.js`，历史备份校验位于 `api/static/history-backup.js`，
+均无外部脚本依赖。`/assets/` 只提供这两个固定资源；资源缺失时正文回退为安全文本，问答保存和原文快照仍可使用。
+新增资源必须加入 `scripts/check_distribution.py` 的发布包清单。
 
 ### 本机性能验收
 

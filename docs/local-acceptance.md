@@ -21,7 +21,12 @@ Streamlit 每次评估保存到 `artifacts/evaluations/ragas-runs/` 下独立的
 无法保存用量时，取消尚未开始的任务，停止后续阶段；已经在执行的请求仍可能产生费用。
 评判器版本 6 要求响应正常结束，并拒绝重复 JSON 字段和 NaN / Infinity 等非标准数值。
 截断或存在歧义的 JSON 不计分；格式修复仍受既有重试次数限制并记入用量。
-版本 5 及更早的输出目录不能用版本 6 原地续跑，请保留旧目录并使用新目录。
+当前协议版本 7 另核对每份来源正文属于它声明编号的实际上下文块，并拒绝重复编号、
+缺失或多余来源。无编号的旧式纯正文输入仍按全文包含关系校验。
+近似摘录匹配也拒绝匹配范围内数字、拉丁术语/符号和常见中文否定字的变化；
+这只是文字保护，不能保证条件、范围和推论在语义上成立。
+版本 6 及更早的输出目录不能用版本 7 原地续跑，请保留旧目录并使用新目录。
+这是输入绑定修复，不表示评判器通过独立语义校准。
 冻结题集文件也拒绝歧义 JSON，检查在创建客户端和输出协议前执行。
 协议与 JSONL 存档存在重复字段、非有限数值或无效记录键时也停止续跑，保留原文件；
 这些完整但有歧义的记录不会按半截写入跳过，避免静默选取答案或误判样本已完成。
@@ -87,6 +92,9 @@ python scripts/prepare_answer_review.py \
 
 ## 已存评判的一致性复算
 
+需要保留回答原引用、条件及符号并逐主张复核时，使用[逐主张引用复核工具](claim-review.md)。
+它分别记录上下文支持与指定引用支持，全部新标签初始为空，不调用模型，也不替代独立语义校准。
+
 已有陈述拆分、逐条复核标签与判定时，可以离线重算一致性：
 
 ```bash
@@ -100,7 +108,7 @@ python scripts/compare_judge_review.py \
 工具核对全部题号、事实陈述编号与正文；缺失、重复、额外判定和非整数 0/1 标签均被拒绝。
 输出混淆计数、Kappa、召回率、精确率、拆分遗漏和逐题分歧；无定义指标为 null。
 未调用模型，不产生新标签，不自动改变原验收门槛。结果只表示与提供标签的一致性，
-不认证审核者身份、独立性或盲标时序，也不能把历史 v3 结果称为当前 v4 验收。
+不认证审核者身份、独立性或盲标时序，也不能把历史 v3 结果称为当前版本验收。
 
 ## RAGAS 请求重试边界
 
@@ -230,3 +238,36 @@ python scripts/check_generation_transport.py --output artifacts/evaluations/gene
 
 验证正常 / 截断终止标记无需等待上游关闭连接，以及缺少结束标记的响应被判为不完整。
 只测试传输和结束处理，不衡量生成质量。
+
+
+## 历史与收藏页面（2026-10-17）
+
+从已合并的 `main`（`6ebc5b8`）创建 `codex/history-favorites-20261017`，完成
+[历史与收藏第一版](history-and-favorites.md)。本次使用本机模拟后端和真实 Chrome 执行聊天页，
+没有调用远程 Worker 或付费模型，也没有修改教材、索引或旧实验结果。
+
+- 完整离线单元与集成测试：626 项中 615 项通过，11 项因未安装 RAGAS `eval` extra 跳过。
+- 聊天页浏览器回归：31 项通过，其中新增 10 项覆盖历史与收藏。
+- `ruff check src tests scripts`、`compileall -q src tests`、`git diff --check` 通过。
+- 检查了桌面和 390 像素手机页面截图；手机布局无横向溢出，引用快照仍可跳转和导出。
+
+运行命令：
+
+```bash
+uv run --no-sync python -m unittest discover -s tests -v
+RAG_QA_BROWSER_CHANNEL=chrome \
+  RAG_QA_BROWSER_SCREENSHOTS=artifacts/evaluations/history-favorites-20261017 \
+  uv run --no-sync python tests/browser/public_chat_browser.py -v
+uv run --no-sync python -m ruff check src tests scripts
+uv run --no-sync python -m compileall -q src tests
+git diff --check
+```
+
+本地最终日志、截图及文件哈希保存在忽略目录 `artifacts/evaluations/history-favorites-20261017/`。
+这里验证功能与页面体验，不作为模型回答质量或性能测试。
+
+后续原文阅读、笔记、复习、检索观察台和本机导入的 0.3.10 最终验收，见
+[个人学习工作流验收](iteration-personal-study-20261017.md)。上面的 626 / 31 是历史与收藏第一阶段记录。
+
+2026-10-18 继续完成跨标签页、笔记草稿、复习日期、跨进程导入和发布一致性检查，
+最新结果见 [个人学习工作流可靠性验收](iteration-personal-study-20261018.md)。历史阶段记录和旧实验保留。

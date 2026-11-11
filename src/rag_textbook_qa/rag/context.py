@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -80,6 +81,7 @@ def select_context(
             {
                 **result,
                 "content": excerpt,
+                "source_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "citation_id": index,
                 "context_text": block,
                 "truncated": truncated,

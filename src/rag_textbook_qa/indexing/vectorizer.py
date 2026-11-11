@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Self
@@ -19,6 +19,7 @@ from tqdm import tqdm
 from rag_textbook_qa.catalog import book_id_from_chunk_stem
 from rag_textbook_qa.config import Settings
 from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
+from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
 
@@ -51,8 +52,10 @@ def _validate_book_id(book_name: str) -> str:
 
 def _load_chunks(chunks_path: str | Path) -> list[dict[str, Any]]:
     path = Path(chunks_path).expanduser().resolve()
-    with path.open(encoding="utf-8") as stream:
-        chunks = json.load(stream)
+    try:
+        chunks = loads_strict(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError("分块 JSON 格式不正确，不能包含重复字段或非有限数值") from exc
     if not isinstance(chunks, list) or not chunks:
         raise ValueError("chunks 文件必须包含至少一个文本块")
 
@@ -245,6 +248,8 @@ class MultiBookVectorizer:
         book_name: str,
         batch_size: int = 32,
         clear_existing: bool = True,
+        *,
+        on_progress: Callable[[int, int, str], None] | None = None,
     ) -> str:
         """Vectorize one chunk JSON file into ``textbook_{book_name}``."""
 
@@ -258,12 +263,13 @@ class MultiBookVectorizer:
         build_lock = FileLock(self._build_lock_path(book_name), timeout=0)
         try:
             with build_lock:
-                return self._vectorize_book_locked(chunks_path, book_name, batch_size, clear_existing)
+                return self._vectorize_book_locked(chunks_path, book_name, batch_size, clear_existing, on_progress)
         except Timeout as exc:
             raise RuntimeError(f"教材 {book_name} 正在构建索引，请稍后重试") from exc
 
     def _vectorize_book_locked(
         self, chunks_path: str | Path, book_name: str, batch_size: int, clear_existing: bool,
+        on_progress: Callable[[int, int, str], None] | None = None,
     ) -> str:
 
         print("=" * 70)
@@ -272,6 +278,8 @@ class MultiBookVectorizer:
         print(f"加载 chunks: {chunks_path}")
         chunks = _load_chunks(chunks_path)
         total = len(chunks)
+        if on_progress:
+            on_progress(0, total, "embedding")
         print(f"加载了 {total} 个 chunks\n")
 
         collection_name = f"textbook_{book_name}"
@@ -343,11 +351,19 @@ class MultiBookVectorizer:
                     documents=documents,
                     metadatas=metadatas,
                 )
+                if on_progress:
+                    on_progress(min(offset + batch_size, total), total, "embedding")
         except BaseException:
             if self._collection_exists(write_collection_name):
                 self.client.delete_collection(write_collection_name)
             raise
 
+        if on_progress:
+            try:
+                on_progress(total, total, "publishing")
+            except BaseException:
+                self.client.delete_collection(write_collection_name)
+                raise
         collection = self._promote_collection(collection, collection_name)
 
         elapsed_time = time.time() - start_time

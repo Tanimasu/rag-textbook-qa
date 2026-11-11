@@ -31,6 +31,7 @@ from rag_textbook_qa.api.guard import (
     GuardSettings,
     RateLimited,
 )
+from rag_textbook_qa.api.imports import ImportManager
 from rag_textbook_qa.cli import main
 from rag_textbook_qa.llm import GenerationCancelled
 from rag_textbook_qa.providers.base import AuthenticationError
@@ -333,7 +334,7 @@ class PublicResultTests(unittest.TestCase):
 
 
 class ApiAppTests(unittest.TestCase):
-    def client(self, engine=None, **settings):
+    def client(self, engine=None, import_manager=None, client_host="testclient", **settings):
         self.engine = engine or FakeEngine()
         self.guard = AccessGuard(GuardSettings(**settings))
         temporary = tempfile.TemporaryDirectory()
@@ -345,8 +346,93 @@ class ApiAppTests(unittest.TestCase):
                 self.guard,
                 BOOKS,
                 feedback_store=self.feedback_store,
-            )
+                import_manager=import_manager,
+            ), client=(client_host, 50000),
+            base_url="http://127.0.0.1" if client_host == "127.0.0.1" else "http://testserver",
         )
+
+    def test_imports_require_local_enabled_service_access_and_explicit_confirmation(self):
+        disabled = self.client()
+        self.assertFalse(disabled.get("/health").json()["imports_enabled"])
+        self.assertEqual(disabled.get("/v1/imports").status_code, 404)
+        with tempfile.TemporaryDirectory() as directory:
+            builder = MagicMock()
+            manager = ImportManager(Path(directory), builder)
+            remote = self.client(import_manager=manager, client_host="192.0.2.1")
+            self.assertEqual(remote.get("/v1/imports").status_code, 403)
+            client = self.client(import_manager=manager, client_host="127.0.0.1", access_code="import-code")
+            self.assertEqual(client.get("/v1/imports", headers={"Origin": "https://example.org"}).status_code, 403)
+            self.assertEqual(client.get("/v1/imports").status_code, 401)
+            headers = {"X-Access-Code": "import-code", "Content-Type": "application/octet-stream"}
+            content = ("# 第1章\n## 1.1 进程\n" + "进程是程序的一次执行。" * 20).encode()
+            prepared = client.post("/v1/imports/prepare?book_id=os&filename=textbook.md",
+                                   content=content, headers=headers)
+            self.assertEqual(prepared.status_code, 200)
+            job_id = prepared.json()["job_id"]
+            builder.assert_not_called()
+            url = f"/v1/imports/{job_id}/start"
+            json_headers = {"X-Access-Code": "import-code"}
+            self.assertEqual(client.post(url, json={"confirm_replace": False}, headers=json_headers).status_code, 422)
+            builder.assert_not_called()
+            self.assertEqual(client.post(url, json={"confirm_replace": True}, headers=json_headers).status_code, 200)
+            manager.close()
+            self.assertEqual(client.get(f"/v1/imports/{job_id}", headers=headers).json()["state"], "complete")
+            self.assertEqual(self.engine.calls, [])
+            self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
+
+    def test_reading_is_authenticated_sanitized_and_does_not_spend_generation(self):
+        engine = FakeEngine()
+        engine.read_passages = MagicMock(return_value={
+            "anchor_chunk_id": "chapter_p1", "source_sha256": "a" * 64,
+            "previous_chunk_id": None, "next_chunk_id": "chapter_p2",
+            "passages": [{**SOURCE, "chunk_id": "chapter_p1", "is_anchor": True,
+                          "internal_path": SECRET, "prompt": SECRET}],
+        })
+        client = self.client(engine=engine, access_code="reader-code", requests_per_window=1)
+        path = "/v1/books/os/passages?chunk_id=chapter_p1"
+        self.assertEqual(client.get(path).status_code, 401)
+        engine.read_passages.assert_not_called()
+        response = client.get(path, headers={"X-Access-Code": "reader-code"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(SECRET, response.text)
+        self.assertTrue(response.json()["passages"][0]["is_anchor"])
+        self.assertEqual(response.json()["passages"][0]["excerpt"], SOURCE["content"])
+        self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
+        self.assertEqual(client.post("/v1/ask", json={"query": "进程", "book_id": "os"},
+                                     headers={"X-Access-Code": "reader-code"}).status_code, 200)
+
+    def test_inspection_uses_bounded_queue_and_never_reserves_generation(self):
+        engine = FakeEngine()
+        engine.inspect_retrieval = MagicMock(return_value={
+            "stages": {"keyword": [{**SOURCE, "prompt": SECRET}]},
+            "context_budget": 4000, "reranker_enabled": False,
+        })
+        client = self.client(engine=engine, access_code="inspect-code")
+        payload = {"query": "进程", "book_id": "os", "top_k": 3}
+        self.assertEqual(client.post("/v1/retrieval/inspect", json=payload).status_code, 401)
+        engine.inspect_retrieval.assert_not_called()
+        response = client.post("/v1/retrieval/inspect", json=payload,
+                               headers={"X-Access-Code": "inspect-code"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["generation_calls"], 0)
+        self.assertEqual(len(response.json()["stages"]), 5)
+        self.assertNotIn(SECRET, response.text)
+        self.assertEqual(engine.calls, [])
+        self.assertEqual(self.guard.status()["generations_remaining_today"], 200)
+        self.assertEqual(self.guard.status()["requests_in_flight"], 0)
+        self.assertEqual(client.get("/retrieval").status_code, 200)
+
+    def test_reading_missing_or_updating_index_keeps_provider_details_private(self):
+        engine = FakeEngine()
+        engine.read_passages = MagicMock(side_effect=LookupError(SECRET))
+        client = self.client(engine=engine)
+        path = "/v1/books/os/passages?chunk_id=chapter_p1"
+        self.assertEqual(client.get(path).status_code, 404)
+        engine.read_passages.side_effect = RuntimeError(SECRET)
+        response = client.get(path)
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(SECRET, response.text)
+        self.assertEqual(engine.calls, [])
 
     def test_page_books_docs_and_health_expose_no_secrets(self):
         client = self.client(access_code="demo-2026")
@@ -357,7 +443,9 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("计算机教材问答", page.text)
         self.assertIn("请选择教材", page.text)
-        self.assertNotIn("全部教材", page.text)
+        # Asking still requires one book; the history library may search all books.
+        question_books = page.text.split('<select id="book"', 1)[1].split("</select>", 1)[0]
+        self.assertNotIn("全部教材", question_books)
         self.assertIn('data-book="os" disabled', page.text)
         self.assertIn('data-book="database" disabled', page.text)
         self.assertIn('data-book="computer_network" disabled', page.text)
@@ -489,7 +577,17 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual((call["book_name"], call["top_k"]), ("os", 3))
         self.assertFalse(call["use_hyde"])
         self.assertFalse(call["use_decomposition"])
+        self.assertFalse(call["use_adjacent_context"])
         self.assertFalse(call["verify_citations"])
+
+    def test_browser_assets_use_a_fixed_allowlist(self):
+        client = self.client()
+        for name in ("markdown.js", "history-backup.js"):
+            response = client.get(f"/assets/{name}")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("application/javascript", response.headers["content-type"])
+        for name in ("app.py", ".env", "../app.py", "%2e%2e%2fapp.py"):
+            self.assertEqual(client.get(f"/assets/{name}").status_code, 404)
 
     def test_invalid_requests_never_reach_the_engine(self):
         client = self.client()
@@ -749,6 +847,42 @@ class StreamStopTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_import_setup_failure_still_closes_the_created_engine(self):
+        fake_uvicorn = SimpleNamespace(run=MagicMock())
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch("rag_textbook_qa.indexing.list_indexed_books", return_value=[]),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
+                patch("rag_textbook_qa.api.app.ImportManager", side_effect=OSError("import setup failed")),
+                self.assertRaises(OSError),
+            ):
+                run_api_server(host="127.0.0.1", port=7860, db_path=Path(directory) / "db", warmup=False)
+            engine_class.return_value.close.assert_called_once_with()
+            fake_uvicorn.run.assert_not_called()
+
+    def test_import_cleanup_failure_still_closes_engine_after_imports(self):
+        fake_uvicorn = SimpleNamespace(run=MagicMock())
+        importer = MagicMock()
+        closed = []
+        def fail_import_close():
+            closed.append("imports")
+            raise OSError("cleanup failed")
+        importer.close.side_effect = fail_import_close
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
+                patch("rag_textbook_qa.indexing.list_indexed_books", return_value=[]),
+                patch("rag_textbook_qa.rag.RAGEngine") as engine_class,
+                patch("rag_textbook_qa.api.app.ImportManager", return_value=importer),
+                self.assertRaises(OSError),
+            ):
+                engine_class.return_value.close.side_effect = lambda: closed.append("engine")
+                run_api_server(host="127.0.0.1", port=7860, db_path=Path(directory) / "db", warmup=False)
+            self.assertEqual(closed, ["imports", "engine"])
+
     def test_an_open_public_bind_is_refused_before_any_model_loads(self):
         with (
             patch.dict(os.environ, {}, clear=True),

@@ -45,6 +45,7 @@ HEADING_FIELDS = ("chapter", "section_h2", "section_h3", "section_h4")
 ARMS = (
     "baseline", "same_section", "parent_radius_1", "parent_radius_2",
     "compact_parent", "question_parent", "bridge_parent",
+    "focused_parent",
 )
 _EXERCISE_HEADING = re.compile(r"习题|练习题|思考题|选择题|填空题|自测题|复习题")
 _QUERY_STOP_WORDS = {"的", "了", "是", "在", "中", "有", "和", "与", "及", "对",
@@ -279,6 +280,43 @@ def bridge_parent_context(
     query: str, ranked: Sequence[dict[str, Any]],
     corpora: Mapping[str, Sequence[dict[str, Any]]], *, context_budget: int = 4000,
 ) -> tuple[str, list[dict[str, Any]]]:
+    return _bridge_parent_context(query, ranked, corpora, context_budget=context_budget)
+
+
+def focused_parent_context(
+    query: str, ranked: Sequence[dict[str, Any]],
+    corpora: Mapping[str, Sequence[dict[str, Any]]], *, context_budget: int = 4000,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Give explicit explanatory dependencies priority, not mere concept mentions.
+
+    Lists, composition and prerequisite references compete by query words like
+    all other paragraphs. The original bridge arm remains available unchanged.
+    This lexical development heuristic is not a semantic relevance guarantee.
+    """
+    return _bridge_parent_context(
+        query, ranked, corpora, context_budget=context_budget, causal_only=True,
+    )
+
+
+def _explains_dependency(content: str, concept: str) -> bool:
+    prose = "\n".join(p["text"] for p in paragraph_spans(content) if p["selectable"])
+    for clause in re.split(r"[。！？!?；;\n]", prose.lower()):
+        position = clause.find(concept.lower())
+        if position < 0:
+            continue
+        prefix = clause[:position]
+        if re.search(r"不|未|无需|无须|并非", prefix):
+            continue
+        if re.search(r"因为|由于|依赖于?|借助|基于|通过|利用", prefix):
+            return True
+    return False
+
+
+def _bridge_parent_context(
+    query: str, ranked: Sequence[dict[str, Any]],
+    corpora: Mapping[str, Sequence[dict[str, Any]]], *, context_budget: int = 4000,
+    causal_only: bool = False,
+) -> tuple[str, list[dict[str, Any]]]:
     """Experimental question matching with explicitly named concept dependencies.
 
     Among delivered anchors, the largest query/title token overlap identifies
@@ -327,7 +365,8 @@ def bridge_parent_context(
             str(candidate.get(field, "")) for field in HEADING_FIELDS[2:]
         ) if anchor is not None and key == primary_key and not term.isdigit()
             and term.lower() not in query.lower()
-            and term.lower() in anchor["content"].lower()]
+            and term.lower() in anchor["content"].lower()
+            and (not causal_only or _explains_dependency(anchor["content"], term))]
         # Match the concept at the beginning, not merely a passing mention in
         # a later paragraph. The bridge cannot jump over an introductory image.
         if bridges and paragraphs and paragraphs[0]["selectable"] and any(
@@ -449,10 +488,12 @@ def replay(
             question.question, ranked, corpora,
         )
         bridge_context, bridge_sources = bridge_parent_context(question.question, ranked, corpora)
+        focused_context, focused_sources = focused_parent_context(question.question, ranked, corpora)
         arms = {}
         for name in ARMS:
             context, sources = (
-                (bridge_context, bridge_sources) if name == "bridge_parent"
+                (focused_context, focused_sources) if name == "focused_parent"
+                else (bridge_context, bridge_sources) if name == "bridge_parent"
                 else (question_context, question_sources) if name == "question_parent"
                 else (compact_context, compact_sources) if name == "compact_parent"
                 else select_context(candidates[name], 4000)

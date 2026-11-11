@@ -102,6 +102,31 @@ class ArmAndCaseTests(unittest.TestCase):
         self.assertEqual(loaded.requirements, ("进程的含义",))
         self.assertEqual(loaded.variants["baseline"].answers, ("答",))
 
+    def test_numbered_context_rejects_swapped_missing_and_duplicate_bindings(self):
+        other = {"citation_id": 2, "content": "数据库索引用来定位存储记录。"}
+        context = ("【参考资料 1】\n" + SOURCE["content"]
+                   + "\n【参考资料 2】\n" + other["content"])
+        variants = [
+            {"context": context, "sources": [
+                {**SOURCE, "citation_id": 2}, {**other, "citation_id": 1}]},
+            {"context": context, "sources": [SOURCE]},
+            {"context": context.replace("资料 2", "资料 1"), "sources": [SOURCE, other]},
+            {"context": context, "sources": [{**SOURCE, "citation_id": 3}, other]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for variant in variants:
+                with self.subTest(variant=variant), self.assertRaises(ValueError):
+                    load_generation_cases(write_cases(directory, [{
+                        "id": "01", "question": "问题", "variants": {"base": variant},
+                    }]))
+            # Source list order is independent of the displayed citation order.
+            [loaded] = load_generation_cases(write_cases(directory, [{
+                "id": "01", "question": "问题", "variants": {"base": {
+                    "context": context, "sources": [other, SOURCE],
+                }},
+            }]))
+            self.assertEqual(loaded.variants["base"].sources[0]["citation_id"], 2)
+
 
 class QuoteTests(unittest.TestCase):
     def test_tolerates_width_whitespace_and_punctuation_style(self):

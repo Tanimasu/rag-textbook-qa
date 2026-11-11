@@ -7,8 +7,10 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
 <style>
 :root {
+  color-scheme: light dark;
   --bg: #f6f7f9; --panel: #ffffff; --text: #1c2330; --muted: #5c6675; --line: #e3e6eb;
   --accent: #2f6fed; --accent-soft: #e8f0fe; --user: #2f6fed; --user-text: #ffffff;
+  --button-bg: #2f6fed;
   --warn-bg: #fff6e0; --warn-text: #7a5300; --err-bg: #fdecec; --err-text: #9b1c1c;
   --code-bg: #f1f3f6; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
 }
@@ -16,6 +18,7 @@
   :root {
     --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #9aa4b2; --line: #2a3039;
     --accent: #6ea0ff; --accent-soft: #1d2a42; --user: #3b6fd8; --user-text: #ffffff;
+    --button-bg: #3b6fd8;
     --warn-bg: #3a2e12; --warn-text: #f3d28a; --err-bg: #3d1a1a; --err-text: #f4a3a3;
     --code-bg: #20252d; --shadow: none;
   }
@@ -31,6 +34,7 @@ body {
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 .app { max-width: 860px; margin: 0 auto; padding: 0 16px; min-height: 100%; display: flex; flex-direction: column; }
+.app.has-reader { max-width: 1320px; }
 header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
 .brand h1 { margin: 0; font-size: 20px; }
 .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
@@ -45,7 +49,7 @@ header { padding: 20px 0 12px; display: flex; flex-wrap: wrap; align-items: cent
 }
 .toolbar-button:hover { color: var(--accent); }
 .toolbar-button:disabled { opacity: .5; cursor: default; }
-select, input[type=password] {
+select, input[type=password], input[type=search] {
   font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel); color: var(--text); max-width: 100%;
 }
@@ -63,7 +67,7 @@ main { flex: 1; padding: 16px 0; }
 .msg.user { justify-content: flex-end; }
 .bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
 .msg.user .bubble { background: var(--user); color: var(--user-text); border-bottom-right-radius: 4px; }
-.answer { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
+.answer { width: 100%; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
 .answer .body { word-break: break-word; }
 .answer .body.progress { color: var(--muted); }
 .answer .body h2, .answer .body h3 { font-size: 16px; margin: 14px 0 6px; }
@@ -73,6 +77,13 @@ main { flex: 1; padding: 16px 0; }
 .answer .body code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 .answer .body pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
 .answer .body pre code { background: none; padding: 0; }
+.answer .body .code-block { position: relative; margin: 10px 0; padding-top: 28px; background: var(--code-bg); border-radius: 8px; }
+.answer .body .code-block pre { margin: 0; }
+.code-copy { position: absolute; top: 5px; right: 8px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.table-scroll { overflow-x: auto; margin: 10px 0; }
+.answer .body table { border-collapse: collapse; min-width: 100%; font-size: 14px; }
+.answer .body th, .answer .body td { border: 1px solid var(--line); padding: 7px 10px; min-width: 100px; vertical-align: top; }
+.answer .body th { background: var(--code-bg); }
 .cite {
   font: inherit; font-size: 12px; border: 0; background: var(--accent-soft); color: var(--accent);
   border-radius: 6px; padding: 0 6px; margin: 0 2px; cursor: pointer;
@@ -92,6 +103,54 @@ main { flex: 1; padding: 16px 0; }
 .action:hover { color: var(--accent); border-color: var(--accent); }
 .action:disabled { opacity: .55; cursor: default; }
 .feedback-status { color: var(--muted); font-size: 13px; }
+.history-panel { margin-top: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.history-panel h2 { margin: 0; font-size: 16px; }
+.history-help, .history-meta { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.history-export-options { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:8px 0; }
+.history-export-options label { display:flex; align-items:flex-start; gap:6px; flex:1 1 240px; font-size:12px; color:var(--muted); }
+.history-filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.history-filters label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.history-filters input[type=search] { width: 100%; }
+.history-search { flex: 1 1 230px; }
+.history-item { padding: 12px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.history-item h3 { margin: 0; font-size: 14px; white-space: pre-wrap; }
+.history-item p { margin: 4px 0; font-size: 13px; color: var(--muted); }
+.history-item .history-match { padding: 6px 8px; border-left: 2px solid var(--accent); background: var(--bg); white-space: pre-wrap; }
+.history-match-label { color: var(--text); font-weight: 600; }
+.action[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.history-cleanup, .history-backup { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px; }
+.history-cleanup summary, .history-backup summary { cursor: pointer; }
+.history-backup label { display: block; margin-top: 10px; }
+.history-backup input[type=file] { width: 100%; font: inherit; margin-top: 6px; }
+.saved-note { margin-top: 12px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 6px; }
+.saved-note h3 { margin: 0 0 4px; font-size: 14px; }
+.saved-note .note-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.note-editor { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.note-editor label { display: block; font-size: 13px; }
+.note-editor textarea { width: 100%; min-height: 110px; margin-top: 6px; resize: vertical; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.review-panel { padding: 14px 16px; margin-top: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.review-panel h2 { margin: 0; font-size: 16px; }
+.review-panel .question { font-size: 17px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
+.review-controls { position: sticky; bottom: 0; padding: 12px 0; background: var(--bg); display: flex; flex-wrap: wrap; gap: 8px; }
+#history-status { font-size: 13px; }
+.answer.reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.answer-content { min-width: 0; }
+.reader { position: sticky; top: 12px; max-height: 80vh; overflow: auto; min-width: 0; border-left: 1px solid var(--line); padding-left: 16px; }
+.reader h3 { margin: 0; font-size: 16px; }
+.reader .reader-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reader label { display: grid; gap: 5px; font-size: 13px; margin-top: 10px; }
+.reader-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.reader-quote { border-left: 3px solid var(--accent); padding-left: 12px; margin: 12px 0; }
+.reader-passage { padding: 10px; margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; }
+.reader-passage.anchor { border-color: var(--accent); background: var(--accent-soft); }
+.reader-tabs { display: none; }
+@media (max-width: 800px) {
+  .answer.reading { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .reader { position: static; max-height: none; border-left: 0; padding-left: 0; }
+  .reader-tabs { display: flex; gap: 8px; }
+  .answer.reading[data-reader-tab=source] > .answer-content { display: none; }
+  .answer.reading[data-reader-tab=answer] > .reader { display: none; }
+}
 .feedback-notice { margin-top: 10px; color: var(--muted); font-size: 13px; }
 .feedback-panel {
   margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
@@ -126,7 +185,7 @@ details.sources summary { cursor: pointer; font-size: 13px; color: var(--muted);
 .composer form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer-hint { margin: 5px 8px 0; font-size: 12px; color: var(--muted); }
 .mobile-hint { display: none; }
-.composer button { font: inherit; border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
+.composer button { font: inherit; border: 0; background: var(--button-bg); color: #fff; border-radius: 10px; padding: 8px 16px; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
 .composer .cancel { background: transparent; color: var(--err-text); border: 1px solid var(--line); }
 footer { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0 16px; }
@@ -149,6 +208,8 @@ footer details p { margin-top: 6px; text-align: left; }
       <p>基于五本计算机教材的检索增强问答，回答会标注引用的教材原文</p>
     </div>
     <nav class="header-links">
+      <a href="/retrieval">检索观察台</a>
+      <a href="/imports" id="import-link" hidden>导入教材</a>
       <a href="/docs" target="_blank" rel="noopener">API 文档</a>
       <a href="https://github.com/Tanimasu/rag-textbook-qa" target="_blank" rel="noopener">源代码</a>
     </nav>
@@ -160,8 +221,67 @@ footer details p { margin-top: 6px; text-align: left; }
     <button class="toolbar-button" id="reload-books" type="button" hidden>重新加载教材</button>
     <label id="code-field" hidden>访问口令 <input id="code" type="password" autocomplete="off"></label>
     <button class="toolbar-button" id="clear" type="button" hidden>清空对话</button>
+    <button class="toolbar-button" id="toggle-history" type="button" aria-expanded="false" aria-controls="history-panel">历史与收藏</button>
     <span class="quota" id="quota"></span>
   </div>
+
+  <div id="history-status" role="status" hidden></div>
+  <section class="history-panel" id="history-panel" aria-labelledby="history-title" hidden>
+    <h2 id="history-title">历史与收藏</h2>
+    <p class="history-help">问答及引用快照保存在当前浏览器的 IndexedDB。仅此浏览器、此网址可见，不跨设备同步。清除网站数据会丢失记录，重要内容请导出 Markdown。</p>
+    <div class="history-filters">
+      <label class="history-search"><input id="history-search" type="search" maxlength="500" placeholder="搜索问题、回答或引用原文" aria-label="搜索历史问答"></label>
+      <label>教材 <select id="history-book"><option value="">全部教材</option></select></label>
+      <label><input id="history-favorites" type="checkbox">只看收藏</label>
+      <label><input id="history-notes" type="checkbox">有学习笔记</label>
+      <button class="action" id="history-reset-filters" type="button">清除筛选</button>
+    </div>
+    <p id="history-count" class="history-help" role="status">正在读取记录…</p>
+    <div class="history-export-options">
+      <label><input id="history-export-practice" type="checkbox">练习版：先列问题，回答和笔记放在后面</label>
+      <button class="action" id="history-export-md" type="button" disabled>导出筛选结果（Markdown）</button>
+    </div>
+    <p class="history-help">导出全部匹配记录和已保存笔记，不受列表分页影响；需要恢复到浏览器时请使用 JSON 备份。</p>
+    <p id="history-export-status" class="history-help" role="status"></p>
+    <div id="history-list"></div>
+    <button class="action" id="history-more" type="button" hidden>显示更多</button>
+    <div class="history-cleanup">
+      <p class="history-help" id="history-review-count" role="status"></p>
+      <label class="history-help"><input id="history-review-all" type="checkbox">包括未到期收藏</label>
+      <button class="action" id="history-review-start" type="button" disabled>复习收藏</button>
+      <p class="history-help">按当前筛选，先回忆问题，再展开已保存的回答和教材引用。按自评安排下次复习日期，不调用模型。</p>
+    </div>
+    <details class="history-backup">
+      <summary>备份与恢复</summary>
+      <p class="history-help">JSON 备份包含问题、回答、引用和收藏，下载到你选择的位置。恢复时只新增记录，相同编号保留当前浏览器的版本。</p>
+      <div class="actions">
+        <button class="action" id="history-backup-all" type="button" disabled>备份全部记录</button>
+        <button class="action" id="history-backup-filtered" type="button" disabled>备份筛选结果</button>
+      </div>
+      <label class="history-help">选择备份文件 <input id="history-backup-file" type="file" accept=".json,application/json"></label>
+      <p class="history-help" id="history-backup-preview" role="status"></p>
+      <button class="action" id="history-restore" type="button" disabled>确认合并恢复</button>
+    </details>
+    <details class="history-cleanup">
+      <summary>清理记录</summary>
+      <p class="history-help">清空对话只收起当前显示；删除记录会同时删除它的引用快照，无法撤销。</p>
+      <div class="actions">
+        <button class="action" id="history-clean" type="button" disabled>清理未收藏</button>
+        <button class="action" id="history-delete-all" type="button" disabled>删除全部记录</button>
+      </div>
+    </details>
+  </section>
+
+  <section id="review-panel" class="review-panel" aria-labelledby="review-title" hidden>
+    <h2 id="review-title">复习收藏</h2>
+    <p class="history-help" id="review-meta" role="status"></p>
+    <div class="question" id="review-question"></div>
+    <div class="actions">
+      <button class="action" id="review-reveal" type="button">显示回答与引用</button>
+      <button class="action" id="review-skip" type="button">跳过这一题</button>
+      <button class="action" id="review-end" type="button">结束复习</button>
+    </div>
+  </section>
 
   <main id="thread">
     <div class="empty" id="empty">
@@ -176,19 +296,26 @@ footer details p { margin-top: 6px; text-align: left; }
     </div>
   </main>
 
+  <div id="review-controls" class="review-controls" hidden>
+    <button class="action" id="review-again" type="button">还不熟 · 明天复习</button>
+    <button class="action" id="review-familiar" type="button">已熟悉 · 一周后复习</button>
+  </div>
   <div class="composer">
     <form id="form">
       <textarea id="input" rows="1" maxlength="500" placeholder="输入教材问题…" aria-label="输入教材问题" aria-describedby="composer-hint"></textarea>
       <button class="cancel" id="cancel" type="button" hidden>停止生成</button>
       <button id="send" type="submit">发送</button>
     </form>
+    <p id="draft-status" class="composer-hint" role="status" hidden></p>
     <p class="composer-hint" id="composer-hint"><span class="desktop-hint">Enter 发送 · Shift+Enter 换行 · </span><span class="mobile-hint">点击发送提问 · </span>最多 500 字</p>
   </div>
   <footer>
     <p>回答由大模型依据教材片段生成，可能出错，请以原文为准。</p>
-    <details><summary>对话与反馈如何保存</summary><p>对话会在服务中短暂保留。只有主动提交反馈时，本次问题、回答、引用、耗时和反馈内容才会持久保存，不保存 IP 或访问口令。未通过验收的实验功能在公开版中关闭。</p></details>
+    <details><summary>对话与反馈如何保存</summary><p>完整返回的问答及引用自动保存在当前浏览器，刷新后恢复当前显示的记录；停止或断流的片段不自动保存。访问口令不写入历史记录。主动提交反馈时，服务端另行保存本次问题、回答、引用、耗时和反馈内容，不保存 IP 或访问口令。历史记录中的旧回答不能再次提交反馈。未通过验收的实验功能在公开版中关闭。</p></details>
   </footer>
 </div>
+<script src="/assets/history-backup.js"></script>
+<script src="/assets/markdown.js"></script>
 <script>
 (() => {
   "use strict";
@@ -199,64 +326,57 @@ footer details p { margin-top: 6px; text-align: left; }
   const bookStatus = $("book-status"), reloadBooks = $("reload-books");
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
+  const VIEW_KEY = "rag-qa-visible-history";
+  const REVIEW_KEY = "rag-qa-review-session";
+  const DRAFT_KEY = "rag-qa-question-draft";
+  const FILTER_KEY = "rag-qa-history-filters";
+  const PRACTICE_KEY = "rag-qa-history-export-practice";
+  const backupAvailable = ["parse", "serialize"].every(name => typeof window.RagHistoryBackup?.[name] === "function");
+  const backupUnavailableMessage = "备份组件未能加载，请刷新页面后再备份或恢复。现有历史仍保留，也可导出 Markdown。";
   let busy = false, activeController = null;
+  let historyDB = null, historyLoading = true, historyWriting = false;
+  let records = [], visibleIds = [], historyLimit = 20;
+  let filteredRecords = [], restoreRecords = null, backupReading = 0;
+  const answerSnapshots = new WeakMap();
+  const readerCleanup = new WeakMap();
+  let reviewState = null, reviewRevealed = false;
+  let initialHistoryBook = "";
+  let historyRefreshPending = false, historyRefreshing = false, historyReadGeneration = 0;
+  let historyChannel = null;
+  let draftUnloadArmed = false, questionDraftUncached = false, historyExporting = false;
+  let reviewDueTimer = null;
 
   const sessionGet = (key) => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
-  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* storage may be blocked */ } };
+  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); return true; } catch { return false; } };
+  const sessionRemove = key => { try { sessionStorage.removeItem(key); } catch { /* optional */ } };
 
-  const escapeHtml = (text) => text.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[character]));
+  function queueHistoryRefresh() {
+    historyRefreshPending = true;
+    flushHistoryRefresh();
+  }
 
-  // Runs on already-escaped text, so every tag it emits is one it chose to emit.
-  const inline = (text) => text
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/【参考资料\s*(\d+)】/g, '<button type="button" class="cite" data-cite="$1">资料 $1</button>');
+  function flushHistoryRefresh() {
+    if (!historyRefreshPending || historyRefreshing || historyLoading || historyWriting || busy || !historyDB) return;
+    historyRefreshPending = false; historyRefreshing = true;
+    refreshHistory().catch(() => historyError("其他标签页的更新暂时无法读取，请重新打开历史或刷新页面。", "read"))
+      .finally(() => { historyRefreshing = false; flushHistoryRefresh(); });
+  }
+
+  try {
+    if (typeof BroadcastChannel === "function") {
+      historyChannel = new BroadcastChannel("rag-qa-history-changes");
+      historyChannel.onmessage = event => { if (event.data?.type === "changed") queueHistoryRefresh(); };
+    }
+  } catch { /* Focus/visibility refresh remains available. */ }
+  window.addEventListener("focus", queueHistoryRefresh);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) queueHistoryRefresh(); });
 
   function renderMarkdown(source) {
-    const out = [];
-    let list = null, code = null, paragraph = [];
-    const flushParagraph = () => {
-      if (paragraph.length) { out.push("<p>" + inline(paragraph.join("<br>")) + "</p>"); paragraph = []; }
-    };
-    const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
-    for (const line of escapeHtml(source).split("\n")) {
-      if (code !== null) {
-        if (/^\s*```/.test(line)) { out.push("<pre><code>" + code.join("\n") + "</code></pre>"); code = null; }
-        else code.push(line);
-        continue;
-      }
-      if (/^\s*```/.test(line)) { flushParagraph(); closeList(); code = []; continue; }
-      const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
-      if (heading) {
-        flushParagraph(); closeList();
-        const level = Math.min(heading[1].length + 1, 3);
-        out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-        continue;
-      }
-      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-      const numbered = bullet ? null : line.match(/^\s*(\d+)[.)]\s+(.*)$/);
-      if (bullet || numbered) {
-        flushParagraph();
-        const kind = bullet ? "ul" : "ol";
-        if (list !== kind) {
-          closeList();
-          // Keep the model's own number. A paragraph between items closes the list,
-          // and a fresh <ol> would otherwise restart every item at 1.
-          out.push(numbered ? `<ol start="${numbered[1]}">` : "<ul>");
-          list = kind;
-        }
-        out.push("<li>" + inline(bullet ? bullet[1] : numbered[2]) + "</li>");
-        continue;
-      }
-      if (!line.trim()) { flushParagraph(); closeList(); continue; }
-      closeList();
-      paragraph.push(line);
-    }
-    if (code !== null) out.push("<pre><code>" + code.join("\n") + "</code></pre>");
-    flushParagraph(); closeList();
-    return out.join("");
+    if (window.RagMarkdown) return window.RagMarkdown.render(source);
+    const literal = element("div", "", source);
+    literal.style.whiteSpace = "pre-wrap";
+    const notice = element("p", "history-help", "页面加载不完整，暂按文本展示。可尝试刷新页面。");
+    return notice.outerHTML + literal.outerHTML;
   }
 
   function element(tag, className, text) {
@@ -284,6 +404,7 @@ footer details p { margin-top: 6px; text-align: left; }
     retry.addEventListener("click", () => {
       if (busy) return;
       input.value = query;
+      rememberQuestionDraft();
       bookSelect.value = bookId;
       sessionSet(BOOK_KEY, bookId);
       autosize();
@@ -298,9 +419,10 @@ footer details p { margin-top: 6px; text-align: left; }
     const row = element("div", "msg user");
     row.append(element("div", "bubble", text));
     thread.append(row);
+    return row;
   }
 
-  function addAnswer() {
+  function addAnswer(scroll = true) {
     const row = element("div", "msg");
     const card = element("div", "answer");
     const body = element("div", "body cursor progress", "正在检索教材…");
@@ -309,7 +431,7 @@ footer details p { margin-top: 6px; text-align: left; }
     card.append(body);
     row.append(card);
     thread.append(row);
-    row.scrollIntoView({ block: "end" });
+    if (scroll) row.scrollIntoView({ block: "end" });
     return card;
   }
 
@@ -413,30 +535,43 @@ footer details p { margin-top: 6px; text-align: left; }
 
   function literalBlock(text) {
     const value = String(text || "");
-    const runs = value.match(/`+/g) || [];
-    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    let fenceLength = 3;
+    for (const run of value.matchAll(/`+/g)) fenceLength = Math.max(fenceLength, run[0].length + 1);
+    const fence = "`".repeat(fenceLength);
     return `${fence}text\n${value}\n${fence}`;
   }
 
-  function answerRecord(query, result) {
-    const lines = ["# 教材问答记录", "", "## 问题", "", literalBlock(query), "",
-      "## 回答", "", result.answer, "", "## 核对提示", "",
+  function answerRecord(query, result, note = "", {level = 1, title = "教材问答记录", metadata = ""} = {}) {
+    const heading = "#".repeat(level);
+    const answer = result.answer || "本次没有完整的生成回答。";
+    // Keep model-authored headings within this record in a collected document.
+    const formattedAnswer = level > 1 ? answer.split("\n").map(line => "> " + line).join("\n") : answer;
+    const lines = [`${heading} ${title}`, "", ...(metadata ? [literalBlock(metadata), ""] : []),
+      `${heading}# 问题`, "", literalBlock(query), "",
+      `${heading}# 回答`, "", formattedAnswer, "", `${heading}# 核对提示`, "",
       "资料编号用于定位原文，请结合教材片段核对回答。", ""];
     for (const [message] of answerNotices(result)) lines.push(message, "");
-    lines.push("## 参考教材片段", "");
+    lines.push(`${heading}# 参考教材片段`, "");
     for (const source of result.sources || []) {
-      lines.push(`### 参考资料 ${source.citation_id} · ${source.book}`, "",
+      lines.push(`${heading}## 参考资料 ${source.citation_id} · ${source.book}`, "",
         source.section || "未标注章节", "");
       if (source.truncated) lines.push("片段已截断。", "");
       if (source.table_compacted) lines.push("表格按行整理。", "");
       lines.push(literalBlock(source.excerpt), "");
     }
     if (!result.sources?.length) lines.push("本次记录未包含教材片段。", "");
+    if (note) lines.push(`${heading}# 我的学习笔记`, "", literalBlock(note), "");
     return lines.join("\n");
   }
 
   function renderActions(card, result, query) {
     const actions = element("div", "actions");
+    if (result.sources?.length) {
+      const read = element("button", "action", "对照原文");
+      read.type = "button";
+      read.addEventListener("click", () => openReader(card));
+      actions.append(read);
+    }
     if (result.answer) {
       const copy = element("button", "action", "复制答案");
       copy.type = "button";
@@ -451,11 +586,12 @@ footer details p { margin-top: 6px; text-align: left; }
       });
       actions.append(copy);
     }
-    if (result.status === "answered" && result.answer) {
-      const save = element("button", "action", "保存问答（含来源）");
+    if (["answered", "retrieval_only", "no_evidence", "failed"].includes(result.status)) {
+      const save = element("button", "action", result.status === "answered" ? "保存问答（含来源）" : "导出本次记录");
       save.type = "button";
       save.addEventListener("click", () => {
-        const blob = new Blob([answerRecord(query, result)], { type: "text/markdown;charset=utf-8" });
+        const record = records.find(item => item.id === card.parentElement.dataset.historyId);
+        const blob = new Blob([answerRecord(query, result, record?.note || "")], { type: "text/markdown;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const link = element("a");
         link.href = url;
@@ -551,6 +687,7 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   function finish(card, result, query) {
+    answerSnapshots.set(card, result.sources || []);
     const body = card.querySelector(".body");
     body.classList.remove("cursor", "progress");
     body.innerHTML = result.answer ? renderMarkdown(result.answer) : "";
@@ -585,6 +722,904 @@ footer details p { margin-top: 6px; text-align: left; }
     renderActions(card, result, query);
   }
 
+  function openReader(card, citationId) {
+    const sources = answerSnapshots.get(card) || [];
+    if (!sources.length) return;
+    let pane = card.querySelector(":scope > .reader");
+    if (pane) {
+      card.dataset.readerTab = "source";
+      [...card.querySelector(".reader-tabs").children].forEach((tab, index) => tab.setAttribute("aria-pressed", String(index === 1)));
+      pane.selectCitation(citationId);
+      if (window.matchMedia("(max-width: 800px)").matches) pane.scrollIntoView({block: "start"});
+      return;
+    }
+    const content = element("div", "answer-content");
+    content.append(...card.childNodes);
+    const tabs = element("div", "reader-tabs");
+    for (const [value, label] of [["answer", "回答"], ["source", "原文"]]) {
+      const button = element("button", "action", label);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        card.dataset.readerTab = value;
+        for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === button));
+      });
+      button.setAttribute("aria-pressed", String(value === "source"));
+      tabs.append(button);
+    }
+    pane = element("aside", "reader");
+    pane.setAttribute("aria-label", "教材原文对照");
+    const heading = element("div", "reader-heading");
+    const close = element("button", "action", "收起对照");
+    close.type = "button";
+    heading.append(element("h3", "", "教材原文"), close);
+    const select = element("select");
+    const label = element("label", "", "选择引用");
+    select.setAttribute("aria-label", "选择引用原文");
+    for (const source of sources) select.add(new Option(`资料 ${source.citation_id} · ${source.book}`, source.citation_id));
+    label.append(select);
+    const snapshot = element("div", "reader-snapshot");
+    const load = element("button", "action", "读取相邻原文");
+    load.type = "button";
+    const current = element("div", "reader-current");
+    let controller = null, selected = null;
+    const stop = () => { controller?.abort(); controller = null; };
+    readerCleanup.set(card, stop);
+    async function read(chunkId) {
+      stop();
+      const requestController = new AbortController();
+      controller = requestController;
+      current.replaceChildren(element("p", "history-help", "正在读取当前索引…"));
+      load.disabled = true;
+      try {
+        const response = await fetch(`/v1/books/${encodeURIComponent(selected.book_id)}/passages?chunk_id=${encodeURIComponent(chunkId)}`, {
+          headers: requestHeaders(), signal: requestController.signal,
+        });
+        if (controller !== requestController) return;
+        current.replaceChildren();
+        if (!response.ok) { await explainRefusal(current, response, "原文读取"); return; }
+        const data = await response.json();
+        if (controller !== requestController) return;
+        if (!Array.isArray(data.passages)) throw new Error("invalid passages");
+        current.append(element("h3", "", "当前索引中的上下文"),
+          element("p", "history-help", "相邻原文只供阅读，未加入这次回答的依据。"));
+        if (data.navigation_available === false) addNotice(current, "本书片段未提供顺序编号，当前只展示准确定位的原文，无法继续向前或向后阅读。", "warn");
+        if (chunkId === selected.chunk_id) {
+          if (!selected.source_sha256) addNotice(current, "这条旧记录没有原文指纹，无法核对版本。", "warn");
+          else if (data.source_sha256 !== selected.source_sha256) addNotice(current, "教材原文已更新；上方保留引用时的快照，以下是当前内容。", "warn");
+          else current.append(element("p", "history-help", "定位片段与引用时的原文一致。"));
+        }
+        for (const passage of data.passages) {
+          const item = element("section", "reader-passage" + (passage.is_anchor ? " anchor" : ""));
+          item.append(element("div", "history-meta", (passage.is_anchor ? "当前定位 · " : "相邻片段 · ") + passage.section),
+            element("div", "reader-text", passage.excerpt));
+          current.append(item);
+        }
+        const navigation = element("div", "actions");
+        for (const [key, title] of [["previous_chunk_id", "向前阅读"], ["next_chunk_id", "向后阅读"]]) {
+          const button = element("button", "action", title);
+          button.type = "button";
+          button.disabled = !data[key];
+          button.addEventListener("click", () => read(data[key]));
+          navigation.append(button);
+        }
+        current.append(navigation);
+      } catch (error) {
+        if (error.name !== "AbortError" && controller === requestController) {
+          current.replaceChildren();
+          addNotice(current, "原文暂时无法读取，仍可对照上方保存的引用快照。", "error");
+        }
+      } finally {
+        if (controller === requestController) { controller = null; load.disabled = false; }
+      }
+    }
+    function choose() {
+      stop();
+      selected = sources.find(source => String(source.citation_id) === select.value) || sources[0];
+      snapshot.replaceChildren(element("p", "history-help", "引用时的原文快照"),
+        element("div", "history-meta", selected.section || "未标注章节"),
+        element("div", "reader-text reader-quote", selected.excerpt));
+      if (selected.truncated) snapshot.append(element("p", "history-help", "引用片段已截断，可读取当前索引中的完整片段及相邻原文。"));
+      if (selected.table_compacted) snapshot.append(element("p", "history-help", "本次引用中的表格已按行整理。"));
+      current.replaceChildren();
+      load.disabled = !selected.chunk_id || !selected.book_id;
+      load.title = load.disabled ? "这条旧记录未保存原文位置，仍可阅读引用快照" : "";
+    }
+    pane.selectCitation = id => {
+      if (id !== undefined) select.value = String(id);
+      choose();
+    };
+    select.addEventListener("change", choose);
+    load.addEventListener("click", () => read(selected.chunk_id));
+    close.addEventListener("click", () => {
+      stop();
+      readerCleanup.delete(card);
+      pane.remove(); tabs.remove();
+      content.replaceWith(...content.childNodes);
+      card.classList.remove("reading");
+      delete card.dataset.readerTab;
+      if (!document.querySelector(".answer.reading")) document.querySelector(".app").classList.remove("has-reader");
+      card.querySelector(".actions button")?.focus({ preventScroll: true });
+    });
+    pane.append(heading, label, snapshot, load, current);
+    card.append(tabs, content, pane);
+    card.classList.add("reading");
+    card.dataset.readerTab = "source";
+    document.querySelector(".app").classList.add("has-reader");
+    pane.selectCitation(citationId);
+    if (window.matchMedia("(max-width: 800px)").matches) pane.scrollIntoView({block: "start"});
+  }
+
+  // One IndexedDB object store, scoped by the browser to this origin. Transactions
+  // update individual records so another tab cannot overwrite a newer library.
+  function historyTransaction(mode, run) {
+    return new Promise((resolve, reject) => {
+      if (!historyDB) { reject(new Error("history unavailable")); return; }
+      const transaction = historyDB.transaction("records", mode);
+      let value;
+      transaction.oncomplete = () => {
+        if (mode === "readwrite") {
+          try { historyChannel?.postMessage({type: "changed"}); } catch { /* optional notification */ }
+        }
+        resolve(value);
+      };
+      transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("history failed"));
+      try { run(transaction.objectStore("records"), result => { value = result; }); }
+      catch (error) { transaction.abort(); reject(error); }
+    });
+  }
+
+  function historyError(message, kind = "general") {
+    const status = $("history-status");
+    status.className = "notice error";
+    status.textContent = message;
+    status.dataset.historyError = kind;
+    status.hidden = false;
+  }
+
+  function rememberView() { sessionSet(VIEW_KEY, JSON.stringify(visibleIds)); }
+
+  function needsDraftProtection(editor) {
+    const text = editor.querySelector("textarea").value;
+    return text.trim() && editor.exportedDraft !== text
+      && (editor.querySelector(".note-record-missing") || editor.hasUncachedDraft?.());
+  }
+
+  function hasUnexportedProtectedDrafts(editors = thread.querySelectorAll(".note-editor")) {
+    return [...editors].some(needsDraftProtection);
+  }
+
+  function confirmLeavingProtectedDrafts(editors = thread.querySelectorAll(".note-editor")) {
+    const pending = [...editors].filter(needsDraftProtection);
+    if (!pending.length) return true;
+    return window.confirm(pending.some(editor => editor.querySelector(".note-record-missing"))
+      ? "有已删除记录的笔记草稿尚未导出，离开后将无法恢复。确定放弃草稿并继续？"
+      : "有笔记草稿暂存失败，离开后可能无法恢复。请先保存或导出草稿。确定放弃当前草稿并继续？");
+  }
+
+  function warnBeforeDraftUnload(event) {
+    if (!hasUnexportedProtectedDrafts() && !(questionDraftUncached && input.value.trim())) return;
+    event.preventDefault(); event.returnValue = "";
+  }
+
+  function updateDraftUnloadGuard() {
+    const needed = hasUnexportedProtectedDrafts() || (questionDraftUncached && !!input.value.trim());
+    if (needed === draftUnloadArmed) return;
+    draftUnloadArmed = needed;
+    if (needed) window.addEventListener("beforeunload", warnBeforeDraftUnload);
+    else window.removeEventListener("beforeunload", warnBeforeDraftUnload);
+  }
+
+  function rememberQuestionDraft(hint = "") {
+    const text = input.value;
+    const stored = sessionSet(DRAFT_KEY, text) || sessionGet(DRAFT_KEY) === text;
+    if (!stored && !text) sessionRemove(DRAFT_KEY);
+    questionDraftUncached = !!text.trim() && !stored;
+    const warning = questionDraftUncached
+      ? "提问草稿暂存失败，当前文字只在本页。刷新或离开前请先复制保存，或发送问题。" : "";
+    $("draft-status").textContent = [hint, warning].filter(Boolean).join(" ");
+    $("draft-status").hidden = !hint && !warning;
+    updateDraftUnloadGuard();
+  }
+
+  function clearThread() {
+    for (const message of thread.querySelectorAll(".msg")) {
+      const card = message.querySelector(".answer");
+      if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
+      if (card?.querySelector(".note-record-missing") || card?.querySelector(".note-editor")?.draftStorageFailed) {
+        sessionRemove(`rag-qa-note-draft-${message.dataset.historyId}`);
+      }
+      message.remove();
+    }
+    visibleIds = [];
+    rememberView();
+    empty.hidden = false;
+    clear.hidden = true;
+    document.querySelector(".app").classList.remove("has-reader");
+    updateDraftUnloadGuard();
+  }
+
+  function openSavedRecord(id, editNote = false) {
+    if (busy || historyWriting) return;
+    const record = records.find(item => item.id === id);
+    if (!record || !confirmLeavingProtectedDrafts()) return;
+    // A library selection is a normal reading action. Never leave the review
+    // controls grading the old question while a different answer is visible.
+    if (reviewState) endReview(true);
+    clearThread();
+    const card = showRecord(record);
+    rememberView();
+    $("history-panel").hidden = true;
+    $("toggle-history").setAttribute("aria-expanded", "false");
+    thread.scrollIntoView({ block: "start" });
+    if (editNote) noteEditor(card, id);
+    else {
+      const body = card.querySelector(".body"); body.tabIndex = -1;
+      body.focus({preventScroll: true});
+    }
+  }
+
+  function noteView(id) {
+    const view = element("section", "saved-note");
+    view.dataset.noteId = id;
+    view.append(element("h3", "", "已保存的学习笔记"), element("div", "note-text"));
+    return view;
+  }
+
+  function noteEditor(card, id) {
+    const existing = card.querySelector(".note-editor");
+    if (existing) { existing.querySelector("textarea").focus(); return; }
+    const record = records.find(item => item.id === id);
+    if (!record) return;
+    const draftKey = `rag-qa-note-draft-${id}`;
+    let baseline = record.note || "", draft = null;
+    try { draft = JSON.parse(sessionGet(draftKey) || "null"); } catch { /* optional draft */ }
+    const editor = element("div", "note-editor"), label = element("label", "", "编辑学习笔记");
+    const area = element("textarea"); area.maxLength = 4000;
+    area.setAttribute("aria-label", "编辑学习笔记");
+    const restoredDraft = typeof draft?.text === "string";
+    area.value = restoredDraft ? draft.text : baseline;
+    const draftConflict = restoredDraft && typeof draft?.baseline === "string" && draft.baseline !== baseline;
+    if (restoredDraft && typeof draft?.baseline === "string") baseline = draft.baseline;
+    label.append(area);
+    const status = element("p", "history-help", draftConflict
+      ? "当前已保存笔记有更新。已保留你的草稿，请核对上方最新笔记，可把最新笔记加入草稿后再保存。"
+      : restoredDraft ? "已恢复当前标签页的草稿，点击保存才会写入记录。" : "写下自己的理解、疑问或复习要点，最多 4000 字。");
+    status.setAttribute("role", "status");
+    const cacheWarning = element("p", "notice warn note-draft-storage-warning", "当前笔记草稿未能确认暂存在标签页中，离开或刷新可能丢失文字。请先保存笔记或导出草稿。");
+    cacheWarning.hidden = true; cacheWarning.setAttribute("role", "status");
+    editor.hasDirtyDraft = () => !!area.value.trim() && area.value !== baseline;
+    editor.hasUncachedDraft = () => editor.draftStorageFailed && editor.hasDirtyDraft();
+    editor.updateDraftWarning = () => {
+      cacheWarning.hidden = !!editor.querySelector(".note-record-missing") || !editor.hasUncachedDraft() || editor.exportedDraft === area.value;
+    };
+    editor.storeDraft = () => {
+      const payload = JSON.stringify({text: area.value, baseline});
+      const stored = sessionSet(draftKey, payload) || sessionGet(draftKey) === payload;
+      editor.draftStorageFailed = !stored;
+      editor.updateDraftWarning(); updateDraftUnloadGuard();
+      return stored;
+    };
+    const actions = element("div", "actions"), save = element("button", "action", "保存笔记"), cancelNote = element("button", "action", "关闭编辑");
+    const exportDraft = element("button", "action", "导出草稿（含原问答）");
+    const mergeNote = element("button", "action", "把最新笔记加入草稿");
+    mergeNote.dataset.mergeNote = id; mergeNote.hidden = !draftConflict;
+    save.type = cancelNote.type = exportDraft.type = mergeNote.type = "button";
+    exportDraft.addEventListener("click", () => {
+      try {
+        const url = URL.createObjectURL(new Blob([answerRecord(record.query, record.result, area.value)], {type: "text/markdown;charset=utf-8"}));
+        const link = element("a"); link.href = url; link.download = "教材问答与笔记草稿.md";
+        try { document.body.append(link); link.click(); }
+        finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+        editor.exportedDraft = area.value;
+        status.textContent = "草稿已交给浏览器下载，请确认文件已保存；这不等于写入历史记录。";
+        syncHistoryControls();
+      } catch { status.textContent = "草稿导出未完成，当前文字仍保留。请重试或先保存笔记。"; }
+    });
+    actions.append(save, mergeNote, exportDraft, cancelNote); editor.append(cacheWarning, label, status, actions); card.append(editor);
+    mergeNote.addEventListener("click", async () => {
+      if (busy || historyWriting || mergeNote.hidden) return;
+      historyWriting = true; syncHistoryControls(); area.disabled = true;
+      try {
+        const latest = await historyTransaction("readonly", (store, done) => {
+          const request = store.get(id);
+          request.onsuccess = () => done(request.result);
+        });
+        applyKnownHistoryRecord(id, latest);
+        if (!latest) {
+          status.textContent = "这条问答已删除，当前草稿仍保留，请先导出草稿。";
+          return;
+        }
+        const latestText = latest.note || "";
+        let combined = area.value;
+        if (latestText && !combined.includes(latestText)) {
+          combined = combined ? combined + "\n\n—— 最新已保存的笔记 ——\n" + latestText : latestText;
+        }
+        if (combined.length > 4000) {
+          status.textContent = `两份内容合计 ${combined.length} 字，超过 4000 字，原草稿未改动。请先删减草稿或导出后整理。`;
+          return;
+        }
+        area.value = combined; baseline = latestText;
+        editor.storeDraft();
+        mergeNote.hidden = true;
+        status.textContent = latestText
+          ? "最新笔记已保留在草稿中，请整理重复内容后再保存；保存时仍会检查其他页面的新修改。"
+          : "其他页面已清空已保存笔记，当前草稿仍保留。整理后点击保存才会重新写入笔记。";
+        updateDraftUnloadGuard();
+      } catch { status.textContent = "最新笔记暂时无法读取，当前草稿仍保留。可重试或先导出草稿。"; }
+      finally {
+        historyWriting = false; area.disabled = false; syncHistoryControls();
+        if (editor.isConnected && [document.body, mergeNote, area].includes(document.activeElement)) area.focus({preventScroll:true});
+      }
+    });
+    area.addEventListener("input", () => {
+      const stored = editor.storeDraft();
+      status.textContent = editor.querySelector(".note-record-missing")
+        ? "这条问答已删除，草稿只在当前页面保留，请先导出后再离开。"
+        : stored ? "草稿已暂存在当前标签页，点击保存才会写入记录。"
+        : "草稿暂存失败，当前文字仍在本页。请先保存笔记或导出草稿。";
+    });
+    cancelNote.addEventListener("click", async () => {
+      if (!confirmLeavingProtectedDrafts([editor])) return;
+      if (editor.draftStorageFailed) sessionRemove(draftKey);
+      editor.remove();
+      syncHistoryControls();
+      if (!records.some(item => item.id === id)) {
+        sessionRemove(draftKey);
+        try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
+      }
+      (card.isConnected ? card.querySelector("[data-note]") : $("toggle-history"))?.focus({preventScroll: true});
+    });
+    save.addEventListener("click", async () => {
+      if (busy || historyWriting) return;
+      const text = area.value.trim() ? area.value : "";
+      if (text.length > 4000) { status.textContent = "学习笔记最多 4000 字。"; return; }
+      historyWriting = true; syncHistoryControls();
+      area.disabled = save.disabled = cancelNote.disabled = true;
+      try {
+        let outcome;
+        try { outcome = await historyTransaction("readwrite", (store, done) => {
+          const request = store.get(id);
+          request.onsuccess = () => {
+            const latest = request.result;
+            if (!latest) { done({state: "missing", record: null}); return; }
+            if ((latest.note || "") !== baseline) { done({state: "conflict", record: latest}); return; }
+            try {
+              const updated = { ...latest, note: text, note_updated_at: new Date().toISOString() };
+              store.put(updated);
+              done({state: "saved", record: updated});
+            } catch { store.transaction.abort(); }
+          };
+        }); } catch {
+          status.textContent = "笔记没有保存成功，草稿仍在。请检查浏览器存储后重试。";
+          return;
+        }
+        if (outcome.state === "saved") {
+          baseline = text; area.value = text; editor.draftStorageFailed = !sessionSet(draftKey, "");
+          mergeNote.hidden = true;
+        }
+        applyKnownHistoryRecord(id, outcome.record);
+        let readFailed = false;
+        try { await refreshHistory(); } catch { readFailed = true; }
+        if (outcome.state === "missing" || !records.some(item => item.id === id)) {
+          status.textContent = "保存过程中记录已被删除，当前笔记未能确认保存在历史。请先导出草稿。";
+        } else if (outcome.state === "conflict") {
+          mergeNote.hidden = false;
+          status.textContent = "其他标签页已修改这条笔记，草稿未覆盖最新版本。可把最新笔记加入草稿，整理后再保存。";
+        } else {
+          status.textContent = text ? "笔记已保存到此浏览器。" : "笔记已清空。";
+        }
+        if (readFailed) status.textContent += " 历史列表暂时无法刷新，重新打开历史可重试读取。";
+      } finally {
+        historyWriting = false; syncHistoryControls();
+        area.disabled = save.disabled = cancelNote.disabled = false;
+      }
+    });
+    area.focus({preventScroll: true});
+    editor.scrollIntoView({block: "nearest"});
+  }
+
+  function historyActions(id, view = false) {
+    const actions = element("div", "actions history-actions");
+    actions.dataset.record = id;
+    if (view) {
+      const open = element("button", "action", "查看原回答");
+      open.type = "button";
+      open.dataset.historyView = id;
+      open.addEventListener("click", () => openSavedRecord(id));
+      actions.append(open);
+    }
+    const favorite = element("button", "action");
+    favorite.type = "button";
+    favorite.dataset.favorite = id;
+    favorite.addEventListener("click", () => {
+      const desired = favorite.getAttribute("aria-pressed") !== "true";
+      changeHistory(store => {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          if (request.result) store.put({ ...request.result, favorite: desired });
+        };
+      });
+    });
+    const remove = element("button", "action", "删除记录");
+    const note = element("button", "action", "学习笔记");
+    note.type = "button"; note.dataset.note = id;
+    note.addEventListener("click", () => {
+      if (busy || historyWriting) return;
+      if (view) openSavedRecord(id, true);
+      else noteEditor(actions.closest(".answer"), id);
+    });
+    const edit = element("button", "action", "编辑原问题");
+    edit.type = "button"; edit.dataset.editQuery = id;
+    edit.addEventListener("click", () => {
+      if (busy || historyWriting || reviewState) return;
+      const record = records.find(item => item.id === id);
+      if (!record) return;
+      input.value = record.query;
+      sessionSet(BOOK_KEY, record.book_id);
+      bookSelect.value = record.book_id;
+      if (!bookSelect.value || bookSelect.disabled) {
+        bookStatus.textContent = "原教材当前不可用，请重新加载教材或选择其他教材后再发送。";
+        bookStatus.hidden = false;
+      }
+      $("history-panel").hidden = true; $("toggle-history").setAttribute("aria-expanded", "false");
+      rememberQuestionDraft(`已载入「${record.book_label}」的原问题，修改后点击发送。每次提问独立检索。`);
+      autosize(); input.focus();
+    });
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      if (busy || historyWriting || !window.confirm("删除这条问答及引用快照？无法撤销。")) return;
+      changeHistory(store => store.delete(id), new Set([id]));
+    });
+    actions.append(favorite, note, edit, remove);
+    return actions;
+  }
+
+  function scheduleReviewDueRefresh(now) {
+    if (reviewDueTimer !== null) window.clearTimeout(reviewDueTimer);
+    reviewDueTimer = null;
+    let next = Infinity;
+    for (const record of filteredRecords) {
+      const due = Date.parse(record.review?.next_review_at);
+      if (record.favorite && due > now && due < next) next = due;
+    }
+    if (Number.isFinite(next)) {
+      // Recheck at most a day later, keeping long imported dates within the
+      // browser's timer range. No history write or inference is scheduled.
+      reviewDueTimer = window.setTimeout(() => {
+        reviewDueTimer = null;
+        syncHistoryControls();
+      }, Math.min(next - now + 10, 24 * 60 * 60 * 1000));
+    }
+  }
+
+  function syncHistoryControls() {
+    for (const actions of document.querySelectorAll(".history-actions")) {
+      const record = records.find(item => item.id === actions.dataset.record);
+      const favorite = actions.querySelector("[data-favorite]");
+      favorite.textContent = record?.favorite ? "★ 已收藏" : "☆ 收藏";
+      favorite.setAttribute("aria-pressed", String(!!record?.favorite));
+      actions.querySelector("[data-note]").textContent = record?.note ? "编辑笔记" : "学习笔记";
+      for (const button of actions.querySelectorAll("button")) button.disabled = busy || historyWriting || !record;
+      actions.querySelector("[data-edit-query]").disabled = busy || historyWriting || !!reviewState || !record;
+    }
+    $("history-clean").disabled = busy || historyWriting || !records.some(item => !item.favorite);
+    $("history-delete-all").disabled = busy || historyWriting || !records.length;
+    $("history-backup-all").disabled = !backupAvailable || busy || historyWriting || !records.length;
+    $("history-backup-filtered").disabled = !backupAvailable || busy || historyWriting || !filteredRecords.length;
+    $("history-export-md").disabled = busy || historyWriting || historyExporting || !historyDB || !filteredRecords.length;
+    $("history-backup-file").disabled = !backupAvailable || historyWriting;
+    $("history-restore").disabled = !backupAvailable || busy || historyWriting || !restoreRecords?.length || !historyDB;
+    for (const view of document.querySelectorAll(".saved-note")) {
+      const record = records.find(item => item.id === view.dataset.noteId);
+      view.hidden = !record?.note;
+      view.querySelector(".note-text").textContent = record?.note || "";
+    }
+    for (const button of document.querySelectorAll(".note-editor button")) button.disabled = busy || historyWriting;
+    for (const editor of thread.querySelectorAll(".note-editor")) editor.updateDraftWarning?.();
+    for (const button of document.querySelectorAll("[data-merge-note]")) {
+      button.disabled = busy || historyWriting || !records.some(record => record.id === button.dataset.mergeNote);
+    }
+    const now = Date.now();
+    const due = filteredRecords.filter(record => record.favorite && (!record.review || Date.parse(record.review.next_review_at) <= now));
+    scheduleReviewDueRefresh(now);
+    const candidates = $("history-review-all").checked ? filteredRecords.filter(record => record.favorite) : due;
+    $("history-review-count").textContent = `当前筛选中有 ${filteredRecords.filter(record => record.favorite).length} 条收藏，${due.length} 条待复习；每轮最多 20 条。`;
+    $("history-review-start").disabled = busy || historyWriting || !candidates.length;
+    const currentReview = reviewState && records.find(record => record.id === reviewState.ids[reviewState.index]);
+    for (const id of ["review-again", "review-familiar"]) $(id).disabled = busy || historyWriting || !reviewRevealed || !currentReview?.favorite;
+    for (const id of ["review-reveal", "review-skip", "review-end"]) $(id).disabled = busy || historyWriting;
+    for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = busy || !!reviewState;
+    if (reviewState) clear.hidden = true;
+    updateDraftUnloadGuard();
+    flushHistoryRefresh();
+  }
+
+  function showRecord(record) {
+    const user = addUser(record.query);
+    const card = addAnswer(false);
+    user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
+    finish(card, record.result, record.query);
+    const meta = element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()} · `);
+    meta.append(element("span", "history-save-state", "已保存的回答"));
+    card.prepend(meta);
+    card.append(historyActions(record.id));
+    card.append(noteView(record.id));
+    if (record.result.status === "failed") addRetry(card, record.query, record.book_id);
+    visibleIds.push(record.id);
+    syncHistoryControls();
+    return card;
+  }
+
+  function currentHistoryFilter() {
+    return {book: $("history-book").value, favorites: $("history-favorites").checked,
+      notes: $("history-notes").checked,
+      keywords: $("history-search").value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)};
+  }
+
+  function historyMatches(record, filter) {
+    if (filter.book && record.book_id !== filter.book) return false;
+    if (filter.favorites && !record.favorite) return false;
+    if (filter.notes && !record.note) return false;
+    if (!filter.keywords.length) return true;
+    const text = [record.query, record.result.answer || "", record.book_label, record.note || "",
+      ...(record.result.sources || []).flatMap(source => [source.book, source.section, source.excerpt])]
+      .join("\n").toLocaleLowerCase();
+    return filter.keywords.every(keyword => text.includes(keyword));
+  }
+
+  function historyMatchPreview(record, keywords) {
+    if (!keywords.length) return null;
+    const fields = [["answer", "回答命中", record.result.answer], ["note", "笔记命中", record.note]];
+    for (const source of record.result.sources || []) {
+      fields.push(["source", `引用原文命中 · 资料 ${source.citation_id}`, source.excerpt],
+        ["section", `引用章节命中 · 资料 ${source.citation_id}`, source.section],
+        ["book", `引用教材命中 · 资料 ${source.citation_id}`, source.book]);
+    }
+    fields.push(["book", "教材命中", record.book_label]);
+    let best = null;
+    for (const [kind, label, text] of fields) {
+      if (!text) continue;
+      const lower = text.toLocaleLowerCase();
+      const hits = keywords.map(keyword => ({keyword, index: lower.indexOf(keyword)})).filter(hit => hit.index >= 0);
+      if (hits.length && (!best || hits.length > best.count)) {
+        const first = hits.reduce((a, b) => a.index < b.index ? a : b);
+        best = {kind, label, text, lower, count: hits.length, ...first};
+      }
+    }
+    if (!best) return null; // A match in the question is already visible in its heading.
+    let index = best.index;
+    if (best.lower.length !== best.text.length) {
+      // Some case mappings expand a character (for example İ -> i + dot).
+      // Translate the folded offset before slicing the original visible text.
+      let folded = 0; index = 0;
+      for (const character of best.text) {
+        if (folded >= best.index) break;
+        folded += character.toLocaleLowerCase().length;
+        index += character.length;
+      }
+    }
+    let start = Math.max(0, index - 40), end = Math.min(best.text.length, index + best.keyword.length + 100);
+    const lowSurrogate = code => code >= 0xDC00 && code <= 0xDFFF;
+    if (start && lowSurrogate(best.text.charCodeAt(start))) start--;
+    if (end < best.text.length && lowSurrogate(best.text.charCodeAt(end))) end++;
+    return {kind: best.kind, label: best.label,
+      text: (start ? "…" : "") + best.text.slice(start, end) + (end < best.text.length ? "…" : "")};
+  }
+
+  function renderHistory() {
+    const bookFilter = $("history-book"), previousBook = bookFilter.value || initialHistoryBook;
+    initialHistoryBook = "";
+    bookFilter.replaceChildren(new Option("全部教材", ""));
+    const books = new Map(records.map(record => [record.book_id, record.book_label]));
+    for (const [id, label] of books) bookFilter.add(new Option(label, id));
+    if (books.has(previousBook)) bookFilter.value = previousBook;
+    const filter = currentHistoryFilter();
+    const matches = records.filter(record => historyMatches(record, filter));
+    filteredRecords = matches;
+    sessionSet(FILTER_KEY, JSON.stringify({query: $("history-search").value,
+      book: bookFilter.value, favorites: $("history-favorites").checked, notes: $("history-notes").checked}));
+    $("history-count").textContent = `${records.length} 条记录 · ${records.filter(record => record.favorite).length} 条收藏 · 匹配 ${matches.length} 条`;
+    const list = $("history-list");
+    list.replaceChildren();
+    if (!matches.length) list.append(element("p", "history-help", records.length ? "没有匹配的记录，试试其他关键词或筛选条件。" : "还没有历史记录，完整返回的问答会自动保存在这里。"));
+    for (const record of matches.slice(0, historyLimit)) {
+      const item = element("article", "history-item");
+      const match = historyMatchPreview(record, filter.keywords);
+      const preview = element("p", match ? "history-match" : "");
+      if (match) preview.append(element("span", "history-match-label", match.label + "："), document.createTextNode(match.text));
+      else preview.textContent = (record.result.answer || record.result.message || "仅教材片段").slice(0, 100);
+      item.append(element("h3", "", record.query),
+        element("div", "history-meta", `${record.book_label} · ${new Date(record.created_at).toLocaleString()}`
+          + (record.review ? ` · 下次复习 ${new Date(record.review.next_review_at).toLocaleDateString()}` : "")),
+        preview,
+        historyActions(record.id, true));
+      if (record.note && match?.kind !== "note") item.append(element("p", "", "笔记：" + record.note.slice(0, 100)));
+      list.append(item);
+    }
+    $("history-more").hidden = matches.length <= historyLimit;
+    syncHistoryControls();
+  }
+
+  async function refreshHistory({discardDraftsFor = new Set()} = {}) {
+    const generation = ++historyReadGeneration;
+    const loaded = await historyTransaction("readonly", (store, done) => {
+      const request = store.getAll();
+      request.onsuccess = () => done(request.result);
+    });
+    if (generation !== historyReadGeneration) return;
+    if ($("history-status").dataset.historyError === "read") {
+      $("history-status").hidden = true;
+      delete $("history-status").dataset.historyError;
+    }
+    applyHistory(loaded, discardDraftsFor);
+  }
+
+  function applyKnownHistoryRecord(id, record) {
+    // This row was read in the committed transaction. Reconcile known deletes
+    // and notes even if a subsequent full-library read is unavailable.
+    historyReadGeneration++;
+    const known = records.filter(item => item.id !== id);
+    if (record) known.push(record);
+    applyHistory(known);
+  }
+
+  function applyHistory(loaded, discardDraftsFor = new Set()) {
+    const previousIds = records.map(record => record.id);
+    records = loaded;
+    records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+    const ids = new Set(records.map(record => record.id));
+    const protectedIds = new Set();
+    for (const editor of thread.querySelectorAll(".note-editor")) {
+      const id = editor.closest("[data-history-id]").dataset.historyId;
+      if (!ids.has(id) && !discardDraftsFor.has(id)) {
+        protectedIds.add(id);
+        if (!editor.querySelector(".note-record-missing")) {
+          const warning = element("p", "notice warn note-record-missing", "这条问答已在其他页面删除。当前草稿仍保留，请先导出草稿；关闭编辑后将收起这条记录，刷新也无法从历史恢复。");
+          warning.setAttribute("role", "status"); editor.prepend(warning);
+        }
+      } else editor.querySelector(".note-record-missing")?.remove();
+    }
+    for (const id of previousIds) if (!ids.has(id) && !protectedIds.has(id)) sessionRemove(`rag-qa-note-draft-${id}`);
+    for (const row of thread.querySelectorAll("[data-history-id]")) {
+      const savedState = row.querySelector(".history-save-state");
+      if (savedState && protectedIds.has(row.dataset.historyId)) {
+        if (savedState.dataset.retainedText === undefined) savedState.dataset.retainedText = savedState.textContent;
+        savedState.textContent = "记录已删除，仅在本页暂存";
+      } else if (savedState?.dataset.retainedText !== undefined && ids.has(row.dataset.historyId)) {
+        savedState.textContent = savedState.dataset.retainedText;
+        delete savedState.dataset.retainedText;
+      }
+      if (!ids.has(row.dataset.historyId) && !protectedIds.has(row.dataset.historyId)) {
+        const card = row.querySelector(".answer");
+        if (card) { readerCleanup.get(card)?.(); readerCleanup.delete(card); }
+        row.remove();
+      }
+    }
+    visibleIds = visibleIds.filter(id => ids.has(id) || protectedIds.has(id));
+    empty.hidden = !!thread.querySelector(".msg");
+    clear.hidden = !thread.querySelector(".msg");
+    document.querySelector(".app").classList.toggle("has-reader", !!thread.querySelector(".answer.reading"));
+    renderHistory();
+    const currentEditors = reviewState && [...thread.querySelectorAll(".note-editor")]
+      .filter(editor => editor.closest("[data-history-id]").dataset.historyId === reviewState.ids[reviewState.index]);
+    if (reviewState && !protectedIds.has(reviewState.ids[reviewState.index]) && !hasUnexportedProtectedDrafts(currentEditors)
+        && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewQuestion();
+  }
+
+  async function changeHistory(run, discardDraftsFor = new Set()) {
+    if (busy || historyWriting || !historyDB) return;
+    const previousFocus = document.activeElement;
+    const focusedFavorite = previousFocus?.dataset.favorite;
+    historyWriting = true;
+    syncHistoryControls();
+    try {
+      try { await historyTransaction("readwrite", run); }
+      catch {
+        historyError("历史记录更新失败，请刷新页面后重试；原记录未主动清理。");
+        return;
+      }
+      try { await refreshHistory({discardDraftsFor}); }
+      catch { historyError("更新已保存，历史列表暂时无法刷新。重新打开历史可重试读取。", "read"); }
+      rememberView();
+    } finally {
+      historyWriting = false;
+      syncHistoryControls();
+      if (previousFocus && !previousFocus.isConnected) {
+        const replacement = focusedFavorite
+          ? [...document.querySelectorAll("[data-favorite]")].find(button => button.dataset.favorite === focusedFavorite && button.offsetParent)
+          : null;
+        (replacement || ($("history-panel").hidden ? $("toggle-history") : $("history-search"))).focus({ preventScroll: true });
+      }
+    }
+  }
+
+  async function saveHistory(card, user, query, bookId, bookLabel, result) {
+    // Explicit public snapshot: never persist the short-lived feedback ID, access
+    // code, prompts or request headers. Old records render without feedback.
+    const snapshot = {};
+    for (const key of ["status", "answer", "message", "sources", "conflicts", "timing", "compute", "citation_integrity"]) {
+      if (result[key] !== undefined) snapshot[key] = result[key];
+    }
+    const id = crypto.randomUUID?.() || `${Date.now()}-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
+    const record = { id, created_at: new Date().toISOString(),
+      query, book_id: bookId, book_label: bookLabel, favorite: false, note: "", result: snapshot };
+    const notice = element("div", "history-meta history-save-state", "正在保存到此浏览器…");
+    card.append(notice);
+    const persist = async () => {
+      try {
+        await historyTransaction("readwrite", store => store.put(record));
+      } catch {
+        notice.replaceChildren(element("span", "", "未能保存历史记录，可能是浏览器禁用存储或空间不足。可导出本题后清理空间。 "));
+        const retry = element("button", "action", "重试保存");
+        retry.type = "button";
+        retry.addEventListener("click", () => { retry.disabled = true; persist(); });
+        notice.append(retry);
+        return;
+      }
+      // The write transaction has committed. A later list-read failure must
+      // never offer another put of this original, now potentially stale row.
+      user.dataset.historyId = card.parentElement.dataset.historyId = record.id;
+      if (user.isConnected && !visibleIds.includes(record.id)) visibleIds.push(record.id);
+      if (!records.some(item => item.id === record.id)) records.unshift(record);
+      notice.textContent = "已保存到此浏览器";
+      card.append(historyActions(record.id));
+      card.append(noteView(record.id));
+      syncHistoryControls();
+      try { await refreshHistory(); }
+      catch {
+        records.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+        renderHistory();
+        historyError("问答已保存，历史列表暂时无法刷新。重新打开历史后可重试读取。", "read");
+      }
+      rememberView();
+      syncHistoryControls();
+    };
+    await persist();
+  }
+
+  async function initHistory() {
+    try {
+      historyDB = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("rag-qa-history", 1);
+        let expired = false;
+        const timer = window.setTimeout(() => { expired = true; reject(new Error("history timeout")); }, 3000);
+        request.onupgradeneeded = () => request.result.createObjectStore("records", { keyPath: "id" });
+        request.onsuccess = () => {
+          clearTimeout(timer);
+          if (expired) request.result.close();
+          else resolve(request.result);
+        };
+        request.onerror = request.onblocked = () => {
+          expired = true;
+          clearTimeout(timer);
+          reject(new Error("history unavailable"));
+        };
+      });
+      historyDB.onversionchange = () => { historyDB.close(); historyDB = null; historyError("历史存储已更新，请刷新页面。"); };
+      await refreshHistory();
+      let ids;
+      try { ids = JSON.parse(sessionGet(VIEW_KEY) || "null"); } catch { ids = null; }
+      // The current tab restores its displayed records. A new tab starts with the
+      // latest ten; the complete library remains searchable in the history panel.
+      if (!Array.isArray(ids)) ids = records.slice(0, 10).reverse().map(record => record.id);
+      for (const id of new Set(ids)) {
+        const record = records.find(item => item.id === id);
+        if (record) showRecord(record);
+      }
+      rememberView();
+      try {
+        const saved = JSON.parse(sessionGet(REVIEW_KEY) || "null");
+        if (saved && Array.isArray(saved.ids) && saved.ids.length <= 20
+            && saved.ids.every(id => typeof id === "string") && Number.isInteger(saved.index)
+            && saved.index >= 0 && saved.index < saved.ids.length && Number.isInteger(saved.completed)
+            && saved.completed >= 0 && saved.completed <= saved.index) {
+          reviewState = saved;
+          reviewQuestion();
+        }
+      } catch { /* optional review session */ }
+      syncHistoryControls();
+    } catch {
+      historyError("此浏览器暂时无法读取或保存历史记录。仍可提问并导出 Markdown；请检查网站存储权限后刷新。");
+      $("history-count").textContent = "历史存储不可用，原记录未主动清理。";
+    } finally {
+      historyLoading = false;
+      send.disabled = busy || bookSelect.disabled;
+      flushHistoryRefresh();
+    }
+  }
+
+  function endReview(skipDraftConfirmation = false) {
+    if (!skipDraftConfirmation && !confirmLeavingProtectedDrafts()) return;
+    const completed = reviewState?.completed || 0;
+    reviewState = null; reviewRevealed = false; sessionSet(REVIEW_KEY, "");
+    $("review-panel").hidden = $("review-controls").hidden = true;
+    document.querySelector(".composer").hidden = false;
+    clearThread();
+    $("history-status").className = "history-help";
+    $("history-status").textContent = `本轮已复习 ${completed} 条收藏，下次可从“历史与收藏”继续。`;
+    delete $("history-status").dataset.historyError;
+    $("history-status").hidden = false;
+    syncHistoryControls();
+    input.focus({preventScroll: true});
+  }
+
+  function reviewQuestion() {
+    if (!reviewState) return;
+    while (reviewState.index < reviewState.ids.length
+        && !records.some(record => record.id === reviewState.ids[reviewState.index] && record.favorite)) reviewState.index++;
+    if (reviewState.index >= reviewState.ids.length) { endReview(); return; }
+    const record = records.find(item => item.id === reviewState.ids[reviewState.index]);
+    reviewRevealed = false;
+    clearThread(); empty.hidden = true;
+    $("history-panel").hidden = true;
+    $("toggle-history").setAttribute("aria-expanded", "false");
+    document.querySelector(".composer").hidden = true;
+    $("review-panel").hidden = false;
+    $("review-controls").hidden = true;
+    $("review-question").hidden = false;
+    $("review-question").textContent = record.query;
+    $("review-meta").textContent = `${reviewState.index + 1} / ${reviewState.ids.length} · ${record.book_label} · 已复习 ${reviewState.completed} 条。先回忆，再展开原回答核对。`;
+    $("review-reveal").hidden = false;
+    sessionSet(REVIEW_KEY, JSON.stringify(reviewState));
+    syncHistoryControls();
+    $("review-panel").scrollIntoView({block: "start"});
+    $("review-reveal").focus();
+  }
+
+  async function rateReview(rating, days) {
+    if (!reviewState || !reviewRevealed || busy || historyWriting) return;
+    const editors = [...thread.querySelectorAll(".note-editor")];
+    for (const editor of editors) {
+      if (editor.hasDirtyDraft?.() && editor.exportedDraft !== editor.querySelector("textarea").value && !editor.storeDraft()) {
+        $("review-meta").textContent = "笔记草稿暂存失败，请先保存笔记或导出草稿，再继续自评；本题尚未记次。";
+        return;
+      }
+    }
+    const noteAreas = editors.map(editor => editor.querySelector("textarea")).map(area => [area, area.disabled]);
+    const session = reviewState, index = session.index, id = session.ids[index];
+    for (const [area] of noteAreas) area.disabled = true;
+    historyWriting = true; syncHistoryControls();
+    try {
+      let outcome;
+      try { outcome = await historyTransaction("readwrite", (store, done) => {
+        const request = store.get(id);
+        request.onsuccess = () => {
+          if (!request.result?.favorite) { done({saved: false, record: request.result}); return; }
+          const now = new Date(), next = new Date(now);
+          next.setDate(next.getDate() + days);
+          next.setHours(0, 0, 0, 0);
+          const review = { last_reviewed_at: now.toISOString(), next_review_at: next.toISOString(),
+            count: Math.min((request.result.review?.count || 0) + 1, Number.MAX_SAFE_INTEGER), last_rating: rating };
+          try {
+            const updated = {...request.result, review};
+            store.put(updated); done({saved: true, record: updated});
+          }
+          catch { store.transaction.abort(); }
+        };
+      }); } catch {
+        $("review-meta").textContent = "复习进度未保存，请检查浏览器存储后重试；当前问题仍保留。";
+        return;
+      }
+      if (outcome.saved) session.completed++;
+      applyKnownHistoryRecord(id, outcome.record);
+      let readFailed = false;
+      try { await refreshHistory(); } catch { readFailed = true; }
+      // Refresh may already have skipped a deleted/unfavorited record or ended
+      // the session. Only advance this same question once.
+      if (reviewState === session && session.index === index) {
+        if (thread.querySelector(".note-record-missing")) return;
+        session.index++;
+        reviewQuestion();
+      }
+      if (readFailed) historyError((reviewState ? "本题处理已完成。" : $("history-status").textContent)
+        + " 历史列表暂时无法刷新，重新打开历史可重试读取。", "read");
+    } finally {
+      historyWriting = false;
+      for (const [area, disabled] of noteAreas) area.disabled = disabled;
+      syncHistoryControls();
+    }
+  }
+
   function parseEvent(frame) {
     let name = "message";
     const data = [];
@@ -599,7 +1634,8 @@ footer details p { margin-top: 6px; text-align: left; }
   function requestHeaders() {
     const headers = { "Content-Type": "application/json" };
     const code = codeInput.value.trim();
-    if (code) { headers["X-Access-Code"] = code; sessionSet(CODE_KEY, code); }
+    sessionSet(CODE_KEY, code);
+    if (code) headers["X-Access-Code"] = code;
     return headers;
   }
 
@@ -625,8 +1661,9 @@ footer details p { margin-top: 6px; text-align: left; }
 
   async function ask() {
     const query = input.value.trim();
-    if (!query || busy || bookSelect.disabled) return;
+    if (!query || busy || historyLoading || historyWriting || reviewState || bookSelect.disabled) return;
     const bookId = bookSelect.value;
+    const bookLabel = bookSelect.selectedOptions[0]?.textContent || bookId;
     if (!bookId) {
       bookSelect.setCustomValidity("请先选择一本教材");
       bookSelect.reportValidity();
@@ -635,6 +1672,7 @@ footer details p { margin-top: 6px; text-align: left; }
     }
     bookSelect.setCustomValidity("");
     busy = true;
+    syncHistoryControls();
     for (const retry of thread.querySelectorAll("[data-retry]")) retry.disabled = true;
     send.disabled = true;
     clear.disabled = true;
@@ -642,8 +1680,9 @@ footer details p { margin-top: 6px; text-align: left; }
     activeController = new AbortController();
     thread.setAttribute("aria-busy", "true");
     input.value = "";
+    rememberQuestionDraft();
     autosize();
-    addUser(query);
+    const user = addUser(query);
     const card = addAnswer();
     const body = card.querySelector(".body");
     let text = "", paintTimer = 0, settled = false, autoFollow = true;
@@ -713,6 +1752,9 @@ footer details p { margin-top: 6px; text-align: left; }
             cancelPaint();
             finish(card, event.data, query);
             if (event.data.status === "failed") addRetry(card, query, bookId);
+            settled = true;
+            reader.cancel().catch(() => {});
+            await saveHistory(card, user, query, bookId, bookLabel, event.data);
             if (autoFollow) window.scrollTo(0, document.documentElement.scrollHeight);
           } else if (event.name === "error") {
             cancelPaint();
@@ -746,6 +1788,7 @@ footer details p { margin-top: 6px; text-align: left; }
     } finally {
       window.removeEventListener("scroll", trackScrollIntent);
       busy = false;
+      syncHistoryControls();
       activeController = null;
       send.disabled = false;
       clear.disabled = false;
@@ -765,6 +1808,7 @@ footer details p { margin-top: 6px; text-align: left; }
   async function refreshStatus() {
     try {
       const health = await (await fetch("/health")).json();
+      $("import-link").hidden = !health.imports_enabled;
       if (health.access_code_required) {
         codeField.hidden = false;
         if (!codeInput.value) codeInput.value = sessionGet(CODE_KEY);
@@ -801,14 +1845,15 @@ footer details p { margin-top: 6px; text-align: left; }
       }
       bookSelect.replaceChildren(...options);
       const available = new Set(books.map((book) => book.book_id));
-      if (available.has(previous)) bookSelect.value = previous;
+      const desired = sessionGet(BOOK_KEY) || previous;
+      if (available.has(desired)) bookSelect.value = desired;
       for (const example of document.querySelectorAll(".examples button")) {
         example.disabled = !available.has(example.dataset.book);
         if (example.disabled) example.title = "这本教材当前没有可用索引";
         else example.removeAttribute("title");
       }
       bookSelect.disabled = !books.length;
-      send.disabled = busy || !books.length;
+      send.disabled = busy || historyLoading || !books.length;
       reloadBooks.hidden = !!books.length;
       bookStatus.textContent = books.length ? "" : "暂无可用教材，请稍后重新加载。";
       bookStatus.hidden = !!books.length;
@@ -826,6 +1871,13 @@ footer details p { margin-top: 6px; text-align: left; }
   }
 
   thread.addEventListener("click", (event) => {
+    const codeCopy = event.target.closest("[data-copy-code]");
+    if (codeCopy) {
+      copyText(codeCopy.closest(".code-block").querySelector("code").textContent)
+        .then(() => { codeCopy.textContent = "已复制"; window.setTimeout(() => { codeCopy.textContent = "复制代码"; }, 1500); })
+        .catch(() => { codeCopy.textContent = "复制失败，请手动复制"; });
+      return;
+    }
     const example = event.target.closest(".examples button");
     if (example) {
       bookSelect.value = example.dataset.book;
@@ -843,12 +1895,18 @@ footer details p { margin-top: 6px; text-align: left; }
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     target.classList.add("flash");
+    openReader(cite.closest(".answer"), cite.dataset.cite);
+    if (window.matchMedia("(min-width: 801px)").matches) target.focus({ preventScroll: true });
     setTimeout(() => target.classList.remove("flash"), 1600);
   });
-  input.addEventListener("input", autosize);
+  input.addEventListener("input", () => {
+    autosize(); rememberQuestionDraft();
+  });
+  codeInput.addEventListener("input", () => { if (!codeInput.value.trim()) sessionRemove(CODE_KEY); });
   bookSelect.addEventListener("change", () => {
     bookSelect.setCustomValidity("");
     sessionSet(BOOK_KEY, bookSelect.value);
+    if (!bookSelect.disabled) bookStatus.hidden = true;
   });
   input.addEventListener("keydown", (event) => {
     // isComposing: Enter that confirms a Chinese IME candidate must not send.
@@ -857,13 +1915,221 @@ footer details p { margin-top: 6px; text-align: left; }
   form.addEventListener("submit", (event) => { event.preventDefault(); ask(); });
   cancel.addEventListener("click", () => activeController?.abort());
   clear.addEventListener("click", () => {
-    if (busy) return;
-    for (const message of thread.querySelectorAll(".msg")) message.remove();
-    empty.hidden = false;
-    clear.hidden = true;
+    if (busy || !confirmLeavingProtectedDrafts()) return;
+    clearThread();
     input.focus();
   });
+  $("toggle-history").addEventListener("click", async () => {
+    const panel = $("history-panel");
+    panel.hidden = !panel.hidden;
+    $("toggle-history").setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden) {
+      if (historyDB) {
+        try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
+      }
+      $("history-search").focus();
+    }
+  });
+  for (const id of ["history-search", "history-book", "history-favorites", "history-notes"]) {
+    $(id).addEventListener(id === "history-search" ? "input" : "change", () => {
+      historyLimit = 20;
+      renderHistory();
+    });
+  }
+  $("history-more").addEventListener("click", () => { historyLimit += 20; renderHistory(); });
+  $("history-reset-filters").addEventListener("click", () => {
+    $("history-search").value = $("history-book").value = "";
+    $("history-favorites").checked = $("history-notes").checked = false;
+    historyLimit = 20; renderHistory();
+  });
+  $("history-review-all").addEventListener("change", syncHistoryControls);
+  $("history-review-start").addEventListener("click", () => {
+    if (busy || historyWriting || !confirmLeavingProtectedDrafts()) return;
+    const pool = filteredRecords.filter(record => record.favorite
+      && ($("history-review-all").checked || !record.review || Date.parse(record.review.next_review_at) <= Date.now()));
+    pool.sort((a, b) => (Date.parse(a.review?.next_review_at || a.created_at) - Date.parse(b.review?.next_review_at || b.created_at)));
+    if (!pool.length) return;
+    reviewState = {ids: pool.slice(0, 20).map(record => record.id), index: 0, completed: 0};
+    reviewQuestion();
+  });
+  $("review-reveal").addEventListener("click", () => {
+    if (!reviewState || busy || historyWriting) return;
+    const record = records.find(item => item.id === reviewState.ids[reviewState.index]);
+    if (!record) { reviewState.index++; reviewQuestion(); return; }
+    clearThread();
+    const card = showRecord(record);
+    rememberView();
+    reviewRevealed = true;
+    $("review-question").hidden = $("review-reveal").hidden = true;
+    $("review-controls").hidden = false;
+    $("review-meta").textContent = `${reviewState.index + 1} / ${reviewState.ids.length} · 对照原文和自己的笔记，再选择下次复习时间。`;
+    syncHistoryControls();
+    const body = card.querySelector(".body"); body.tabIndex = -1;
+    body.focus({preventScroll: true});
+  });
+  $("review-skip").addEventListener("click", () => {
+    if (!reviewState || busy || historyWriting || !confirmLeavingProtectedDrafts()) return;
+    reviewState.index++; reviewQuestion();
+  });
+  $("review-end").addEventListener("click", () => endReview());
+  $("review-again").addEventListener("click", () => rateReview("again", 1));
+  $("review-familiar").addEventListener("click", () => rateReview("familiar", 7));
+  $("history-export-practice").checked = sessionGet(PRACTICE_KEY) === "true";
+  $("history-export-practice").addEventListener("change", () => sessionSet(PRACTICE_KEY, String($("history-export-practice").checked)));
+  $("history-export-md").addEventListener("click", async () => {
+    if (busy || historyWriting || historyExporting || !historyDB) return;
+    const filter = currentHistoryFilter(), status = $("history-export-status");
+    const practice = $("history-export-practice").checked;
+    historyExporting = true; syncHistoryControls();
+    status.textContent = "正在整理已保存记录…";
+    try {
+      // Capture the chosen filters before waiting. Read one fresh snapshot
+      // without replacing the current answer, review state or note drafts.
+      const loaded = await historyTransaction("readonly", (store, done) => {
+        const request = store.getAll();
+        request.onsuccess = () => done(request.result);
+      });
+      const selected = loaded.filter(record => historyMatches(record, filter))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+      if (!selected.length) { status.textContent = "当前筛选已没有记录，请重新打开历史查看最新内容。"; return; }
+      if (selected.length > 5000) { status.textContent = "单次最多导出 5000 条，请按教材或关键词分批导出。"; return; }
+      const now = new Date();
+      const parts = [`# ${practice ? "学习问答练习" : "学习问答整理"}\n\n导出时间：${now.toLocaleString()}\n\n共 ${selected.length} 条记录，按保存时间倒序。仅包含已保存笔记，不含当前编辑草稿。\n\n此文件供阅读整理，恢复到浏览器请使用 JSON 备份。\n\n`];
+      let bytes = new Blob(parts).size;
+      const appendPart = text => {
+        bytes += new Blob([text]).size;
+        if (bytes > 64 * 1024 * 1024) { status.textContent = "导出超过 64 MB，请按教材或关键词分批导出。"; return false; }
+        parts.push(text); return true;
+      };
+      const recordMetadata = record => {
+        const metadata = [`教材：${record.book_label}`, `保存时间：${new Date(record.created_at).toLocaleString()}`,
+          `收藏：${record.favorite ? "是" : "否"}`, `记录编号：${record.id}`];
+        if (record.review) metadata.push(`下次复习：${new Date(record.review.next_review_at).toLocaleString()}`);
+        return metadata.join("\n");
+      };
+      if (practice) {
+        if (!appendPart("## 练习问题\n\n先写下自己的理解，再到后半部分核对已保存回答与教材来源。\n\n")) return;
+        for (const [index, record] of selected.entries()) {
+          const question = `### 第 ${index + 1} 题\n\n${literalBlock(recordMetadata(record))}\n\n${literalBlock(record.query)}\n\n我的回答：\n\n（在这里写下自己的理解。）\n\n`;
+          if (!appendPart(question)) return;
+        }
+        if (!appendPart("---\n\n## 已保存回答与来源\n\n这些是当时保存的回答和笔记，请结合教材片段核验。\n\n")) return;
+      }
+      for (const [index, record] of selected.entries()) {
+        const part = answerRecord(record.query, record.result, record.note || "",
+          {level: practice ? 3 : 2, title: practice ? `第 ${index + 1} 题 · 已保存记录` : `第 ${index + 1} 条 · 教材问答记录`, metadata: recordMetadata(record)}) + "\n---\n\n";
+        if (!appendPart(part)) return;
+      }
+      const url = URL.createObjectURL(new Blob(parts, {type: "text/markdown;charset=utf-8"}));
+      const link = element("a"); link.href = url;
+      const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+      link.download = `教材问答${practice ? "练习" : "整理"}-${date}.md`;
+      try { document.body.append(link); link.click(); }
+      finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      status.textContent = `已将 ${selected.length} 条记录交给浏览器下载${practice ? "（练习版）" : ""}，请确认文件已保存；当前草稿未写入导出。`;
+    } catch { status.textContent = "导出未完成，暂时无法读取历史或创建文件。请重新打开历史后重试。"; }
+    finally { historyExporting = false; syncHistoryControls(); }
+  });
+  async function exportHistory(filtered) {
+    if (!backupAvailable) { $("history-backup-preview").textContent = backupUnavailableMessage; return; }
+    try {
+      await refreshHistory();
+      const text = window.RagHistoryBackup.serialize(filtered ? filteredRecords : records);
+      const url = URL.createObjectURL(new Blob([text], {type: "application/json;charset=utf-8"}));
+      const link = element("a");
+      link.href = url; link.download = `教材问答备份-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $("history-backup-preview").textContent = "备份已交给浏览器下载，请确认文件已保存。";
+    } catch (error) { $("history-backup-preview").textContent = error.message || "备份失败，请刷新后重试。"; }
+  }
+  $("history-backup-all").addEventListener("click", () => exportHistory(false));
+  $("history-backup-filtered").addEventListener("click", () => exportHistory(true));
+  $("history-backup-file").addEventListener("change", async () => {
+    if (!backupAvailable) { $("history-backup-preview").textContent = backupUnavailableMessage; return; }
+    const token = ++backupReading;
+    restoreRecords = null; syncHistoryControls();
+    const file = $("history-backup-file").files[0];
+    if (!file) { $("history-backup-preview").textContent = ""; return; }
+    $("history-backup-preview").textContent = "正在校验备份，尚未写入记录…";
+    try {
+      if (file.size > window.RagHistoryBackup.maxBytes) throw new Error("单个备份最多 64 MB。");
+      const incoming = window.RagHistoryBackup.parse(await file.text());
+      if (token !== backupReading) return;
+      restoreRecords = incoming;
+      const existing = new Set(records.map(record => record.id));
+      const duplicate = incoming.filter(record => existing.has(record.id)).length;
+      $("history-backup-preview").textContent = `备份校验通过：${incoming.length} 条记录，${incoming.filter(record => record.favorite).length} 条收藏；预计新增 ${incoming.length - duplicate} 条，相同编号 ${duplicate} 条。确认后合并，已有记录不会覆盖。`;
+    } catch (error) {
+      if (token === backupReading) $("history-backup-preview").textContent = error.message || "备份校验失败，未写入记录。";
+    }
+    syncHistoryControls();
+  });
+  $("history-restore").addEventListener("click", async () => {
+    if (!backupAvailable || busy || historyWriting || !restoreRecords?.length) return;
+    const incoming = restoreRecords;
+    historyWriting = true; syncHistoryControls();
+    try {
+      let added;
+      try { added = await historyTransaction("readwrite", (store, done) => {
+        const request = store.getAllKeys();
+        request.onsuccess = () => {
+          try {
+            const existing = new Set(request.result);
+            let count = 0;
+            for (const record of incoming) if (!existing.has(record.id)) { store.add(record); count++; }
+            done(count);
+          } catch { store.transaction.abort(); }
+        };
+      }); } catch {
+        $("history-backup-preview").textContent = "恢复失败，已有记录保持原样。请检查浏览器存储空间后重试。";
+        return;
+      }
+      $("history-backup-preview").textContent = `恢复完成：新增 ${added} 条，保留当前已有编号 ${incoming.length - added} 条。`;
+      restoreRecords = null; $("history-backup-file").value = "";
+      try { await refreshHistory(); }
+      catch { $("history-backup-preview").textContent += " 历史列表暂时无法刷新，重新打开历史可重试读取。"; }
+    } finally { historyWriting = false; syncHistoryControls(); }
+  });
+  $("history-clean").addEventListener("click", () => {
+    if (busy || historyWriting || !window.confirm("删除所有未收藏的问答及引用快照？收藏将保留，操作无法撤销。")) return;
+    const removed = new Set();
+    changeHistory(store => {
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (!cursor.value.favorite) { removed.add(cursor.primaryKey); cursor.delete(); }
+        cursor.continue();
+      };
+    }, removed);
+  });
+  $("history-delete-all").addEventListener("click", () => {
+    if (busy || historyWriting || !window.confirm("删除全部问答及引用快照，包括收藏？操作无法撤销。")) return;
+    changeHistory(store => store.clear(), new Set(records.map(record => record.id)));
+  });
   reloadBooks.addEventListener("click", loadBooks);
+  try {
+    const filters = JSON.parse(sessionGet(FILTER_KEY) || "null");
+    if (filters && typeof filters === "object") {
+      $("history-search").value = typeof filters.query === "string" ? filters.query.slice(0, 500) : "";
+      initialHistoryBook = typeof filters.book === "string" ? filters.book : "";
+      $("history-favorites").checked = filters.favorites === true;
+      $("history-notes").checked = filters.notes === true;
+    }
+  } catch { /* optional history filters */ }
+  input.value = sessionGet(DRAFT_KEY).slice(0, 500);
+  if (input.value) {
+    $("draft-status").textContent = "已恢复当前标签页的提问草稿。";
+    $("draft-status").hidden = false;
+  }
+  autosize();
+  if (!backupAvailable) {
+    $("history-backup-preview").textContent = backupUnavailableMessage;
+    $("history-backup-preview").className = "notice warn";
+  }
+  send.disabled = true;
+  initHistory();
   loadBooks();
   refreshStatus();
 })();

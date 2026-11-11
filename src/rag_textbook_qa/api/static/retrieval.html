@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>检索观察台 · 计算机教材问答</title>
+<style>
+:root { color-scheme:light dark; --bg:#f6f7f9; --panel:#fff; --text:#1c2330; --muted:#5c6675; --line:#e3e6eb; --accent:#2f6fed; --soft:#e8f0fe; --button-bg:#2f6fed; --error:#b42318; }
+@media(prefers-color-scheme:dark) { :root { --bg:#0f1216; --panel:#171b21; --text:#e6e9ee; --muted:#9aa4b2; --line:#2a3039; --accent:#6ea0ff; --soft:#1d2a42; --button-bg:#3b6fd8; --error:#f4a3a3; } }
+* { box-sizing:border-box; } [hidden] { display:none!important; }
+body { margin:0; color:var(--text); background:var(--bg); font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+.app { max-width:1100px; margin:auto; padding:20px 16px 60px; }
+header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; }
+h1 { font-size:22px; margin:0; } h2 { font-size:17px; margin:0 0 8px; } h3 { font-size:15px; margin:0; }
+a { color:var(--accent); } .hint { font-size:13px; color:var(--muted); margin:6px 0; }
+.panel { padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--panel); margin:16px 0; }
+.controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; }
+label { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:13px; }
+select,input,textarea,button { font:inherit; color:var(--text); border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:7px 10px; max-width:100%; }
+textarea { width:100%; resize:vertical; margin:12px 0; min-height:85px; }
+button { cursor:pointer; font-size:13px; } button:hover { border-color:var(--accent); color:var(--accent); }
+button:disabled { opacity:.5; cursor:default; } button.primary { color:#fff; background:var(--button-bg); }
+.stages { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; } .stages button[aria-pressed=true] { color:var(--accent); background:var(--soft); border-color:var(--accent); }
+.stage-explanation { font-size:14px; color:var(--muted); }
+.candidate { border-top:1px solid var(--line); padding:12px 0; overflow-wrap:anywhere; }
+.badges { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; } .badge { border:1px solid var(--line); border-radius:99px; padding:1px 8px; font-size:12px; color:var(--muted); }
+.badge.chosen { color:var(--accent); background:var(--soft); }
+.excerpt { white-space:pre-wrap; font-size:14px; max-height:20em; overflow:auto; margin-top:8px; }
+summary { cursor:pointer; font-size:13px; } .error { color:var(--error); }
+.table-wrap { overflow:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+td,th { padding:8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-numeric:tabular-nums; }
+@media(max-width:520px) { .controls label { width:100%; } .controls select { flex:1; min-width:0; } .panel { padding:12px; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>检索观察台</h1><a href="/">返回聊天</a></header>
+  <p class="hint">观察同一个问题在关键词检索、向量检索、融合、重排和上下文打包中的变化。</p>
+  <form class="panel" id="inspect-form">
+    <div class="controls">
+      <label>教材 <select id="inspect-book" required disabled><option value="" disabled selected>正在加载教材…</option></select></label>
+      <label>最终候选数 <select id="inspect-top-k"><option>3</option><option selected>5</option><option>10</option></select></label>
+      <label id="inspect-code-field" hidden>访问口令 <input id="inspect-code" type="password" autocomplete="off"></label>
+    </div>
+    <textarea id="inspect-query" aria-label="观察检索的问题" maxlength="500" required placeholder="输入一个想了解检索过程的教材问题，例如：进程和程序有什么区别？"></textarea>
+    <div class="controls">
+      <button class="primary" id="inspect-send" disabled>观察检索过程</button>
+      <button type="button" id="inspect-stop" hidden>停止等待</button>
+      <button type="button" id="inspect-reload" hidden>重新加载教材</button>
+    </div>
+    <p class="hint">只运行检索模型，不生成回答、不消耗每日生成次数。可能使用已配置的远程 Worker；HyDE 和其他生成实验保持关闭。</p>
+  </form>
+  <p id="inspect-status" role="status" class="hint">正在加载教材…</p>
+  <section id="inspect-result" class="panel" hidden aria-label="检索观察结果">
+    <h2 id="inspect-title"></h2>
+    <p id="inspect-summary" class="hint"></p>
+    <button type="button" id="inspect-export" disabled>导出本次观察（Markdown）</button>
+    <p id="inspect-export-status" class="hint" role="status"></p>
+    <p class="hint">各阶段分数的含义不同，不能直接比较或相加。入选上下文表示片段被交给模型，不代表片段或回答一定正确。</p>
+    <details><summary>同一片段的排名变化</summary><div class="table-wrap" id="inspect-ranks"></div></details>
+    <div class="stages" id="inspect-stages" role="group" aria-label="选择检索阶段"></div>
+    <p class="stage-explanation" id="inspect-explanation"></p>
+    <div id="inspect-candidates"></div>
+  </section>
+</div>
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
+  const sessionGet = key => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
+  const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* optional */ } };
+  let controller = null, result = null, completedSnapshot = null;
+  const stageLabels = {keyword:"关键词", embedding:"向量", fusion:"融合", rerank:"重排", context:"最终上下文"};
+  const explanations = {
+    keyword: "关键词检索使用 BM25 匹配教材词语。这里的检索分已按现有实现缩放，重点看排名和正文。",
+    embedding: "向量检索找语义接近的片段，也可能找到措辞不同但相关的内容。",
+    fusion: "融合按两条路线的排名计算 RRF。",
+    rerank: "重排用问题与候选正文重新评分，选出最终候选。未配置重排器时沿用融合排名。",
+    context: "按字符预算保留实际交付的原文片段，资料编号在这里产生；标注截断的片段只交付了其中一部分。",
+  };
+  function setStatus(text, error = false) { $("inspect-status").textContent = text; $("inspect-status").className = error ? "hint error" : "hint"; }
+  function key(item) { return JSON.stringify([item.book_id, item.chunk_id]); }
+  function validInspection(value) {
+    const object = item => item && typeof item === "object" && !Array.isArray(item);
+    return object(value) && Array.isArray(value.stages) && value.stages.length === 5
+      && value.stages.every((stage, index) => object(stage) && stage.id === Object.keys(stageLabels)[index] && typeof stage.label === "string"
+        && Number.isSafeInteger(stage.count) && Array.isArray(stage.items) && stage.items.length <= 30
+        && stage.count >= stage.items.length && stage.items.every(item => object(item)
+          && Number.isSafeInteger(item.position) && item.position > 0
+          && ["book_id", "chunk_id", "book", "section", "excerpt"].every(name => typeof item[name] === "string")
+          && object(item.scores) && object(item.source_ranks)));
+  }
+  function literalBlock(text) {
+    const value = String(text ?? ""), runs = value.match(/`+/g) || [];
+    const fence = "`".repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+    return `${fence}text\n${value}\n${fence}`;
+  }
+  function tableCell(value) {
+    const text = String(value ?? "").replace(/[\r\n]+/g, " ");
+    const fence = "`".repeat(Math.max(1, ...(text.match(/`+/g) || []).map(run => run.length + 1)));
+    return `${fence} ${text.replaceAll("|", "\\|")} ${fence}`;
+  }
+  function inspectionRecord(snapshot) {
+    const data = snapshot.data;
+    const lines = ["# 检索观察记录", "", "## 本次问题", "", literalBlock(snapshot.query), "", "## 参数与范围", "",
+      literalBlock([`教材：${snapshot.bookLabel}`, `教材编号：${snapshot.book}`, `完成时间（UTC）：${snapshot.finishedAt}`,
+        `最终候选数（请求）：${snapshot.topK}`, `上下文预算：${data.context_budget} 字符`,
+        `重排器：${data.reranker_enabled ? "已配置" : "未配置，沿用融合排名"}`,
+        `生成模型调用：${data.generation_calls ?? "未报告"}`,
+        ...(Number.isFinite(data.elapsed_seconds) ? [`耗时：${data.elapsed_seconds.toFixed(2)} 秒`] : []),
+        ...["embedding", "bm25"].filter(name => Number.isFinite(data.fusion_weights?.[name]))
+          .map(name => `融合权重 ${name === "embedding" ? "向量" : "关键词"}：${data.fusion_weights[name]}`)].join("\n")), "",
+      "各阶段分数含义不同，不能直接比较或相加。入选上下文不表示片段或回答一定正确。", "",
+      "本文件保留服务返回的展示范围；候选或长正文超过范围时会标注，不重新检索完整内容。", "",
+      "## 同一片段的排名变化", "",
+      "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。", "",
+      "| 教材 / 片段 | " + data.stages.map(stage => stageLabels[stage.id]).join(" | ") + " |",
+      "| --- | " + data.stages.map(() => "---:").join(" | ") + " |"];
+    const candidates = new Map();
+    for (const stage of data.stages) for (const item of stage.items) {
+      if (!candidates.has(key(item))) candidates.set(key(item), {item, positions:{}});
+      candidates.get(key(item)).positions[stage.id] = item.position;
+    }
+    for (const row of candidates.values()) lines.push("| " + tableCell(row.item.book + " / " + row.item.chunk_id)
+      + " | " + data.stages.map(stage => row.positions[stage.id] || "—").join(" | ") + " |");
+    if (!candidates.size) lines.push("| 本次没有展示候选 | " + data.stages.map(() => "—").join(" | ") + " |");
+    lines.push("");
+    const contexts = new Map(data.stages[4].items.map(item => [key(item), item]));
+    for (const stage of data.stages) {
+      lines.push(`## ${stageLabels[stage.id]}`, "", `本阶段共 ${stage.count} 个候选，本文件保留展示的 ${stage.items.length} 个。`, "",
+        explanations[stage.id], "");
+      if (!stage.items.length) lines.push("这个阶段没有候选片段。", "");
+      for (const item of stage.items) {
+        const chosen = contexts.get(key(item));
+        const metadata = [`教材：${item.book}`, `章节：${item.section || "未标注章节"}`, `片段编号：${item.chunk_id}`,
+          `阶段排名：${item.position}`, chosen
+            ? "本次展示中入选上下文" + (chosen.citation_id == null ? "" : ` · 资料 ${chosen.citation_id}`)
+            : "未出现在最终上下文的展示范围中"];
+        if (item.source_sha256) metadata.push(`原文 SHA-256：${item.source_sha256}`);
+        for (const [name, label] of [["similarity","检索分"],["bm25_score","BM25"],["rrf_score","RRF"],["rerank_score","重排分"]]) {
+          if (Number.isFinite(item.scores[name])) metadata.push(`${label}：${item.scores[name].toFixed(4)}`);
+        }
+        for (const [name, label] of [["embedding","向量"],["bm25","关键词"]]) {
+          if (item.source_ranks[name]) metadata.push(`${label}路线排名：${item.source_ranks[name]}`);
+        }
+        if (item.truncated) metadata.push("交付片段已截断。");
+        if (item.preview_truncated) metadata.push("长片段预览已截断。");
+        if (item.table_compacted) metadata.push("表格按行整理。");
+        lines.push(`### 候选 ${item.position}`, "", literalBlock(metadata.join("\n")), "", literalBlock(item.excerpt), "");
+      }
+    }
+    return lines.join("\n");
+  }
+  function showStage(stage) {
+    for (const button of $("inspect-stages").children) button.setAttribute("aria-pressed", String(button.dataset.stage === stage.id));
+    $("inspect-explanation").textContent = explanations[stage.id];
+    if (stage.id === "fusion" && result.fusion_weights) $("inspect-explanation").textContent += ` 本次向量权重 ${result.fusion_weights.embedding ?? "未知"}、关键词权重 ${result.fusion_weights.bm25 ?? "未知"}。`;
+    const list = $("inspect-candidates"); list.replaceChildren();
+    const contexts = new Map(result.stages.find(item => item.id === "context").items.map(item => [key(item), item]));
+    if (!stage.items.length) list.append(node("p", "这个阶段没有候选片段。", "hint"));
+    for (const item of stage.items) {
+      const card = node("article", undefined, "candidate");
+      card.append(node("h3", `${item.position}. ${item.book} · ${item.section || "未标注章节"}`));
+      const badges = node("div", undefined, "badges");
+      const chosen = contexts.get(key(item));
+      badges.append(node("span", chosen ? `入选上下文 · 资料 ${chosen.citation_id}` : "未入选上下文", "badge" + (chosen ? " chosen" : "")));
+      for (const [name, label] of [["similarity", "检索分"], ["bm25_score", "BM25"], ["rrf_score", "RRF"], ["rerank_score", "重排分"]]) {
+        if (typeof item.scores[name] === "number") badges.append(node("span", `${label} ${item.scores[name].toFixed(4)}`, "badge numeric"));
+      }
+      for (const [name, label] of [["embedding", "向量"], ["bm25", "关键词"]]) {
+        if (item.source_ranks[name]) badges.append(node("span", `${label}第 ${item.source_ranks[name]} 名`, "badge"));
+      }
+      if (item.truncated) badges.append(node("span", "交付片段已截断", "badge"));
+      if (item.preview_truncated) badges.append(node("span", "长片段预览已截断", "badge"));
+      const details = node("details");
+      details.open = stage.id === "context";
+      details.append(node("summary", "查看这个阶段的正文"), node("div", item.excerpt, "excerpt"));
+      card.append(badges, node("p", `片段 ${item.chunk_id}`, "hint"), details);
+      list.append(card);
+    }
+    if (stage.count > stage.items.length) list.append(node("p", `本阶段共 ${stage.count} 个候选，页面展示前 ${stage.items.length} 个。`, "hint"));
+  }
+  function showRanks() {
+    const candidates = new Map();
+    for (const stage of result.stages) for (const item of stage.items) {
+      if (!candidates.has(key(item))) candidates.set(key(item), { item, positions: {} });
+      candidates.get(key(item)).positions[stage.id] = item.position;
+    }
+    const table = node("table"), head = node("tr");
+    head.append(node("th", "片段 / 章节"));
+    for (const stage of result.stages) head.append(node("th", stage.label));
+    table.append(head);
+    for (const row of candidates.values()) {
+      const tr = node("tr");
+      tr.append(node("td", `${row.item.chunk_id} · ${row.item.section}`));
+      for (const stage of result.stages) tr.append(node("td", row.positions[stage.id] || "—", "numeric"));
+      table.append(tr);
+    }
+    $("inspect-ranks").replaceChildren(node("p", "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。", "hint"), table);
+  }
+  async function loadBooks() {
+    $("inspect-send").disabled = true; $("inspect-reload").hidden = true;
+    try {
+      const response = await fetch("/v1/books");
+      if (!response.ok) throw new Error("books");
+      const books = await response.json();
+      const select = $("inspect-book");
+      select.replaceChildren(new Option(books.length ? "请选择教材" : "暂无可用教材", ""));
+      select.options[0].disabled = true;
+      for (const book of books) select.add(new Option(book.label, book.book_id));
+      select.value = sessionGet("rag-qa-selected-book");
+      if (!select.value) select.selectedIndex = 0;
+      select.disabled = !books.length;
+      $("inspect-send").disabled = !books.length;
+      setStatus(books.length ? "选择教材、输入问题后开始观察。" : "暂无可用教材，请先建立索引。");
+      $("inspect-reload").hidden = !!books.length;
+    } catch { setStatus("教材加载失败，请重试。", true); $("inspect-reload").hidden = false; }
+  }
+  $("inspect-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (controller) return;
+    const query = $("inspect-query").value.trim(), book = $("inspect-book").value;
+    const bookLabel = $("inspect-book").selectedOptions[0]?.textContent || book;
+    const topK = Number($("inspect-top-k").value);
+    if (!query || !book) return;
+    controller = new AbortController();
+    const signal = controller.signal;
+    $("inspect-send").disabled = true; $("inspect-stop").hidden = false;
+    $("inspect-result").hidden = true;
+    completedSnapshot = null; $("inspect-export").disabled = true;
+    $("inspect-export-status").textContent = "";
+    setStatus("正在运行检索模型，未调用生成模型…");
+    const headers = { "Content-Type": "application/json" };
+    const code = $("inspect-code").value.trim();
+    sessionSet("rag-qa-access-code", code);
+    if (code) headers["X-Access-Code"] = code;
+    try {
+      const response = await fetch("/v1/retrieval/inspect", { method:"POST", headers, signal,
+        body:JSON.stringify({ query, book_id:book, top_k:topK }) });
+      if (!response.ok) {
+        if (response.status === 401) { $("inspect-code-field").hidden = false; $("inspect-code").focus(); }
+        let detail; try { detail = (await response.json()).detail; } catch { /* optional */ }
+        throw new Error(typeof detail === "string" ? detail : "检索观察失败，请稍后重试。");
+      }
+      let received;
+      try { received = await response.json(); } catch { throw new Error("检索结果格式不正确，请重试。"); }
+      if (!validInspection(received)) throw new Error("检索结果格式不正确，请重试。");
+      result = received;
+      $("inspect-title").textContent = query;
+      $("inspect-summary").textContent = `${bookLabel} · 上下文预算 ${result.context_budget} 字符 · ${result.reranker_enabled ? "已运行重排" : "未配置重排器"}${typeof result.elapsed_seconds === "number" ? " · 耗时 " + result.elapsed_seconds.toFixed(2) + " 秒" : ""}`;
+      const stages = $("inspect-stages"); stages.replaceChildren();
+      for (const stage of result.stages) {
+        const button = node("button", `${stage.label} ${stage.count}`);
+        button.type = "button"; button.dataset.stage = stage.id;
+        button.addEventListener("click", () => showStage(stage)); stages.append(button);
+      }
+      showRanks(); showStage(result.stages[4]);
+      completedSnapshot = {query, book, bookLabel, topK, finishedAt:new Date().toISOString(), data:result};
+      $("inspect-export").disabled = false;
+      $("inspect-result").hidden = false;
+      setStatus("检索观察完成，没有调用生成模型。结果仅用于理解本次检索。");
+    } catch (error) { setStatus(error.name === "AbortError" ? "已停止等待，可以重新开始。" : error.message, error.name !== "AbortError"); }
+    finally { controller = null; $("inspect-send").disabled = false; $("inspect-stop").hidden = true; }
+  });
+  $("inspect-export").addEventListener("click", () => {
+    if (controller || !completedSnapshot) return;
+    const status = $("inspect-export-status");
+    try {
+      const blob = new Blob([inspectionRecord(completedSnapshot)], {type:"text/markdown;charset=utf-8"});
+      if (blob.size > 64 * 1024 * 1024) throw new Error("export limit");
+      const url = URL.createObjectURL(blob), link = node("a");
+      const now = new Date(), date = [now.getFullYear(), String(now.getMonth()+1).padStart(2,"0"), String(now.getDate()).padStart(2,"0")].join("-");
+      link.href = url; link.download = `检索观察-${date}.md`;
+      try { document.body.append(link); link.click(); }
+      finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      status.className = "hint";
+      status.textContent = "观察记录已交给浏览器下载，请确认文件已保存；没有重新运行检索。";
+    } catch { status.className = "hint error"; status.textContent = "观察记录导出未完成，请重试；本次结果仍保留。"; }
+  });
+  $("inspect-book").addEventListener("change", () => sessionSet("rag-qa-selected-book", $("inspect-book").value));
+  $("inspect-stop").addEventListener("click", () => controller?.abort());
+  $("inspect-reload").addEventListener("click", loadBooks);
+  $("inspect-code").value = sessionGet("rag-qa-access-code");
+  $("inspect-code").addEventListener("input", () => { if (!$("inspect-code").value.trim()) sessionSet("rag-qa-access-code", ""); });
+  loadBooks();
+  fetch("/health").then(response => response.json()).then(data => { $("inspect-code-field").hidden = !data.access_code_required; }).catch(() => {});
+})();
+</script>
+</body>
+</html>

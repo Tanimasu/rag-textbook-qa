@@ -109,18 +109,27 @@ def run() -> dict[str, Any]:
         cleanup.callback(stop_server)
         wait_until(lambda: server.started, "Local API did not start")
         base = f"http://127.0.0.1:{port}"
+        http = cleanup.enter_context(requests.Session())
+        http.trust_env = False
 
         def health() -> dict[str, Any]:
-            response = requests.get(base + "/health", timeout=2)
+            response = http.get(base + "/health", timeout=2)
             response.raise_for_status()
             return response.json()
 
+        def post_to(endpoint: str, payload: dict[str, Any], *, timeout: float = 15) -> Any:
+            # Each concurrent client owns its session. Never inherit a proxy
+            # or personal netrc credentials for these loopback-only checks.
+            with requests.Session() as client:
+                client.trust_env = False
+                return client.post(base + endpoint, json=payload, timeout=timeout)
+
         def post(query: str) -> Any:
-            return requests.post(base + "/v1/ask", json={"query": query}, timeout=15)
+            return post_to("/v1/ask", {"query": query})
 
         def stream(query: str) -> Any:
-            response = requests.post(base + "/v1/ask/stream", json={"query": query},
-                                     stream=True, timeout=(2, 5))
+            response = http.post(base + "/v1/ask/stream", json={"query": query},
+                                 stream=True, timeout=(2, 5))
             response.raise_for_status()
             cleanup.callback(response.close)
             return response
@@ -136,7 +145,7 @@ def run() -> dict[str, Any]:
         report["saturated_state"] = state
         statuses = {}
         for endpoint in ("/v1/ask", "/v1/ask/stream"):
-            response = requests.post(base + endpoint, json={"query": "rejected"}, timeout=2)
+            response = http.post(base + endpoint, json={"query": "rejected"}, timeout=2)
             statuses[endpoint] = response.status_code
             if response.status_code != 503 or "json" not in response.headers["content-type"]:
                 raise RuntimeError("Full queue was not refused before a streaming response")
@@ -199,13 +208,12 @@ def run() -> dict[str, Any]:
             engine.list_indexed_books = catalog
             with ThreadPoolExecutor(max_workers=1) as clients:
                 pending = clients.submit(
-                    requests.post, base + endpoint,
-                    json={"query": "catalog-check", "book_id": "os"}, timeout=10,
+                    post_to, endpoint, {"query": "catalog-check", "book_id": "os"}, timeout=10,
                 )
                 try:
                     if not catalog_entered.wait(2):
                         raise RuntimeError("Book validation did not read the catalog")
-                    response = requests.post(base + "/v1/ask", json={"query": " "}, timeout=2)
+                    response = http.post(base + "/v1/ask", json={"query": " "}, timeout=2)
                     if response.status_code != 422:
                         raise RuntimeError("Other requests stalled during book validation")
                     validation_statuses[endpoint] = response.status_code
