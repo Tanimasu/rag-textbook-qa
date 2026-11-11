@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -16,6 +17,13 @@ from rag_textbook_qa.token_usage import completion_usage
 
 DEFAULT_LLM_BASE_URL = "https://api.ohmygpt.com/v1"
 DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite-preview"
+
+# The only provider/model pair on which the vendor flag that switches hidden
+# reasoning off has been verified. An endpoint that does not know the flag may
+# reject the request, so it is never sent anywhere else.
+THINKING_FLAG_HOST = "api.siliconflow.cn"
+THINKING_FLAG_MODELS = frozenset({"deepseek-ai/DeepSeek-V4-Pro"})
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 class LLMConfigurationError(RuntimeError):
@@ -61,6 +69,7 @@ class LLMSettings:
     api_key: str = field(repr=False)
     base_url: str = DEFAULT_LLM_BASE_URL
     model: str = DEFAULT_LLM_MODEL
+    disable_thinking: bool = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> LLMSettings:
@@ -71,6 +80,8 @@ class LLMSettings:
             or DEFAULT_LLM_BASE_URL,
             model=values.get("LLM_MODEL", DEFAULT_LLM_MODEL).strip()
             or DEFAULT_LLM_MODEL,
+            disable_thinking=values.get("LLM_DISABLE_THINKING", "").strip().lower()
+            in _TRUE_VALUES,
         )
 
 
@@ -85,6 +96,7 @@ class LLMClient:
         verbose: bool = True,
         *,
         sdk_client: Any | None = None,
+        disable_thinking: bool = False,
     ) -> None:
         if not api_key or not api_key.strip():
             raise LLMConfigurationError("必须设置 LLM_API_KEY 或传入 api_key")
@@ -96,6 +108,7 @@ class LLMClient:
         self.base_url = _validated_base_url(base_url)
         self.default_model = model.strip()
         self.verbose = verbose
+        self.disable_thinking = bool(disable_thinking)
         self.client = (
             sdk_client
             if sdk_client is not None
@@ -109,6 +122,42 @@ class LLMClient:
             print("LLM 客户端初始化:")
             print(f"Base URL: {self.base_url}")
             print(f"默认模型: {self.default_model}")
+            if self.answer_thinking_disabled:
+                print("回答生成: 已关闭思考")
+        if self.disable_thinking and not self.answer_thinking_disabled:
+            # Said even when quiet: the reader asked for a shorter wait and is not
+            # getting one. Staying silent would look like the switch had no effect.
+            print(
+                "LLM_DISABLE_THINKING 已设置，但当前服务与模型未验证支持关闭思考的参数，"
+                "回答生成保持服务商默认。",
+                file=sys.stderr,
+            )
+
+    def _thinking_off(self, model: str) -> dict[str, Any]:
+        """Request options that switch hidden reasoning off, or nothing at all."""
+
+        if (urlsplit(getattr(self, "base_url", "")).hostname == THINKING_FLAG_HOST
+                and model in THINKING_FLAG_MODELS):
+            return {"extra_body": {"enable_thinking": False}}
+        return {}
+
+    def _answer_options(self, model: str) -> dict[str, Any]:
+        """Extra options for an answer request; empty unless the owner opted in.
+
+        Answers keep the provider default unless asked: a reasoning model spends
+        10-20 s thinking before its first visible token, but whether an answer
+        written without that step is as good has not been measured.
+        """
+
+        if not getattr(self, "disable_thinking", False):
+            return {}
+        return self._thinking_off(model)
+
+    @property
+    def answer_thinking_disabled(self) -> bool:
+        """Whether answers from the default model are requested without reasoning."""
+
+        return bool(self._answer_options(self.default_model))
 
     def close(self) -> None:
         """Release the SDK's HTTP connections; repeated closure is harmless."""
@@ -175,11 +224,8 @@ class LLMClient:
 
     def plan_queries(self, prompt: str) -> str:
         """One bounded planning request, without SDK or application retries."""
-        # Verified provider/model capability; do not send vendor options elsewhere.
-        options: dict[str, Any] = {}
-        if (urlsplit(getattr(self, "base_url", "")).hostname == "api.siliconflow.cn"
-                and self.default_model == "deepseek-ai/DeepSeek-V4-Pro"):
-            options["extra_body"] = {"enable_thinking": False}
+        # Planning never needs reasoning, so this does not wait for the answer switch.
+        options = self._thinking_off(self.default_model)
         response = self.client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
             model=self.default_model,
             messages=[{"role": "user", "content": prompt}],
@@ -195,10 +241,7 @@ class LLMClient:
 
     def audit_citations(self, prompt: str) -> str:
         """Bounded evidence checking; no SDK/application retries or reasoning text storage."""
-        options: dict[str, Any] = {}
-        if (urlsplit(self.base_url).hostname == "api.siliconflow.cn"
-                and self.default_model == "deepseek-ai/DeepSeek-V4-Pro"):
-            options["extra_body"] = {"enable_thinking": False}
+        options = self._thinking_off(self.default_model)
         response = self.client.with_options(timeout=40.0, max_retries=0).chat.completions.create(
             model=self.default_model, messages=[{"role": "user", "content": prompt}],
             temperature=0, max_tokens=2500, stream=False, **options,
@@ -236,6 +279,7 @@ class LLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=False,
+                    **self._answer_options(selected_model),
                 )
                 elapsed = round(time.monotonic() - started, 2)
                 result = self._completion_result(response, model=selected_model, elapsed=elapsed)
@@ -281,6 +325,7 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                **self._answer_options(selected_model),
             )
             finish_reason = None
             for chunk in stream:
@@ -340,6 +385,7 @@ class LLMClient:
                 messages=list(messages),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **self._answer_options(selected_model),
             )
             elapsed = round(time.monotonic() - started, 2)
             return self._completion_result(response, model=selected_model, elapsed=elapsed)
@@ -357,6 +403,7 @@ def create_llm_client(
     *,
     environ: Mapping[str, str] | None = None,
     sdk_client: Any | None = None,
+    disable_thinking: bool | None = None,
 ) -> LLMClient:
     """Create an LLM client, resolving omitted values at call time."""
 
@@ -367,4 +414,7 @@ def create_llm_client(
         model=settings.model if model is None else model,
         verbose=verbose,
         sdk_client=sdk_client,
+        disable_thinking=(
+            settings.disable_thinking if disable_thinking is None else disable_thinking
+        ),
     )

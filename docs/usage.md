@@ -73,6 +73,9 @@ LLM_MODEL=gemini-3-flash-preview
 # RAG_MODEL=gemini-3-flash-preview
 # RAGAS_MODEL=claude-sonnet-4-6   # 建议与生成模型使用不同厂商，避免自我偏好偏差
 # RAGAS_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+
+# 可选：关闭回答生成的隐藏推理以缩短首字等待，见下方“首字等待”
+# LLM_DISABLE_THINKING=true
 ```
 
 ### 3. 验证环境
@@ -324,6 +327,14 @@ Web 界面的正式实现位于 `src/rag_textbook_qa/web/`；`project/app.py` �
 **默认路径**：普通问答用原问题检索加重排，默认关闭 HyDE、查询分解和引用核对。最新真实 API 验收见
 [15 题主线验收](mainline-acceptance-20260914.md)——接口 15/15 正常结束，但答案依据与完整性
 仍有待修正项；工作区快照见 [稳定基线](stable-baseline.md)。
+
+**首字等待**：回答生成默认沿用服务商设置。`deepseek-ai/DeepSeek-V4-Pro` 会先做一段隐藏推理，
+2026-11-11 用五道开发题实测，首字平均 18.7 秒（8.8–35.6 秒）。在 `project/.env` 设
+`LLM_DISABLE_THINKING=true` 后，同样的提示词首字平均 1.1 秒（0.8–1.4 秒），整段回答从平均 30.7 秒
+降到 9.7 秒，输出 token 从平均 1232 降到 376。该开关只对 SiliconFlow 上的这一模型发送关闭思考的参数；
+其他服务或模型不发送，并在启动时提示。HyDE 走同一条回答接口，开关同样生效；查询规划和引用核对本来就不带思考。
+代价没有量化：关闭后的回答平均短约两成（673 对 833 字），每题每种设置只采样一次，回答质量没有评测，
+所以默认不开。原始记录在本机 `artifacts/evaluations/answer-thinking-20261111/`，未入库。
 
 **已知教材冲突**：只覆盖数据库教材 UNIQUE／唯一索引的 NULL 数量分歧，且两侧原文都进入上下文才触发；
 触发后不拦截回答，而是要求并列给出两种说法。**没有匹配到规则不代表不存在冲突**——这是针对一处已核实

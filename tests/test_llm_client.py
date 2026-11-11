@@ -492,5 +492,132 @@ class LLMClientTests(unittest.TestCase):
             list(client.stream_answer("问题", raise_on_error=True))
 
 
+VERIFIED_BASE = "https://api.siliconflow.cn/v1"
+VERIFIED_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
+THINKING_OFF = {"enable_thinking": False}
+
+
+def stop_stream(content="答"):
+    delta = SimpleNamespace(content=content)
+    return [SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason="stop")])]
+
+
+class AnswerThinkingSwitchTests(unittest.TestCase):
+    """Answers keep the provider default unless the owner opts out of reasoning."""
+
+    def answer_requests(self, *, base_url, model, disable_thinking, call_model=None):
+        """Send one answer through every answer path and return what each one asked for."""
+
+        sdk = FakeSDKClient([completion_response(), stop_stream(), completion_response()])
+        with contextlib.redirect_stderr(io.StringIO()) as notice:
+            client = LLMClient(
+                "key", base_url, model, verbose=False, sdk_client=sdk,
+                disable_thinking=disable_thinking,
+            )
+        self.assertTrue(client.generate_answer("问题", model=call_model, retry=0)["success"])
+        self.assertEqual(
+            list(client.stream_answer("问题", model=call_model, raise_on_error=True)), ["答"]
+        )
+        self.assertTrue(client.chat([{"role": "user", "content": "问题"}], model=call_model)["success"])
+        return client, sdk.completions.calls, notice.getvalue()
+
+    def test_answers_keep_the_provider_default_until_asked(self):
+        client, calls, notice = self.answer_requests(
+            base_url=VERIFIED_BASE, model=VERIFIED_MODEL, disable_thinking=False,
+        )
+
+        self.assertFalse(client.answer_thinking_disabled)
+        self.assertEqual([call.get("extra_body") for call in calls], [None, None, None])
+        self.assertEqual(notice, "")
+
+    def test_switch_reaches_every_answer_path_on_the_verified_pair(self):
+        client, calls, notice = self.answer_requests(
+            base_url=VERIFIED_BASE, model=VERIFIED_MODEL, disable_thinking=True,
+        )
+
+        self.assertTrue(client.answer_thinking_disabled)
+        self.assertEqual([call.get("extra_body") for call in calls], [THINKING_OFF] * 3)
+        self.assertEqual([call["stream"] for call in calls[:2]], [False, True])
+        self.assertEqual(notice, "")
+
+    def test_vendor_flag_is_never_sent_to_an_unverified_service_or_model(self):
+        for base_url, model in (
+            ("https://other.example/v1", VERIFIED_MODEL),
+            (VERIFIED_BASE, "Qwen/Qwen3.8-27B"),
+        ):
+            with self.subTest(base_url=base_url, model=model):
+                client, calls, notice = self.answer_requests(
+                    base_url=base_url, model=model, disable_thinking=True,
+                )
+
+                self.assertFalse(client.answer_thinking_disabled)
+                self.assertEqual([call.get("extra_body") for call in calls], [None, None, None])
+                # An ignored switch is reported, without naming the endpoint or any key.
+                self.assertIn("LLM_DISABLE_THINKING", notice)
+                self.assertNotIn("example", notice)
+                self.assertNotIn("key", notice)
+
+    def test_a_per_call_model_is_checked_instead_of_the_default(self):
+        _client, calls, _notice = self.answer_requests(
+            base_url=VERIFIED_BASE, model=VERIFIED_MODEL, disable_thinking=True,
+            call_model="another-model",
+        )
+        self.assertEqual([call.get("extra_body") for call in calls], [None, None, None])
+
+        _client, calls, _notice = self.answer_requests(
+            base_url=VERIFIED_BASE, model="another-model", disable_thinking=True,
+            call_model=VERIFIED_MODEL,
+        )
+        self.assertEqual([call.get("extra_body") for call in calls], [THINKING_OFF] * 3)
+
+    def test_every_retry_repeats_the_same_request(self):
+        sdk = FakeSDKClient([RuntimeError("temporary"), completion_response()])
+        client = LLMClient(
+            "key", VERIFIED_BASE, VERIFIED_MODEL, verbose=False, sdk_client=sdk,
+            disable_thinking=True,
+        )
+
+        with patch("rag_textbook_qa.llm.client.time.sleep"):
+            self.assertTrue(client.generate_answer("问题", retry=1)["success"])
+
+        self.assertEqual(len(sdk.completions.calls), 2)
+        self.assertEqual(sdk.completions.calls[0], sdk.completions.calls[1])
+        self.assertEqual(sdk.completions.calls[0]["extra_body"], THINKING_OFF)
+
+    def test_environment_switch_is_read_at_factory_call_time(self):
+        base = {"LLM_API_KEY": "key", "LLM_API_BASE": VERIFIED_BASE, "LLM_MODEL": VERIFIED_MODEL}
+        for value, expected in (
+            (None, False), ("", False), ("false", False), ("0", False), ("off", False),
+            ("true", True), (" TRUE ", True), ("1", True), ("yes", True), ("on", True),
+        ):
+            with self.subTest(value=value):
+                environment = dict(base) if value is None else {**base, "LLM_DISABLE_THINKING": value}
+                self.assertEqual(LLMSettings.from_env(environment).disable_thinking, expected)
+                client = create_llm_client(
+                    environ=environment, sdk_client=FakeSDKClient([]), verbose=False,
+                )
+                self.assertEqual(client.answer_thinking_disabled, expected)
+
+        # An explicit argument wins over the environment in both directions.
+        on = {**base, "LLM_DISABLE_THINKING": "true"}
+        for environment, argument in ((on, False), (base, True)):
+            client = create_llm_client(
+                environ=environment, sdk_client=FakeSDKClient([]), verbose=False,
+                disable_thinking=argument,
+            )
+            self.assertEqual(client.answer_thinking_disabled, argument)
+
+    def test_startup_summary_states_the_mode_without_the_key(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            LLMClient(
+                "secret-key", VERIFIED_BASE, VERIFIED_MODEL, verbose=True,
+                sdk_client=FakeSDKClient([]), disable_thinking=True,
+            )
+
+        self.assertIn("已关闭思考", output.getvalue())
+        self.assertNotIn("secret-key", output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
