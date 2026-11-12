@@ -51,6 +51,19 @@ def answer_result(answer_id: str = "answer-1") -> dict[str, Any]:
     }
 
 
+def all_books_result() -> dict[str, Any]:
+    """An answer whose sources come from two textbooks, as an all-book search returns."""
+    result = answer_result("answer-all")
+    result["answer"] = "进程是程序的一次执行。【参考资料 1】事务是不可分割的工作单位。【参考资料 2】"
+    excerpt = "事务是一个不可分割的工作单位。"
+    result["sources"].append({
+        "citation_id": 2, "book_id": "database", "chunk_id": "chapter_p9",
+        "source_sha256": hashlib.sha256(excerpt.encode()).hexdigest(),
+        "book": "数据库原理及应用", "section": "第十章 事务", "excerpt": excerpt, "truncated": False,
+    })
+    return result
+
+
 def retrieval_result() -> dict[str, Any]:
     first = {**answer_result()["sources"][0], "position": 1, "scores": {"rrf_score": .02},
              "source_ranks": {"embedding": 1, "bm25": 2}, "preview_truncated": False}
@@ -110,6 +123,7 @@ class FakeBackend(ThreadingHTTPServer):
         self.reading_failure = False
         self.reading_gate: threading.Event | None = None
         self.reads: list[dict[str, Any]] = []
+        self.read_books: list[str] = []
         self.inspections: list[dict[str, Any]] = []
         self.inspection_gate: threading.Event | None = None
         self.inspection_status = 200
@@ -173,21 +187,23 @@ class FakeHandler(BaseHTTPRequestHandler):
             if self.server.import_read_gate:
                 self.server.import_read_gate.wait(10)
             self.json_response({"detail": "没有这个导入任务"}, 404) if self.server.import_deleted else self.json_response(import_result(self.server.import_state))
-        elif self.path.startswith("/v1/books/os/passages?"):
+        elif (read := re.fullmatch(r"/v1/books/(os|database)/passages", urlsplit(self.path).path)):
+            book_id = read.group(1)
             chunk_id = parse_qs(urlsplit(self.path).query)["chunk_id"][0]
             self.server.reads.append({"chunk_id": chunk_id, "access_code": self.headers.get("X-Access-Code")})
+            self.server.read_books.append(book_id)
             if self.server.reading_gate:
                 self.server.reading_gate.wait(10)
             if self.server.reading_failure:
                 self.json_response({"detail": "原文暂时无法读取，请稍后重试"}, 503)
                 return
-            source = dict(answer_result()["sources"][0])
+            source = dict(all_books_result()["sources"][book_id == "database"])
             if self.server.reading_changed:
                 source.update(excerpt="更新后的教材原文。", source_sha256="b" * 64)
             source.update(chunk_id=chunk_id, is_anchor=True)
             neighbor = {**source, "chunk_id": "chapter_p2", "excerpt": "相邻原文：进程具有动态性。", "is_anchor": False}
             self.json_response({
-                "book_id": "os", "anchor_chunk_id": chunk_id,
+                "book_id": book_id, "anchor_chunk_id": chunk_id,
                 "source_sha256": source["source_sha256"],
                 "previous_chunk_id": "chapter_p1" if chunk_id == "chapter_p2" else None,
                 "next_chunk_id": "chapter_p2" if chunk_id == "chapter_p1" else None,
@@ -352,7 +368,8 @@ class PublicChatBrowserTests(unittest.TestCase):
 
     def open_page(self, book_id: str = "os") -> None:
         self.page.goto(self.base_url)
-        self.expect(self.page.locator("#book option")).to_have_count(3)
+        # The placeholder, the all-textbooks scope and the two indexed books.
+        self.expect(self.page.locator("#book option")).to_have_count(4)
         self.expect(self.page.locator("#quota")).to_have_text("今日剩余生成次数：17")
         if book_id:
             self.page.locator("#book").select_option(book_id)
@@ -3178,7 +3195,7 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.page.locator("#input").press("Enter")
         self.assertEqual(self.backend.asks, [])
         self.page.get_by_role("button", name="重新加载教材", exact=True).click()
-        self.expect(self.page.locator("#book option")).to_have_count(3)
+        self.expect(self.page.locator("#book option")).to_have_count(4)
         self.expect(self.page.locator("#book")).to_be_enabled()
         self.expect(self.page.locator("#send")).to_be_enabled()
         self.expect(self.page.locator("#input")).to_have_value("已经写好的问题")
@@ -3466,6 +3483,126 @@ class PublicChatBrowserTests(unittest.TestCase):
             self.backend.feedback,
             [{"answer_id": "answer-1", "rating": "helpful", "reason": None, "comment": ""}],
         )
+
+    def test_all_books_scope_asks_without_a_book_and_reads_each_source_from_its_own(self) -> None:
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open_page(book_id="")
+        self.assertEqual(
+            self.page.locator("#book option").all_text_contents(),
+            ["请选择教材", "全部教材", "操作系统", "数据库原理及应用"],
+        )
+        # Nothing is preselected: the wider scope is the reader's explicit choice.
+        self.expect(self.page.locator("#book")).to_have_value("")
+        self.expect(self.page.locator("#book-status")).to_be_hidden()
+        self.page.locator("#book").select_option("*")
+        self.expect(self.page.locator("#book-status")).to_have_text(
+            "将在全部教材中检索，每条资料标明所属教材；跨教材回答质量尚未单独验收。"
+        )
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+
+        self.backend.enqueue(Reply(final=[("result", all_books_result())]))
+        self.submit("进程和事务分别是什么？")
+        answer = self.page.locator(".answer").last
+        self.expect(answer).to_contain_text("已保存到此浏览器")
+        self.expect_ready()
+        # Leaving the book out is how the service is asked to search every textbook.
+        self.assertEqual(self.backend.asks[-1]["payload"], {"query": "进程和事务分别是什么？"})
+        self.assertEqual(
+            answer.locator(".source").evaluate_all(
+                "nodes => nodes.map(node => node.getAttribute('aria-label'))"
+            ),
+            ["资料 1 · 操作系统", "资料 2 · 数据库原理及应用"],
+        )
+        record = self.history_records()[0]
+        self.assertEqual((record["book_id"], record["book_label"]), ("*", "全部教材"))
+        self.assertEqual(
+            [source["book_id"] for source in record["result"]["sources"]], ["os", "database"]
+        )
+
+        answer.get_by_role("button", name="对照原文", exact=True).click()
+        self.page.get_by_label("选择引用原文", exact=True).select_option("2")
+        self.page.get_by_role("button", name="读取相邻原文", exact=True).click()
+        self.expect(self.page.locator(".reader-current")).to_contain_text("定位片段与引用时的原文一致")
+        self.assertEqual(self.backend.read_books, ["database"])
+
+        self.page.locator("#book").select_option("os")
+        self.expect(self.page.locator("#book-status")).to_be_hidden()
+
+    def test_all_books_records_filter_reopen_and_back_up_like_other_records(self) -> None:
+        self.open_page()
+        self.saved_answer("什么是进程？")
+        self.saved_answer("进程和事务分别是什么？", "*", all_books_result())
+        self.page.locator("#toggle-history").click()
+        items = self.page.locator(".history-item")
+        self.expect(items).to_have_count(2)
+        # The first entry already means every record, so the scope gets its own name.
+        self.assertEqual(
+            sorted(self.page.locator("#history-book option").evaluate_all(
+                "nodes => nodes.map(node => [node.value, node.textContent])"
+            )),
+            [["", "全部教材"], ["*", "跨教材提问"], ["os", "操作系统"]],
+        )
+        self.page.locator("#history-book").select_option("*")
+        self.expect(items).to_have_count(1)
+        self.expect(items.locator("h3")).to_have_text("进程和事务分别是什么？")
+        self.expect(items).to_contain_text("全部教材")
+        self.page.locator("#history-book").select_option("os")
+        self.expect(items).to_have_count(1)
+        self.expect(items.locator("h3")).to_have_text("什么是进程？")
+
+        restored = self.page.evaluate(
+            "records => RagHistoryBackup.parse(RagHistoryBackup.serialize(records))"
+            ".map(record => [record.book_id, record.book_label])",
+            self.history_records(),
+        )
+        self.assertEqual(sorted(restored), [["*", "全部教材"], ["os", "操作系统"]])
+
+        self.page.locator("#toggle-history").click()
+        self.page.locator("#book").select_option("os")
+        self.page.locator(".answer").last.get_by_role("button", name="编辑原问题", exact=True).click()
+        self.expect(self.page.locator("#input")).to_have_value("进程和事务分别是什么？")
+        self.expect(self.page.locator("#book")).to_have_value("*")
+        self.expect(self.page.locator("#book-status")).to_contain_text("将在全部教材中检索")
+        self.backend.enqueue(Reply(final=[("result", all_books_result())]))
+        self.page.locator("#send").click()
+        self.expect(self.page.locator(".answer")).to_have_count(3)
+        self.expect(self.page.locator(".answer").last).to_contain_text("已保存到此浏览器")
+        self.assertEqual(self.backend.asks[-1]["payload"], {"query": "进程和事务分别是什么？"})
+
+    def test_failed_all_books_question_retries_in_the_same_scope(self) -> None:
+        self.backend.enqueue(Reply(final=[("error", {"status": "busy", "message": "服务繁忙，请稍后重试。"})]))
+        self.backend.enqueue(Reply(final=[("result", all_books_result())]))
+        self.open_page(book_id="*")
+        self.submit("进程和事务分别是什么？")
+        self.expect(self.page.locator(".notice.warn")).to_have_text("服务繁忙，请稍后重试。")
+        self.expect_ready()
+        self.page.locator("#book").select_option("os")
+        self.page.get_by_role("button", name="重试本题").click()
+        self.expect(self.page.locator(".answer").last).to_contain_text("已保存到此浏览器")
+        self.expect(self.page.locator("#book")).to_have_value("*")
+        self.expect(self.page.locator("#book-status")).to_contain_text("将在全部教材中检索")
+        self.assertEqual(
+            [ask["payload"] for ask in self.backend.asks], [{"query": "进程和事务分别是什么？"}] * 2
+        )
+
+    def test_single_textbook_offers_no_wider_scope_and_does_not_restore_one(self) -> None:
+        self.open_page(book_id="*")
+        self.saved_answer("进程和事务分别是什么？", "*", all_books_result())
+        self.page.route("**/v1/books", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps([{"book_id": "database", "label": "数据库原理及应用"}]),
+        ))
+        self.page.reload()
+        self.assertEqual(
+            self.page.locator("#book option").all_text_contents(), ["请选择教材", "数据库原理及应用"]
+        )
+        self.expect(self.page.locator("#book")).to_have_value("")
+        self.expect(self.page.locator("#book-status")).to_be_hidden()
+        self.page.locator(".answer").get_by_role("button", name="编辑原问题", exact=True).click()
+        self.expect(self.page.locator("#book")).to_have_value("")
+        self.expect(self.page.locator("#book-status")).to_contain_text("原教材当前不可用")
+        self.page.locator("#send").click()
+        self.assertEqual(len(self.backend.asks), 1)
 
 
 if __name__ == "__main__":

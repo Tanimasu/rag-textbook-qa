@@ -443,9 +443,13 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("计算机教材问答", page.text)
         self.assertIn("请选择教材", page.text)
-        # Asking still requires one book; the history library may search all books.
+        # Nothing is preselected: the script offers the all-textbooks scope only once
+        # several books are indexed, and the reader has to choose it.
         question_books = page.text.split('<select id="book"', 1)[1].split("</select>", 1)[0]
         self.assertNotIn("全部教材", question_books)
+        self.assertIn('<option value="" selected disabled>请选择教材</option>', question_books)
+        self.assertIn('const ALL_BOOKS = "*";', page.text)
+        self.assertIn("const offerAllBooks = books.length > 1;", page.text)
         self.assertIn('data-book="os" disabled', page.text)
         self.assertIn('data-book="database" disabled', page.text)
         self.assertIn('data-book="computer_network" disabled', page.text)
@@ -579,6 +583,30 @@ class ApiAppTests(unittest.TestCase):
         self.assertFalse(call["use_decomposition"])
         self.assertFalse(call["use_adjacent_context"])
         self.assertFalse(call["verify_citations"])
+
+    def test_asking_without_a_book_searches_every_textbook_and_keeps_each_origin(self):
+        database_source = {
+            **SOURCE, "book_name": "database", "chapter": "第十章", "section_h2": "10.1 事务",
+            "content": "事务是不可分割的工作单位。", "citation_id": 2,
+        }
+        engine = FakeEngine(sources=(SOURCE, database_source))
+        client = self.client(engine=engine)
+        expected = [(1, "os", "操作系统"), (2, "database", "数据库原理及应用")]
+
+        direct = client.post("/v1/ask", json={"query": "进程和事务"}).json()
+        streamed = sse_events(
+            client.post("/v1/ask/stream", json={"query": "进程和事务", "book_id": None}).text
+        )[-1][1]
+
+        self.assertEqual([call["book_name"] for call in engine.calls], [None, None])
+        for result in (direct, streamed):
+            self.assertEqual(
+                [(item["citation_id"], item["book_id"], item["book"]) for item in result["sources"]],
+                expected,
+            )
+        # The scope is not a book: feedback keeps it empty instead of naming one.
+        client.post("/v1/feedback", json={"answer_id": direct["answer_id"], "rating": "helpful"})
+        self.assertIsNone(self.feedback_store.records()[0]["book_id"])
 
     def test_browser_assets_use_a_fixed_allowlist(self):
         client = self.client()

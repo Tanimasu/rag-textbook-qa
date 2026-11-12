@@ -326,6 +326,10 @@ footer details p { margin-top: 6px; text-align: left; }
   const bookStatus = $("book-status"), reloadBooks = $("reload-books");
   const CODE_KEY = "rag-qa-access-code";
   const BOOK_KEY = "rag-qa-selected-book";
+  // The scope a question was asked in is stored and selected like a book ID.
+  // "*" can never be a real one: an index collection name cannot contain it.
+  const ALL_BOOKS = "*";
+  const ALL_BOOKS_HINT = "将在全部教材中检索，每条资料标明所属教材；跨教材回答质量尚未单独验收。";
   const VIEW_KEY = "rag-qa-visible-history";
   const REVIEW_KEY = "rag-qa-review-session";
   const DRAFT_KEY = "rag-qa-question-draft";
@@ -390,6 +394,13 @@ footer details p { margin-top: 6px; text-align: left; }
     card.append(element("div", "notice " + kind, message));
   }
 
+  function syncBookScopeHint() {
+    if (bookSelect.disabled) return;
+    const allBooks = bookSelect.value === ALL_BOOKS;
+    bookStatus.textContent = allBooks ? ALL_BOOKS_HINT : "";
+    bookStatus.hidden = !allBooks;
+  }
+
   function addRetry(card, query, bookId) {
     if (card.querySelector("[data-retry]")) return;
     let actions = card.querySelector(".actions");
@@ -407,6 +418,7 @@ footer details p { margin-top: 6px; text-align: left; }
       rememberQuestionDraft();
       bookSelect.value = bookId;
       sessionSet(BOOK_KEY, bookId);
+      syncBookScopeHint();
       autosize();
       ask();
     });
@@ -1160,7 +1172,7 @@ footer details p { margin-top: 6px; text-align: left; }
       if (!bookSelect.value || bookSelect.disabled) {
         bookStatus.textContent = "原教材当前不可用，请重新加载教材或选择其他教材后再发送。";
         bookStatus.hidden = false;
-      }
+      } else syncBookScopeHint();
       $("history-panel").hidden = true; $("toggle-history").setAttribute("aria-expanded", "false");
       rememberQuestionDraft(`已载入「${record.book_label}」的原问题，修改后点击发送。每次提问独立检索。`);
       autosize(); input.focus();
@@ -1311,7 +1323,8 @@ footer details p { margin-top: 6px; text-align: left; }
     initialHistoryBook = "";
     bookFilter.replaceChildren(new Option("全部教材", ""));
     const books = new Map(records.map(record => [record.book_id, record.book_label]));
-    for (const [id, label] of books) bookFilter.add(new Option(label, id));
+    // The first entry already reads 全部教材 and means every record.
+    for (const [id, label] of books) bookFilter.add(new Option(id === ALL_BOOKS ? "跨教材提问" : label, id));
     if (books.has(previousBook)) bookFilter.value = previousBook;
     const filter = currentHistoryFilter();
     const matches = records.filter(record => historyMatches(record, filter));
@@ -1716,7 +1729,8 @@ footer details p { margin-top: 6px; text-align: left; }
       const response = await fetch("/v1/ask/stream", {
         method: "POST",
         headers: requestHeaders(),
-        body: JSON.stringify({ query, book_id: bookId }),
+        // Leaving the book out is how the service is asked to search every textbook.
+        body: JSON.stringify(bookId === ALL_BOOKS ? { query } : { query, book_id: bookId }),
         signal: activeController.signal,
       });
       if (!response.ok) {
@@ -1838,6 +1852,13 @@ footer details p { margin-top: 6px; text-align: left; }
       placeholder.disabled = true;
       placeholder.selected = true;
       const options = [placeholder];
+      // With a single textbook the wider scope would be the same search under another name.
+      const offerAllBooks = books.length > 1;
+      if (offerAllBooks) {
+        const allBooks = element("option", "", "全部教材");
+        allBooks.value = ALL_BOOKS;
+        options.push(allBooks);
+      }
       for (const book of books) {
         const option = element("option", "", book.label);
         option.value = book.book_id;
@@ -1846,7 +1867,7 @@ footer details p { margin-top: 6px; text-align: left; }
       bookSelect.replaceChildren(...options);
       const available = new Set(books.map((book) => book.book_id));
       const desired = sessionGet(BOOK_KEY) || previous;
-      if (available.has(desired)) bookSelect.value = desired;
+      if (available.has(desired) || (offerAllBooks && desired === ALL_BOOKS)) bookSelect.value = desired;
       for (const example of document.querySelectorAll(".examples button")) {
         example.disabled = !available.has(example.dataset.book);
         if (example.disabled) example.title = "这本教材当前没有可用索引";
@@ -1857,6 +1878,7 @@ footer details p { margin-top: 6px; text-align: left; }
       reloadBooks.hidden = !!books.length;
       bookStatus.textContent = books.length ? "" : "暂无可用教材，请稍后重新加载。";
       bookStatus.hidden = !!books.length;
+      syncBookScopeHint();
     } catch {
       bookStatus.textContent = "教材暂时加载失败，请重试。";
       reloadBooks.hidden = false;
@@ -1882,6 +1904,7 @@ footer details p { margin-top: 6px; text-align: left; }
     if (example) {
       bookSelect.value = example.dataset.book;
       sessionSet(BOOK_KEY, bookSelect.value);
+      syncBookScopeHint();
       input.value = example.textContent;
       ask();
       return;
@@ -1906,7 +1929,7 @@ footer details p { margin-top: 6px; text-align: left; }
   bookSelect.addEventListener("change", () => {
     bookSelect.setCustomValidity("");
     sessionSet(BOOK_KEY, bookSelect.value);
-    if (!bookSelect.disabled) bookStatus.hidden = true;
+    syncBookScopeHint();
   });
   input.addEventListener("keydown", (event) => {
     // isComposing: Enter that confirms a Chinese IME candidate must not send.
