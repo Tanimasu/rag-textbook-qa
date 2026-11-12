@@ -216,6 +216,7 @@ def _log_failure(exc: BaseException) -> None:
 
 def public_retrieval(result: Mapping[str, Any]) -> dict[str, Any]:
     """Show bounded, source-only stage snapshots without engine internals."""
+    all_books = result.get("scope") == "all"
     stages = []
     for key, label in (("keyword", "关键词"), ("embedding", "向量"), ("fusion", "融合"),
                        ("rerank", "重排"), ("context", "最终上下文")):
@@ -223,6 +224,18 @@ def public_retrieval(result: Mapping[str, Any]) -> dict[str, Any]:
         items = []
         for position, row in enumerate(rows[:30], 1):
             source = _public_source(row)
+            source["metadata_truncated"] = False
+            for field, limit in (("book_id", 503), ("chunk_id", 512), ("book", 512), ("section", 2000)):
+                value = source[field]
+                if len(value) > limit:
+                    # Preserve distinct long identities across stages and exports.
+                    suffix = "…" + hashlib.sha256(value.encode()).hexdigest() if field in {
+                        "book_id", "chunk_id"
+                    } else "…"
+                    source[field] = value[:limit - len(suffix)] + suffix
+                    source["metadata_truncated"] = True
+            citation = source["citation_id"]
+            source["citation_id"] = citation if type(citation) is int and 0 < citation < 2**31 else None
             source["preview_truncated"] = len(source["excerpt"]) > 12000
             source["excerpt"] = source["excerpt"][:12000]
             scores = {
@@ -232,14 +245,21 @@ def public_retrieval(result: Mapping[str, Any]) -> dict[str, Any]:
             }
             ranks = {
                 name: rank for name in ("bm25", "embedding")
-                if type(rank := row.get("source_ranks", {}).get(name)) is int and rank > 0
+                if type(rank := row.get("source_ranks", {}).get(name)) is int and 0 < rank < 2**31
             }
-            items.append({**source, "position": position, "scores": scores, "source_ranks": ranks})
+            item = {**source, "position": position, "scores": scores, "source_ranks": ranks}
+            if all_books and key in {"keyword", "embedding"}:
+                rank = row.get("rank")
+                if type(rank) is int and 0 < rank < 2**31:
+                    item["book_position"] = rank
+            items.append(item)
         stages.append({"id": key, "label": label, "count": len(rows), "items": items})
     return {
         "stages": stages,
+        "scope": "all" if all_books else "single",
         "reranker_enabled": bool(result.get("reranker_enabled")),
-        "context_budget": result.get("context_budget"),
+        "context_budget": (budget if type(budget := result.get("context_budget")) is int
+                           and 0 < budget < 2**31 else None),
         "elapsed_seconds": finite_seconds(result.get("elapsed_seconds")),
         "generation_calls": 0,
         "fusion_weights": {
@@ -701,8 +721,6 @@ def create_api_app(
     @app.post("/v1/retrieval/inspect", summary="观察关键词、向量、融合、重排和上下文")
     async def inspect_retrieval(payload: AskRequest, request: Request) -> dict[str, Any]:
         query, book_id, top_k = await admit(payload, request)
-        if book_id is None:
-            raise HTTPException(status_code=422, detail="观察检索过程需要先选择一本教材")
         inspect = getattr(engine, "inspect_retrieval", None)
         if not callable(inspect):
             raise HTTPException(status_code=503, detail="当前服务不提供检索观察")
@@ -710,7 +728,8 @@ def create_api_app(
             admission = guard.admit_request()
             return await _answer_once(
                 lambda sink, should_stop: public_retrieval(
-                    inspect(query, book_id, top_k, should_stop=should_stop)
+                    {**inspect(query, book_id, top_k, should_stop=should_stop),
+                     "scope": "all" if book_id is None else "single"}
                 ), admission, request,
             )
         except Busy as exc:

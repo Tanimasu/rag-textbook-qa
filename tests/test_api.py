@@ -422,6 +422,34 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(self.guard.status()["requests_in_flight"], 0)
         self.assertEqual(client.get("/retrieval").status_code, 200)
 
+    def test_all_book_inspection_keeps_access_rate_admission_and_exhausted_generation_budget(self):
+        engine = FakeEngine()
+        engine.inspect_retrieval = MagicMock(return_value={
+            "stages": {"fusion": [{**SOURCE, "prompt": SECRET}]}, "context_budget": 4000,
+        })
+        client = self.client(engine=engine, access_code="inspect-code", requests_per_window=2,
+                             daily_generations=1)
+        self.guard.reserve_generation()
+        payload = {"query": "进程", "top_k": 5}
+        with patch.object(self.guard, "reserve_generation", wraps=self.guard.reserve_generation) as reserve:
+            self.assertEqual(client.post("/v1/retrieval/inspect", json=payload).status_code, 401)
+            engine.inspect_retrieval.assert_not_called()
+            response = client.post("/v1/retrieval/inspect", json=payload,
+                                   headers={"X-Access-Code": "inspect-code"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["scope"], "all")
+            self.assertEqual(response.json()["generation_calls"], 0)
+            self.assertNotIn(SECRET, response.text)
+            engine.inspect_retrieval.assert_called_once()
+            self.assertEqual(engine.inspect_retrieval.call_args.args, ("进程", None, 5))
+            self.assertTrue(callable(engine.inspect_retrieval.call_args.kwargs["should_stop"]))
+            self.assertEqual(client.post("/v1/retrieval/inspect", json=payload,
+                                         headers={"X-Access-Code": "inspect-code"}).status_code, 429)
+            reserve.assert_not_called()
+        self.assertEqual(self.guard.status()["requests_in_flight"], 0)
+        self.assertEqual(self.guard.status()["generations_remaining_today"], 0)
+        self.assertEqual(engine.calls, [])
+
     def test_reading_missing_or_updating_index_keeps_provider_details_private(self):
         engine = FakeEngine()
         engine.read_passages = MagicMock(side_effect=LookupError(SECRET))

@@ -43,6 +43,7 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       <label>最终候选数 <select id="inspect-top-k"><option>3</option><option selected>5</option><option>10</option></select></label>
       <label id="inspect-code-field" hidden>访问口令 <input id="inspect-code" type="password" autocomplete="off"></label>
     </div>
+    <p id="inspect-scope-hint" class="hint" hidden></p>
     <textarea id="inspect-query" aria-label="观察检索的问题" maxlength="500" required placeholder="输入一个想了解检索过程的教材问题，例如：进程和程序有什么区别？"></textarea>
     <div class="controls">
       <button class="primary" id="inspect-send" disabled>观察检索过程</button>
@@ -57,7 +58,7 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
     <p id="inspect-summary" class="hint"></p>
     <button type="button" id="inspect-export" disabled>导出本次观察（Markdown）</button>
     <p id="inspect-export-status" class="hint" role="status"></p>
-    <p class="hint">各阶段分数的含义不同，不能直接比较或相加。入选上下文表示片段被交给模型，不代表片段或回答一定正确。</p>
+    <p class="hint">各阶段分数的含义不同，不能直接比较或相加。入选上下文表示按提问规则装入了资料，不代表片段或回答一定正确。</p>
     <details><summary>同一片段的排名变化</summary><div class="table-wrap" id="inspect-ranks"></div></details>
     <div class="stages" id="inspect-stages" role="group" aria-label="选择检索阶段"></div>
     <p class="stage-explanation" id="inspect-explanation"></p>
@@ -72,6 +73,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   const sessionGet = key => { try { return sessionStorage.getItem(key) || ""; } catch { return ""; } };
   const sessionSet = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* optional */ } };
   let controller = null, result = null, completedSnapshot = null;
+  const ALL_BOOKS = "*";
+  const ALL_BOOKS_HINT = "将在全部教材中检索，每条资料标明所属教材；跨教材回答质量尚未单独验收。";
   const stageLabels = {keyword:"关键词", embedding:"向量", fusion:"融合", rerank:"重排", context:"最终上下文"};
   const explanations = {
     keyword: "关键词检索使用 BM25 匹配教材词语。这里的检索分已按现有实现缩放，重点看排名和正文。",
@@ -82,13 +85,24 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   };
   function setStatus(text, error = false) { $("inspect-status").textContent = text; $("inspect-status").className = error ? "hint error" : "hint"; }
   function key(item) { return JSON.stringify([item.book_id, item.chunk_id]); }
+  function syncScopeHint() {
+    $("inspect-scope-hint").textContent = ALL_BOOKS_HINT;
+    $("inspect-scope-hint").hidden = $("inspect-book").value !== ALL_BOOKS;
+  }
+  function stageExplanation(stage, data) {
+    return explanations[stage] + (data.scope === "all" && ["keyword", "embedding"].includes(stage)
+      ? " 各教材按本内排名交错展示；这里的序号是展示位置，教材内名次另行标注。" : "");
+  }
   function validInspection(value) {
     const object = item => item && typeof item === "object" && !Array.isArray(item);
     return object(value) && Array.isArray(value.stages) && value.stages.length === 5
+      && (value.scope === undefined || ["single", "all"].includes(value.scope))
       && value.stages.every((stage, index) => object(stage) && stage.id === Object.keys(stageLabels)[index] && typeof stage.label === "string"
         && Number.isSafeInteger(stage.count) && Array.isArray(stage.items) && stage.items.length <= 30
         && stage.count >= stage.items.length && stage.items.every(item => object(item)
           && Number.isSafeInteger(item.position) && item.position > 0
+          && (item.book_position === undefined || (Number.isSafeInteger(item.book_position) && item.book_position > 0))
+          && (item.metadata_truncated === undefined || typeof item.metadata_truncated === "boolean")
           && ["book_id", "chunk_id", "book", "section", "excerpt"].every(name => typeof item[name] === "string")
           && object(item.scores) && object(item.source_ranks)));
   }
@@ -115,7 +129,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       "各阶段分数含义不同，不能直接比较或相加。入选上下文不表示片段或回答一定正确。", "",
       "本文件保留服务返回的展示范围；候选或长正文超过范围时会标注，不重新检索完整内容。", "",
       "## 同一片段的排名变化", "",
-      "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。", "",
+      "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。"
+        + (data.scope === "all" ? " 关键词和向量列为交错展示位置，本教材名次见各阶段候选。" : ""), "",
       "| 教材 / 片段 | " + data.stages.map(stage => stageLabels[stage.id]).join(" | ") + " |",
       "| --- | " + data.stages.map(() => "---:").join(" | ") + " |"];
     const candidates = new Map();
@@ -123,14 +138,15 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       if (!candidates.has(key(item))) candidates.set(key(item), {item, positions:{}});
       candidates.get(key(item)).positions[stage.id] = item.position;
     }
-    for (const row of candidates.values()) lines.push("| " + tableCell(row.item.book + " / " + row.item.chunk_id)
+    for (const row of candidates.values()) lines.push("| " + tableCell(row.item.book
+      + (data.scope === "all" ? `（${row.item.book_id}）` : "") + " / " + row.item.chunk_id)
       + " | " + data.stages.map(stage => row.positions[stage.id] || "—").join(" | ") + " |");
     if (!candidates.size) lines.push("| 本次没有展示候选 | " + data.stages.map(() => "—").join(" | ") + " |");
     lines.push("");
     const contexts = new Map(data.stages[4].items.map(item => [key(item), item]));
     for (const stage of data.stages) {
       lines.push(`## ${stageLabels[stage.id]}`, "", `本阶段共 ${stage.count} 个候选，本文件保留展示的 ${stage.items.length} 个。`, "",
-        explanations[stage.id], "");
+        stageExplanation(stage.id, data), "");
       if (!stage.items.length) lines.push("这个阶段没有候选片段。", "");
       for (const item of stage.items) {
         const chosen = contexts.get(key(item));
@@ -139,6 +155,9 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
             ? "本次展示中入选上下文" + (chosen.citation_id == null ? "" : ` · 资料 ${chosen.citation_id}`)
             : "未出现在最终上下文的展示范围中"];
         if (item.source_sha256) metadata.push(`原文 SHA-256：${item.source_sha256}`);
+        if (data.scope === "all") metadata.push(`教材编号：${item.book_id}`);
+        if (item.book_position) metadata.push(`本教材排名：${item.book_position}`);
+        if (item.metadata_truncated) metadata.push("长标识或章节展示已截断，长标识保留散列后缀以区分。");
         for (const [name, label] of [["similarity","检索分"],["bm25_score","BM25"],["rrf_score","RRF"],["rerank_score","重排分"]]) {
           if (Number.isFinite(item.scores[name])) metadata.push(`${label}：${item.scores[name].toFixed(4)}`);
         }
@@ -155,7 +174,7 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
   }
   function showStage(stage) {
     for (const button of $("inspect-stages").children) button.setAttribute("aria-pressed", String(button.dataset.stage === stage.id));
-    $("inspect-explanation").textContent = explanations[stage.id];
+    $("inspect-explanation").textContent = stageExplanation(stage.id, result);
     if (stage.id === "fusion" && result.fusion_weights) $("inspect-explanation").textContent += ` 本次向量权重 ${result.fusion_weights.embedding ?? "未知"}、关键词权重 ${result.fusion_weights.bm25 ?? "未知"}。`;
     const list = $("inspect-candidates"); list.replaceChildren();
     const contexts = new Map(result.stages.find(item => item.id === "context").items.map(item => [key(item), item]));
@@ -173,6 +192,8 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
         if (item.source_ranks[name]) badges.append(node("span", `${label}第 ${item.source_ranks[name]} 名`, "badge"));
       }
       if (item.truncated) badges.append(node("span", "交付片段已截断", "badge"));
+      if (item.book_position) badges.append(node("span", `本教材第 ${item.book_position} 名`, "badge"));
+      if (item.metadata_truncated) badges.append(node("span", "长标识或章节展示已截断", "badge"));
       if (item.preview_truncated) badges.append(node("span", "长片段预览已截断", "badge"));
       const details = node("details");
       details.open = stage.id === "context";
@@ -189,16 +210,19 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       candidates.get(key(item)).positions[stage.id] = item.position;
     }
     const table = node("table"), head = node("tr");
-    head.append(node("th", "片段 / 章节"));
+    head.append(node("th", result.scope === "all" ? "教材 / 片段 / 章节" : "片段 / 章节"));
     for (const stage of result.stages) head.append(node("th", stage.label));
     table.append(head);
     for (const row of candidates.values()) {
       const tr = node("tr");
-      tr.append(node("td", `${row.item.chunk_id} · ${row.item.section}`));
+      const book = result.scope === "all" ? `${row.item.book}（${row.item.book_id}） · ` : "";
+      tr.append(node("td", `${book}${row.item.chunk_id} · ${row.item.section}`));
       for (const stage of result.stages) tr.append(node("td", row.positions[stage.id] || "—", "numeric"));
       table.append(tr);
     }
-    $("inspect-ranks").replaceChildren(node("p", "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。", "hint"), table);
+    const hint = "— 表示未进入该阶段的展示范围，不一定表示完全未检索到。"
+      + (result.scope === "all" ? " 关键词和向量列为交错展示位置，本教材名次见候选标签。" : "");
+    $("inspect-ranks").replaceChildren(node("p", hint, "hint"), table);
   }
   async function loadBooks() {
     $("inspect-send").disabled = true; $("inspect-reload").hidden = true;
@@ -209,10 +233,12 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       const select = $("inspect-book");
       select.replaceChildren(new Option(books.length ? "请选择教材" : "暂无可用教材", ""));
       select.options[0].disabled = true;
+      if (books.length > 1) select.add(new Option("全部教材", ALL_BOOKS));
       for (const book of books) select.add(new Option(book.label, book.book_id));
       select.value = sessionGet("rag-qa-selected-book");
       if (!select.value) select.selectedIndex = 0;
       select.disabled = !books.length;
+      syncScopeHint();
       $("inspect-send").disabled = !books.length;
       setStatus(books.length ? "选择教材、输入问题后开始观察。" : "暂无可用教材，请先建立索引。");
       $("inspect-reload").hidden = !!books.length;
@@ -237,8 +263,10 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
     sessionSet("rag-qa-access-code", code);
     if (code) headers["X-Access-Code"] = code;
     try {
+      const payload = { query, top_k:topK };
+      if (book !== ALL_BOOKS) payload.book_id = book;
       const response = await fetch("/v1/retrieval/inspect", { method:"POST", headers, signal,
-        body:JSON.stringify({ query, book_id:book, top_k:topK }) });
+        body:JSON.stringify(payload) });
       if (!response.ok) {
         if (response.status === 401) { $("inspect-code-field").hidden = false; $("inspect-code").focus(); }
         let detail; try { detail = (await response.json()).detail; } catch { /* optional */ }
@@ -279,7 +307,10 @@ td:first-child { white-space:normal; min-width:150px; } .numeric { font-variant-
       status.textContent = "观察记录已交给浏览器下载，请确认文件已保存；没有重新运行检索。";
     } catch { status.className = "hint error"; status.textContent = "观察记录导出未完成，请重试；本次结果仍保留。"; }
   });
-  $("inspect-book").addEventListener("change", () => sessionSet("rag-qa-selected-book", $("inspect-book").value));
+  $("inspect-book").addEventListener("change", () => {
+    sessionSet("rag-qa-selected-book", $("inspect-book").value);
+    syncScopeHint();
+  });
   $("inspect-stop").addEventListener("click", () => controller?.abort());
   $("inspect-reload").addEventListener("click", loadBooks);
   $("inspect-code").value = sessionGet("rag-qa-access-code");

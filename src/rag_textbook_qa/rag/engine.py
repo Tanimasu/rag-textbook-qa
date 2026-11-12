@@ -739,12 +739,15 @@ class RAGEngine:
         use_reranker: bool = True,
         *,
         _query_embedding: list[list[float]] | None = None,
+        _stages: dict[str, list[dict[str, Any]]] | None = None,
+        _should_stop: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         _require_positive_integer(top_k, "top_k")
         return self._run_with_index_snapshot(
             lambda: self._search_single_book(
                 book_name, query, top_k, use_hyde, use_reranker,
                 _query_embedding=_query_embedding,
+                _stages=_stages, _should_stop=_should_stop,
             )
         )
 
@@ -787,12 +790,14 @@ class RAGEngine:
         return results
 
     def inspect_retrieval(
-        self, query: str, book_name: str, top_k: int = 5,
+        self, query: str, book_name: str | None = None, top_k: int = 5,
         *, should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        """Observe one ordinary single-book retrieval; never invoke generation or HyDE."""
+        """Observe the product retrieval route in one snapshot, without generation or HyDE."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("问题不能为空")
+        if book_name is not None and (not isinstance(book_name, str) or not book_name.strip()):
+            raise ValueError("教材编号不能为空")
         _require_positive_integer(top_k, "top_k")
         started = time.monotonic()
 
@@ -800,8 +805,8 @@ class RAGEngine:
             if should_stop and should_stop():
                 raise GenerationCancelled(request_sent=False)
             stages: dict[str, list[dict[str, Any]]] = {}
-            results = self._search_single_book(
-                book_name, query, top_k, False, True, _query_embedding=None, _stages=stages,
+            results, _, _ = self._retrieve(
+                query, {"status": "disabled"}, book_name, top_k, False, _stages=stages,
                 _should_stop=should_stop,
             )
             if should_stop and should_stop():
@@ -809,6 +814,7 @@ class RAGEngine:
             _, sources = select_context(results, self.context_budget)
             stages["context"] = sources
             return {"stages": stages, "reranker_enabled": self.reranker is not None,
+                    "scope": "all" if book_name is None else "single",
                     "context_budget": self.context_budget, "fusion_weights": dict(self.fusion_weights)}
 
         with provider_trace():
@@ -822,14 +828,21 @@ class RAGEngine:
         use_hyde: bool | None = None,
         *,
         use_reranker: bool = True,
+        _stages: dict[str, list[dict[str, Any]]] | None = None,
+        _should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         _require_positive_integer(top_k_per_book, "top_k_per_book")
         return self._run_with_index_snapshot(
-            lambda: self._search_all_books(query, top_k_per_book, use_hyde, use_reranker)
+            lambda: self._search_all_books(
+                query, top_k_per_book, use_hyde, use_reranker,
+                _stages=_stages, _should_stop=_should_stop,
+            )
         )
 
     def _search_all_books(
         self, query: str, top_k_per_book: int, use_hyde: bool | None, use_reranker: bool,
+        *, _stages: dict[str, list[dict[str, Any]]] | None = None,
+        _should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         _require_positive_integer(top_k_per_book, "top_k_per_book")
         all_results = {}
@@ -838,15 +851,29 @@ class RAGEngine:
             key=lambda collection: collection.name,
         )
         collections = [c for c in collections if c.name.startswith("textbook_")]
+        if _stages is not None:
+            _stages.update({"embedding": [], "keyword": []})
         if not collections:
             return all_results
         # Reusing a query vector is safe only if every collection matches this
         # provider. Fail before the shared model call when one book is incompatible.
         for collection in collections:
             self.vectorizer.validate_collection_embedding(collection)
+        if _should_stop and _should_stop():
+            raise GenerationCancelled(request_sent=False)
         query_embedding = self._embed_query(query, use_hyde)
+        observed = []
         for collection in collections:
+            if _should_stop and _should_stop():
+                raise GenerationCancelled(request_sent=False)
             book_name = collection.name.removeprefix("textbook_")
+            options = {}
+            if _stages is not None:
+                book_stages: dict[str, list[dict[str, Any]]] = {}
+                observed.append(book_stages)
+                options["_stages"] = book_stages
+            if _should_stop is not None:
+                options["_should_stop"] = _should_stop
             results = self.search_single_book(
                 book_name,
                 query,
@@ -854,9 +881,17 @@ class RAGEngine:
                 use_hyde=use_hyde,
                 use_reranker=use_reranker,
                 _query_embedding=query_embedding,
+                **options,
             )
             if results:
                 all_results[book_name] = results
+        if _stages is not None:
+            # Interleave local stage previews so early books cannot hide all others.
+            # These display positions are not a new cross-book retrieval ranking.
+            for stage in ("embedding", "keyword"):
+                groups = [book.get(stage, []) for book in observed]
+                _stages[stage] = [dict(group[rank]) for rank in range(max(map(len, groups), default=0))
+                                  for group in groups if rank < len(group)]
         return all_results
 
     def search_decomposed(
@@ -898,29 +933,46 @@ class RAGEngine:
         book_name: str | None,
         top_k: int,
         use_hyde: bool | None,
+        *, _stages: dict[str, list[dict[str, Any]]] | None = None,
+        _should_stop: Callable[[], bool] | None = None,
     ) -> tuple[list[dict[str, Any]], str, float]:
         """Run the planned retrieval route, returning its telemetry trace and duration."""
 
         started = time.monotonic()
 
         def retrieve() -> list[dict[str, Any]]:
+            if _should_stop and _should_stop():
+                raise GenerationCancelled(request_sent=False)
+            options = {}
+            if _stages is not None:
+                _stages.clear()
+                options["_stages"] = _stages
+            if _should_stop is not None:
+                options["_should_stop"] = _should_stop
             if plan["status"] == "active":
                 results = self.search_decomposed(query, plan["queries"], book_name, top_k)
             elif book_name:
-                results = self.search_single_book(book_name, query, top_k, use_hyde=use_hyde)
+                results = self.search_single_book(book_name, query, top_k, use_hyde=use_hyde, **options)
             else:
                 grouped = self.search_all_books(
                     query,
                     top_k_per_book=top_k * 3 if self.reranker is not None else top_k,
                     use_hyde=use_hyde,
                     use_reranker=False,
+                    **options,
                 )
                 results = [result for group in grouped.values() for result in group]
                 results.sort(
                     key=lambda item: item.get("final_score", item.get("similarity", 0.0)),
                     reverse=True,
                 )
+                if _stages is not None:
+                    _stages["fusion"] = [dict(row) for row in results]
+                if _should_stop and _should_stop():
+                    raise GenerationCancelled(request_sent=False)
                 results = self._rerank(query, results, top_k)
+                if _stages is not None:
+                    _stages["rerank"] = [dict(row) for row in results]
             return results
 
         with provider_trace() as trace_id:

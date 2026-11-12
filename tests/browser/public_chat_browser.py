@@ -892,6 +892,75 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.expect(self.page.locator("#inspect-summary")).to_contain_text("操作系统")
         self.expect(self.page.locator("#inspect-query")).to_have_value("下一次准备问主键")
 
+    def test_all_book_observatory_tracks_and_exports_same_chunk_id_in_different_books(self) -> None:
+        data = retrieval_result()
+        data["scope"] = "all"
+        first = data["stages"][0]["items"][0]
+        other = {**first, "book_id": "database", "book": "数据库原理及应用",
+                 "position": 2, "excerpt": "数据库中的进程。", "citation_id": None}
+        other["source_sha256"] = hashlib.sha256(other["excerpt"].encode()).hexdigest()
+        for stage in data["stages"]:
+            stage["items"] = [dict(first)] if stage["id"] == "context" else [dict(first), dict(other)]
+            stage["count"] = len(stage["items"])
+            if stage["id"] in {"keyword", "embedding"}:
+                for item in stage["items"]:
+                    item["book_position"] = 1
+        self.backend.inspection_payload = data
+        self.page.set_viewport_size({"width": 320, "height": 800})
+        self.page.emulate_media(color_scheme="dark")
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.expect(self.page.locator("#inspect-book")).to_have_value("")
+        self.expect(self.page.locator('#inspect-book option[value="*"]')).to_have_count(1)
+        self.expect(self.page.locator("#inspect-scope-hint")).to_be_hidden()
+        self.page.locator("#inspect-book").select_option("*")
+        self.expect(self.page.locator("#inspect-scope-hint")).to_have_text(
+            "将在全部教材中检索，每条资料标明所属教材；跨教材回答质量尚未单独验收。")
+        self.page.locator("#inspect-query").fill("跨教材观察")
+        self.page.locator("#inspect-send").click()
+        self.expect(self.page.locator("#inspect-status")).to_contain_text("检索观察完成")
+        self.expect(self.page.locator("#inspect-summary")).to_contain_text("全部教材")
+        self.page.get_by_role("button", name="关键词 2", exact=True).click()
+        self.expect(self.page.locator("#inspect-explanation")).to_contain_text("按本内排名交错展示")
+        self.expect(self.page.locator(".candidate")).to_have_count(2)
+        self.expect(self.page.locator(".candidate").first).to_contain_text("入选上下文")
+        self.expect(self.page.locator(".candidate").last).to_contain_text("未入选上下文")
+        self.expect(self.page.locator(".candidate").last).to_contain_text("本教材第 1 名")
+        self.page.get_by_text("同一片段的排名变化", exact=True).click()
+        rows = self.page.locator("#inspect-ranks table tr")
+        self.expect(rows).to_have_count(3)
+        self.expect(rows.nth(1)).to_contain_text("操作系统（os）")
+        self.expect(rows.nth(2)).to_contain_text("数据库原理及应用（database）")
+        self.expect(rows.nth(1).locator("td").last).to_have_text("1")
+        self.expect(rows.nth(2).locator("td").last).to_have_text("—")
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.capture_page("retrieval-all-books-dark-320.png")
+        self.page.locator("#inspect-book").select_option("os")
+        with self.page.expect_download() as download:
+            self.page.locator("#inspect-export").click()
+        exported = Path(download.value.path()).read_text()
+        for text in ("教材：全部教材", "教材编号：*", "教材编号：os", "教材编号：database",
+                     "操作系统（os） / chapter_p1", "数据库原理及应用（database） / chapter_p1",
+                     "本教材排名：1", "生成模型调用：0"):
+            self.assertIn(text, exported)
+        self.assertEqual(self.backend.inspections[0]["payload"], {"query": "跨教材观察", "top_k": 5})
+        self.assertEqual(len(self.backend.inspections), 1)
+        self.assertEqual(self.backend.asks, [])
+        self.assertEqual(self.backend.feedback, [])
+
+    def test_single_indexed_book_does_not_offer_or_restore_all_book_inspection(self) -> None:
+        self.context.add_init_script("sessionStorage.setItem('rag-qa-selected-book', '*')")
+        self.page.route("**/v1/books", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps([{"book_id": "os", "label": "操作系统"}]),
+        ))
+        self.page.goto(self.base_url + "/retrieval")
+        self.expect(self.page.locator("#inspect-send")).to_be_enabled()
+        self.expect(self.page.locator('#inspect-book option[value="*"]')).to_have_count(0)
+        self.expect(self.page.locator("#inspect-book")).to_have_value("")
+        self.expect(self.page.locator("#inspect-scope-hint")).to_be_hidden()
+        self.assertEqual(self.backend.inspections, [])
+
     def test_retrieval_export_keeps_completed_request_and_public_stage_snapshot(self) -> None:
         self.page.set_viewport_size({"width": 320, "height": 800})
         self.page.emulate_media(color_scheme="dark")
