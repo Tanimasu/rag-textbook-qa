@@ -95,6 +95,9 @@ RAG_QA_COMPUTE_BACKEND=remote
 RAG_QA_REMOTE_URL=http://100.x.y.z:8765
 RAG_QA_WORKER_TOKEN=与Windows相同的随机token
 RAG_QA_REMOTE_TIMEOUT=120
+# 可选，以下为默认值
+# RAG_QA_REMOTE_CONNECT_TIMEOUT=5
+# RAG_QA_REMOTE_COOLDOWN=60
 RAG_QA_QUERY_FALLBACK_TO_LOCAL=false
 RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
@@ -118,6 +121,23 @@ Worker 的 HTTP 重定向也会作为协议错误直接拒绝，避免向另一�
 实际推理与 `worker check` 使用相同的健康状态 / 协议校验：状态必须为 `ok`、协议版本必须为字符串
 `1`。缺失或不兼容时在调用模型前报协议错误，不触发本地回退。
 索引构建则从不回退——一次构建必须全程使用同一个后端，否则向量会不同源。
+
+**Worker 不在线时的等待。** 连接 Worker 和等待推理结果分开计时：
+
+- `RAG_QA_REMOTE_CONNECT_TIMEOUT`（默认 5 秒）只限制建立连接。Tailscale 对端离线时不会拒绝连接，
+  而是不回包；没有这个上限就要等操作系统放弃，macOS 上约 75 秒。它不会超过 `RAG_QA_REMOTE_TIMEOUT`。
+- `RAG_QA_REMOTE_TIMEOUT`（默认 120 秒）限制连接之后等待每次响应的时间，推理较慢时不会被上面的短超时打断。
+- `RAG_QA_REMOTE_COOLDOWN`（默认 60 秒）只在启用查询回退时起作用：一次瞬时故障之后，这段时间内的查询
+  直接使用本地模型，不再连接 Worker；到期后的下一次查询重新尝试远程，Worker 恢复即自动切回。
+  Embedding 和 Reranker 共用同一份记录。设为 `0` 则每次查询都先连 Worker。
+
+冷却只由瞬时故障触发。认证失败、模型指纹不一致和协议错误照常直接报错，不进入冷却；
+未启用回退的调用（索引构建、评测）每次都连接 Worker 并如实报错。
+
+2026-11-12 在 Worker 离线、启用回退的 Mac 上各测一轮只检索的问题：修复前每题约 150 秒
+（Embedding 和 Reranker 各等一次连接超时）；现在第一题 12.3 秒（含 5 秒连接等待和首次加载本地模型），
+随后两题各 0.6 秒。冷却到期后的那一次查询如果 Worker 仍离线，会再等一次连接超时。
+确定 Worker 不会开机时，把 `RAG_QA_COMPUTE_BACKEND` 改为 `local` 可以省掉这次试探。
 
 远程客户端会按 Worker 每批 128 条、250000 字符的协议上限拆批，并按原顺序合并结果。
 因此全库候选较多或 `index build` 的批大小超过 128 时，也能通过同一个 Provider 完成。

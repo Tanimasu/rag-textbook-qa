@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -17,6 +18,7 @@ from rag_textbook_qa.providers.base import (
 )
 from rag_textbook_qa.providers.remote import (
     FallbackRerankerProvider,
+    RemoteCooldown,
     RemoteRerankerProvider,
     RemoteWorkerClient,
 )
@@ -76,6 +78,8 @@ def run() -> dict:
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             documents = payload["documents"]
             state["batches"].append(list(documents))
+            if state["mode"] == "slow":
+                time.sleep(0.6)
             if state["mode"] == "malformed":
                 # Complete HTTP framing, invalid provider payload: not a transport failure.
                 self.respond(200, ["not an object"])
@@ -149,6 +153,34 @@ def run() -> dict:
         assert state["redirect_destination_requests"] == 0
         assert not state["redirect_destination_received_auth"]
         assert fallback.rerank.call_count == 1
+        # Reaching the Worker has a short limit of its own. An answer that takes
+        # longer than that limit is still inference in progress, not a failure.
+        state["mode"] = "slow"
+        patient = RemoteWorkerClient(client.base_url, token=None, timeout=5, connect_timeout=0.2)
+        provider = FallbackRerankerProvider(RemoteRerankerProvider(patient, identity.model), fallback)
+        assert provider.rerank("question", documents[:3]) == [0.1] * 3
+        assert not provider.telemetry.since(0)[-1].fallback_used
+        assert fallback.rerank.call_count == 1
+        # After a transient failure the Worker is left alone until the cool-down ends.
+        clock = {"now": 0.0}
+        remembered = MagicMock()
+        remembered.identity = identity
+        remembered.rerank.return_value = [0.9] * 150
+        provider = FallbackRerankerProvider(
+            RemoteRerankerProvider(client, identity.model), remembered,
+            cooldown=RemoteCooldown(30, clock=lambda: clock["now"]),
+        )
+        state["mode"] = "cut_second_batch"
+        assert provider.rerank("question", documents) == [0.9] * 150
+        state["mode"] = "healthy"
+        seen = (state["health_checks"], len(state["batches"]))
+        assert provider.rerank("question", documents) == [0.9] * 150
+        assert provider.telemetry.since(0)[-1].fallback_used
+        assert (state["health_checks"], len(state["batches"])) == seen
+        clock["now"] = 30.0
+        assert provider.rerank("question", documents) == [0.1] * 150
+        assert not provider.telemetry.since(0)[-1].fallback_used
+        assert remembered.rerank.call_count == 2
     finally:
         server.shutdown()
         server.server_close()
@@ -168,6 +200,8 @@ def run() -> dict:
         "unhealthy_worker_stops_before_inference_or_fallback": True,
         "incompatible_protocol_stops_before_inference_or_fallback": True,
         "redirect_does_not_forward_auth_or_trigger_fallback": True,
+        "slow_answer_outlasts_the_connect_timeout": True,
+        "cooldown_leaves_the_worker_alone_until_it_ends": True,
     }}
 
 

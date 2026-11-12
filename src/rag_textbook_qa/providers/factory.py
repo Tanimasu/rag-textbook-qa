@@ -7,6 +7,7 @@ from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalReranke
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
     FallbackRerankerProvider,
+    RemoteCooldown,
     RemoteEmbeddingProvider,
     RemoteRerankerProvider,
     RemoteWorkerClient,
@@ -20,13 +21,27 @@ def _remote_client(settings: ComputeSettings) -> RemoteWorkerClient:
         settings.remote_url,
         token=settings.remote_token,
         timeout=settings.remote_timeout_seconds,
+        connect_timeout=settings.remote_connect_timeout_seconds,
     )
+
+
+def create_remote_cooldown(settings: ComputeSettings) -> RemoteCooldown | None:
+    """The Worker availability memory for query fallback, or None when it is unused.
+
+    Embedding and reranking talk to the same Worker. Passing one instance to both
+    factories lets a failure seen by either spare the other the same wait.
+    """
+
+    if settings.backend != "remote" or not settings.query_fallback_to_local:
+        return None
+    return RemoteCooldown(settings.remote_cooldown_seconds)
 
 
 def create_embedding_provider(
     settings: ComputeSettings | None = None,
     *,
     allow_query_fallback: bool = False,
+    cooldown: RemoteCooldown | None = None,
 ):
     settings = settings or ComputeSettings.from_env()
     local = LocalEmbeddingProvider(settings.embedding_model, device=settings.device)
@@ -35,7 +50,9 @@ def create_embedding_provider(
 
     remote = RemoteEmbeddingProvider(_remote_client(settings), settings.embedding_model)
     if allow_query_fallback and settings.query_fallback_to_local:
-        return FallbackEmbeddingProvider(remote, local)
+        return FallbackEmbeddingProvider(
+            remote, local, cooldown=cooldown or create_remote_cooldown(settings)
+        )
     return remote
 
 
@@ -43,6 +60,7 @@ def create_reranker_provider(
     settings: ComputeSettings | None = None,
     *,
     allow_query_fallback: bool = False,
+    cooldown: RemoteCooldown | None = None,
 ):
     settings = settings or ComputeSettings.from_env()
     local = LocalRerankerProvider(settings.reranker_model, device=settings.device,
@@ -52,5 +70,7 @@ def create_reranker_provider(
 
     remote = RemoteRerankerProvider(_remote_client(settings), settings.reranker_model)
     if allow_query_fallback and settings.query_fallback_to_local:
-        return FallbackRerankerProvider(remote, local)
+        return FallbackRerankerProvider(
+            remote, local, cooldown=cooldown or create_remote_cooldown(settings)
+        )
     return remote

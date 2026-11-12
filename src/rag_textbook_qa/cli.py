@@ -945,6 +945,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
         compute.remote_url or "",
         token=compute.remote_token,
         timeout=compute.remote_timeout_seconds,
+        connect_timeout=compute.remote_connect_timeout_seconds,
     )
     summary = _validated_health_summary(client.request("/health"), compute=compute)
     if args.json:

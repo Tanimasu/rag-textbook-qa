@@ -13,6 +13,12 @@ from rag_textbook_qa.providers.base import ProviderError
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-zh-v1.5"
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-base"
+# An unreachable Worker drops packets instead of refusing them, so without its own
+# bound a connection attempt waits for the operating system (about 75 s on macOS).
+DEFAULT_REMOTE_CONNECT_TIMEOUT = 5.0
+# How long query fallback keeps answering locally after a transient Worker failure
+# before it tries the Worker again.
+DEFAULT_REMOTE_COOLDOWN = 60.0
 
 
 def _parse_bool(value: str | None, *, default: bool) -> bool:
@@ -24,6 +30,19 @@ def _parse_bool(value: str | None, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ProviderError(f"无法识别的布尔值: {value}")
+
+
+def _parse_seconds(
+    values: Mapping[str, str], name: str, default: float, *, allow_zero: bool = False
+) -> float:
+    try:
+        seconds = float(values.get(name, str(default)))
+    except ValueError as exc:
+        raise ProviderError(f"{name} 必须是数字") from exc
+    if not math.isfinite(seconds) or seconds < 0 or (seconds == 0 and not allow_zero):
+        requirement = "有限非负数" if allow_zero else "有限正数"
+        raise ProviderError(f"{name} 必须是{requirement}")
+    return seconds
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -73,6 +92,8 @@ class ComputeSettings:
     remote_url: str | None = None
     remote_token: str | None = None
     remote_timeout_seconds: float = 120.0
+    remote_connect_timeout_seconds: float = DEFAULT_REMOTE_CONNECT_TIMEOUT
+    remote_cooldown_seconds: float = DEFAULT_REMOTE_COOLDOWN
     query_fallback_to_local: bool = False
     reranker_batch_size: int = 32
 
@@ -86,12 +107,13 @@ class ComputeSettings:
         remote_url_value = values.get("RAG_QA_REMOTE_URL", "").strip()
         remote_url = validate_remote_url(remote_url_value) if remote_url_value else None
         token = validate_worker_token(values.get("RAG_QA_WORKER_TOKEN"))
-        try:
-            timeout = float(values.get("RAG_QA_REMOTE_TIMEOUT", "120"))
-        except ValueError as exc:
-            raise ProviderError("RAG_QA_REMOTE_TIMEOUT 必须是数字") from exc
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ProviderError("RAG_QA_REMOTE_TIMEOUT 必须是有限正数")
+        timeout = _parse_seconds(values, "RAG_QA_REMOTE_TIMEOUT", 120.0)
+        connect_timeout = _parse_seconds(
+            values, "RAG_QA_REMOTE_CONNECT_TIMEOUT", DEFAULT_REMOTE_CONNECT_TIMEOUT
+        )
+        cooldown = _parse_seconds(
+            values, "RAG_QA_REMOTE_COOLDOWN", DEFAULT_REMOTE_COOLDOWN, allow_zero=True
+        )
         try:
             reranker_batch_size = int(values.get("RAG_QA_RERANK_BATCH_SIZE", "32"))
         except ValueError as exc:
@@ -115,6 +137,8 @@ class ComputeSettings:
             remote_url=remote_url,
             remote_token=token,
             remote_timeout_seconds=timeout,
+            remote_connect_timeout_seconds=connect_timeout,
+            remote_cooldown_seconds=cooldown,
             query_fallback_to_local=_parse_bool(
                 values.get("RAG_QA_QUERY_FALLBACK_TO_LOCAL"), default=False
             ),
@@ -131,5 +155,7 @@ class ComputeSettings:
             "remote_url": self.remote_url,
             "remote_token_configured": self.remote_token is not None,
             "remote_timeout_seconds": self.remote_timeout_seconds,
+            "remote_connect_timeout_seconds": self.remote_connect_timeout_seconds,
+            "remote_cooldown_seconds": self.remote_cooldown_seconds,
             "query_fallback_to_local": self.query_fallback_to_local,
         }

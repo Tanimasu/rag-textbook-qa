@@ -33,7 +33,10 @@ from rag_textbook_qa.providers import (
     RerankerProvider,
     provider_trace,
 )
-from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.providers.factory import (
+    create_remote_cooldown,
+    create_reranker_provider,
+)
 from rag_textbook_qa.rag.adjacent import (
     append_same_section_neighbours,
     load_ordered_chunks,
@@ -308,6 +311,9 @@ class RAGEngine:
                 ComputeSettings() if providers_fully_injected else ComputeSettings.from_env()
             )
         self.compute_settings = compute_settings
+        # One Worker serves both stages, so a failure seen while embedding also
+        # spares reranking the wait for the same unreachable host.
+        remote_cooldown = create_remote_cooldown(compute_settings)
 
         self.vectorizer = MultiBookVectorizer(
             model_name=model_name,
@@ -315,6 +321,7 @@ class RAGEngine:
             embedding_provider=embedding_provider,
             compute_settings=compute_settings,
             allow_query_fallback=True,
+            remote_cooldown=remote_cooldown,
         )
 
         self.bm25_indexes: dict[str, BM25Okapi] = {}
@@ -339,6 +346,7 @@ class RAGEngine:
                 self.reranker = create_reranker_provider(
                     reranker_settings,
                     allow_query_fallback=True,
+                    cooldown=remote_cooldown,
                 )
             except BaseException:
                 self.vectorizer.close()

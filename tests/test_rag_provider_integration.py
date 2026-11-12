@@ -11,7 +11,12 @@ from unittest.mock import MagicMock, patch
 from rag_textbook_qa.indexing import MultiBookVectorizer
 from rag_textbook_qa.indexing.snapshot import TemporaryIndexDirectory
 from rag_textbook_qa.llm import GenerationCancelled, LLMClient, LLMGenerationIncompleteError
-from rag_textbook_qa.providers import ModelIdentity, ProviderCall, ProviderTelemetry
+from rag_textbook_qa.providers import (
+    ComputeSettings,
+    ModelIdentity,
+    ProviderCall,
+    ProviderTelemetry,
+)
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION
 from rag_textbook_qa.rag import RAGEngine
 from rag_textbook_qa.rag.context import select_context
@@ -282,6 +287,27 @@ class RagProviderIntegrationTests(unittest.TestCase):
         ):
             RAGEngine(enable_llm=False, embedding_provider=FakeEmbeddingProvider())
         vectorizer.close.assert_called_once_with()
+
+    def test_engine_gives_both_stages_one_memory_of_worker_failures(self):
+        remote = ComputeSettings(
+            backend="remote", remote_url="http://127.0.0.1:9", device="cpu",
+            query_fallback_to_local=True, remote_cooldown_seconds=45,
+        )
+        for settings, shared in ((remote, True), (ComputeSettings(device="cpu"), False)):
+            with (
+                self.subTest(backend=settings.backend),
+                contextlib.redirect_stdout(io.StringIO()),
+                patch("rag_textbook_qa.rag.engine.MultiBookVectorizer") as vectorizer,
+                patch.object(RAGEngine, "refresh_index_if_changed"),
+                patch("rag_textbook_qa.rag.engine.create_reranker_provider") as reranker,
+            ):
+                RAGEngine(enable_llm=False, compute_settings=settings, verbose=False).close()
+                embedding_cooldown = vectorizer.call_args.kwargs["remote_cooldown"]
+                self.assertIs(embedding_cooldown, reranker.call_args.kwargs["cooldown"])
+                if shared:
+                    self.assertEqual(embedding_cooldown.seconds, 45)
+                else:
+                    self.assertIsNone(embedding_cooldown)
 
     def test_interrupted_keyword_initialization_closes_the_open_index(self):
         vectorizer = MagicMock()

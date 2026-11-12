@@ -9,6 +9,31 @@ class ComputeSettingsTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ProviderError, "REMOTE_TIMEOUT"):
                 ComputeSettings.from_env({"RAG_QA_REMOTE_TIMEOUT": value})
 
+    def test_connect_timeout_and_cooldown_are_validated_and_reported(self):
+        defaults = ComputeSettings.from_env({})
+        self.assertEqual(defaults.remote_connect_timeout_seconds, 5)
+        self.assertEqual(defaults.remote_cooldown_seconds, 60)
+
+        settings = ComputeSettings.from_env(
+            {"RAG_QA_REMOTE_CONNECT_TIMEOUT": "2.5", "RAG_QA_REMOTE_COOLDOWN": "0"}
+        )
+        self.assertEqual(settings.remote_connect_timeout_seconds, 2.5)
+        # Zero is the documented way to ask the Worker again on every query.
+        self.assertEqual(settings.remote_cooldown_seconds, 0)
+        self.assertEqual(settings.safe_summary()["remote_connect_timeout_seconds"], 2.5)
+        self.assertEqual(settings.safe_summary()["remote_cooldown_seconds"], 0)
+
+        for value in ("nan", "inf", "0", "-1", "soon"):
+            with self.subTest(connect_timeout=value), self.assertRaisesRegex(
+                ProviderError, "REMOTE_CONNECT_TIMEOUT"
+            ):
+                ComputeSettings.from_env({"RAG_QA_REMOTE_CONNECT_TIMEOUT": value})
+        for value in ("nan", "inf", "-1", "later"):
+            with self.subTest(cooldown=value), self.assertRaisesRegex(
+                ProviderError, "REMOTE_COOLDOWN"
+            ):
+                ComputeSettings.from_env({"RAG_QA_REMOTE_COOLDOWN": value})
+
     def test_default_is_local_and_does_not_require_remote_configuration(self):
         settings = ComputeSettings.from_env({})
 

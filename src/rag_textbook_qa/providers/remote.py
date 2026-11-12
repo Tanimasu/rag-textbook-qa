@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import cache
 from http.client import IncompleteRead
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import (
+    HTTPHandler,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    Request,
+    build_opener,
+)
 
 from rag_textbook_qa.providers.base import (
     DEFAULT_QUERY_INSTRUCTION,
@@ -27,7 +35,10 @@ from rag_textbook_qa.providers.base import (
     validate_scores,
     validate_worker_health_status,
 )
-from rag_textbook_qa.providers.config import validate_worker_token
+from rag_textbook_qa.providers.config import (
+    DEFAULT_REMOTE_CONNECT_TIMEOUT,
+    validate_worker_token,
+)
 
 
 def _worker_batches(values: list[str]) -> list[list[str]]:
@@ -59,16 +70,78 @@ class _NoWorkerRedirects(HTTPRedirectHandler):
         return None
 
 
+@cache
+def _bounded_connection(http_class: type, connect_timeout: float) -> type:
+    """A connection class that gives up on an unreachable host early."""
+
+    class BoundedConnection(http_class):
+        def connect(self) -> None:
+            # urllib hands one timeout to the socket for its whole life. Model
+            # inference can legitimately take minutes; reaching the host cannot.
+            response_timeout = self.timeout
+            self.timeout = connect_timeout
+            try:
+                super().connect()
+            finally:
+                self.timeout = response_timeout
+            self.sock.settimeout(response_timeout)
+
+    return BoundedConnection
+
+
+class _BoundedConnect:
+    def __init__(self, connect_timeout: float) -> None:
+        super().__init__()
+        self._connect_timeout = connect_timeout
+
+    def do_open(self, http_class, req, **http_conn_args):
+        return super().do_open(
+            _bounded_connection(http_class, self._connect_timeout), req, **http_conn_args
+        )
+
+
+class _WorkerHTTPHandler(_BoundedConnect, HTTPHandler):
+    pass
+
+
+class _WorkerHTTPSHandler(_BoundedConnect, HTTPSHandler):
+    pass
+
+
+def _positive_seconds(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
 class RemoteWorkerClient:
     """Small JSON client with explicit error categories for safe fallback."""
 
-    def __init__(self, base_url: str, *, token: str | None, timeout: float) -> None:
-        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None,
+        timeout: float,
+        connect_timeout: float = DEFAULT_REMOTE_CONNECT_TIMEOUT,
+    ) -> None:
+        if not _positive_seconds(timeout):
             raise ProviderError("远程 Worker timeout 必须是有限正数")
+        if not _positive_seconds(connect_timeout):
+            raise ProviderError("远程 Worker connect timeout 必须是有限正数")
         self.base_url = base_url.rstrip("/")
         self.token = validate_worker_token(token)
         self.timeout = timeout
-        self._opener = build_opener(_NoWorkerRedirects())
+        # Establishing the connection never gets longer than the whole request.
+        self.connect_timeout = min(connect_timeout, timeout)
+        self._opener = build_opener(
+            _NoWorkerRedirects(),
+            _WorkerHTTPHandler(self.connect_timeout),
+            _WorkerHTTPSHandler(self.connect_timeout),
+        )
 
     def request(
         self,
@@ -266,19 +339,148 @@ class RemoteRerankerProvider(_RemoteProvider):
         return result
 
 
-class FallbackEmbeddingProvider:
+class RemoteCooldown:
+    """Remembers a transient Worker failure so later queries skip the wait.
+
+    Only the query fallback wrappers consult it. A provider without a fallback
+    still contacts the Worker on every call and reports each failure.
+    """
+
+    def __init__(
+        self, seconds: float, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or not math.isfinite(seconds)
+            or seconds < 0
+        ):
+            raise ProviderError("远程 Worker cooldown 必须是有限非负数")
+        self.seconds = seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._resume_at: float | None = None
+
+    def active(self) -> bool:
+        with self._lock:
+            if self._resume_at is None:
+                return False
+            if self._clock() < self._resume_at:
+                return True
+            self._resume_at = None
+            return False
+
+    def start(self) -> None:
+        if self.seconds <= 0:
+            return
+        with self._lock:
+            self._resume_at = self._clock() + self.seconds
+
+
+class _QueryFallback:
     """Fallback only on transient remote failures, never on auth/model errors."""
 
-    def __init__(self, primary: Any, fallback: Any) -> None:
+    _task: str
+
+    def __init__(
+        self, primary: Any, fallback: Any, *, cooldown: RemoteCooldown | None = None
+    ) -> None:
         if primary.identity.fingerprint != fallback.identity.fingerprint:
-            raise ModelMismatchError("embedding 回退模型必须与远程模型完全一致")
+            raise ModelMismatchError(f"{self._task} 回退模型必须与远程模型完全一致")
         self.primary = primary
         self.fallback = fallback
+        self.cooldown = cooldown
         self.telemetry = ProviderTelemetry()
 
     @property
     def identity(self) -> ModelIdentity:
         return self.primary.identity
+
+    def _call(self, invoke: Callable[[Any], Any]) -> Any:
+        started = time.monotonic()
+        if self.cooldown is not None and self.cooldown.active():
+            # The Worker failed moments ago. The fallback is the same model, so
+            # answer from it now instead of waiting for the same failure again.
+            return self._call_fallback(invoke, started, TransientProviderError.__name__)
+        primary_marker = _telemetry_marker(self.primary)
+        try:
+            result = invoke(self.primary)
+        except TransientProviderError as remote_error:
+            if self.cooldown is not None:
+                self.cooldown.start()
+            return self._call_fallback(invoke, started, type(remote_error).__name__)
+        except Exception as exc:
+            self._record_effective_call(
+                started,
+                _latest_call(self.primary, primary_marker),
+                backend="remote",
+                fallback_used=False,
+                success=False,
+                error_category=type(exc).__name__,
+            )
+            raise
+        self._record_effective_call(
+            started,
+            _latest_call(self.primary, primary_marker),
+            backend="remote",
+            fallback_used=False,
+            success=True,
+        )
+        return result
+
+    def _call_fallback(
+        self, invoke: Callable[[Any], Any], started: float, remote_category: str
+    ) -> Any:
+        fallback_marker = _telemetry_marker(self.fallback)
+        try:
+            result = invoke(self.fallback)
+        except Exception as exc:
+            self._record_effective_call(
+                started,
+                _latest_call(self.fallback, fallback_marker),
+                backend="local",
+                fallback_used=True,
+                success=False,
+                error_category=type(exc).__name__,
+            )
+            raise
+        self._record_effective_call(
+            started,
+            _latest_call(self.fallback, fallback_marker),
+            backend="local",
+            fallback_used=True,
+            success=True,
+            error_category=remote_category,
+        )
+        return result
+
+    def _record_effective_call(
+        self,
+        started: float,
+        effective: ProviderCall | None,
+        *,
+        backend: str,
+        fallback_used: bool,
+        success: bool,
+        error_category: str | None = None,
+    ) -> None:
+        self.telemetry.record(
+            ProviderCall(
+                task=self._task,
+                backend=backend,
+                model=self.identity.model,
+                device=effective.device if effective else backend,
+                platform=effective.platform if effective else None,
+                elapsed_seconds=time.monotonic() - started,
+                success=success,
+                fallback_used=fallback_used,
+                error_category=error_category,
+            )
+        )
+
+
+class FallbackEmbeddingProvider(_QueryFallback):
+    _task = "embedding"
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return self._run("embed_documents", texts)
@@ -290,162 +492,17 @@ class FallbackEmbeddingProvider:
         values = list(texts)
         if not values:
             return []
-        started = time.monotonic()
-        primary_marker = _telemetry_marker(self.primary)
-        try:
-            result = getattr(self.primary, method)(values)
-        except TransientProviderError as remote_error:
-            fallback_marker = _telemetry_marker(self.fallback)
-            try:
-                result = getattr(self.fallback, method)(values)
-            except Exception as exc:
-                self._record_effective_call(
-                    started,
-                    _latest_call(self.fallback, fallback_marker),
-                    backend="local",
-                    fallback_used=True,
-                    success=False,
-                    error_category=type(exc).__name__,
-                )
-                raise
-            self._record_effective_call(
-                started,
-                _latest_call(self.fallback, fallback_marker),
-                backend="local",
-                fallback_used=True,
-                success=True,
-                error_category=type(remote_error).__name__,
-            )
-            return result
-        except Exception as exc:
-            self._record_effective_call(
-                started,
-                _latest_call(self.primary, primary_marker),
-                backend="remote",
-                fallback_used=False,
-                success=False,
-                error_category=type(exc).__name__,
-            )
-            raise
-        self._record_effective_call(
-            started,
-            _latest_call(self.primary, primary_marker),
-            backend="remote",
-            fallback_used=False,
-            success=True,
-        )
-        return result
-
-    def _record_effective_call(
-        self,
-        started: float,
-        effective: ProviderCall | None,
-        *,
-        backend: str,
-        fallback_used: bool,
-        success: bool,
-        error_category: str | None = None,
-    ) -> None:
-        self.telemetry.record(
-            ProviderCall(
-                task="embedding",
-                backend=backend,
-                model=self.identity.model,
-                device=effective.device if effective else backend,
-                platform=effective.platform if effective else None,
-                elapsed_seconds=time.monotonic() - started,
-                success=success,
-                fallback_used=fallback_used,
-                error_category=error_category,
-            )
-        )
+        return self._call(lambda provider: getattr(provider, method)(values))
 
 
-class FallbackRerankerProvider:
-    def __init__(self, primary: Any, fallback: Any) -> None:
-        if primary.identity.fingerprint != fallback.identity.fingerprint:
-            raise ModelMismatchError("reranker 回退模型必须与远程模型完全一致")
-        self.primary = primary
-        self.fallback = fallback
-        self.telemetry = ProviderTelemetry()
-
-    @property
-    def identity(self) -> ModelIdentity:
-        return self.primary.identity
+class FallbackRerankerProvider(_QueryFallback):
+    _task = "reranker"
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
         values = list(documents)
         if not values:
             return []
-        started = time.monotonic()
-        primary_marker = _telemetry_marker(self.primary)
-        try:
-            result = self.primary.rerank(query, values)
-        except TransientProviderError as remote_error:
-            fallback_marker = _telemetry_marker(self.fallback)
-            try:
-                result = self.fallback.rerank(query, values)
-            except Exception as exc:
-                self._record_effective_call(
-                    started,
-                    _latest_call(self.fallback, fallback_marker),
-                    backend="local",
-                    fallback_used=True,
-                    success=False,
-                    error_category=type(exc).__name__,
-                )
-                raise
-            self._record_effective_call(
-                started,
-                _latest_call(self.fallback, fallback_marker),
-                backend="local",
-                fallback_used=True,
-                success=True,
-                error_category=type(remote_error).__name__,
-            )
-            return result
-        except Exception as exc:
-            self._record_effective_call(
-                started,
-                _latest_call(self.primary, primary_marker),
-                backend="remote",
-                fallback_used=False,
-                success=False,
-                error_category=type(exc).__name__,
-            )
-            raise
-        self._record_effective_call(
-            started,
-            _latest_call(self.primary, primary_marker),
-            backend="remote",
-            fallback_used=False,
-            success=True,
-        )
-        return result
-
-    def _record_effective_call(
-        self,
-        started: float,
-        effective: ProviderCall | None,
-        *,
-        backend: str,
-        fallback_used: bool,
-        success: bool,
-        error_category: str | None = None,
-    ) -> None:
-        self.telemetry.record(
-            ProviderCall(
-                task="reranker",
-                backend=backend,
-                model=self.identity.model,
-                device=effective.device if effective else backend,
-                platform=effective.platform if effective else None,
-                elapsed_seconds=time.monotonic() - started,
-                success=success,
-                fallback_used=fallback_used,
-                error_category=error_category,
-            )
-        )
+        return self._call(lambda provider: provider.rerank(query, values))
 
 
 def _telemetry_marker(provider: Any) -> int | None:

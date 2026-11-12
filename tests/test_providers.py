@@ -17,10 +17,15 @@ from rag_textbook_qa.providers import (
 )
 from rag_textbook_qa.providers.base import DEFAULT_QUERY_INSTRUCTION, validate_embeddings
 from rag_textbook_qa.providers.config import ComputeSettings
-from rag_textbook_qa.providers.factory import create_reranker_provider
+from rag_textbook_qa.providers.factory import (
+    create_embedding_provider,
+    create_remote_cooldown,
+    create_reranker_provider,
+)
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
     FallbackRerankerProvider,
+    RemoteCooldown,
     RemoteEmbeddingProvider,
     RemoteRerankerProvider,
     RemoteWorkerClient,
@@ -243,6 +248,10 @@ class ProviderTests(unittest.TestCase):
         for timeout in (float("nan"), float("inf"), -1, 0):
             with self.subTest(timeout=timeout), self.assertRaises(ProviderError):
                 RemoteWorkerClient("http://worker", token=None, timeout=timeout)
+            with self.subTest(connect_timeout=timeout), self.assertRaises(ProviderError):
+                RemoteWorkerClient(
+                    "http://worker", token=None, timeout=1, connect_timeout=timeout
+                )
 
     def test_remote_embedding_checks_health_once_and_preserves_input_type(self):
         client = FakeRemoteClient()
@@ -291,6 +300,271 @@ class ProviderTests(unittest.TestCase):
         provider = FallbackEmbeddingProvider(auth_primary, fallback)
         with self.assertRaises(AuthenticationError):
             provider.embed_queries(["q"])
+
+
+class FakeSocket:
+    """Just enough of a socket for http.client to send a request and read a reply."""
+
+    def __init__(self, reply=b'{"status":"ok"}'):
+        self.reply = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(reply)}\r\nConnection: close\r\n\r\n".encode()
+            + reply
+        )
+        self.timeouts = []
+
+    def setsockopt(self, *args):
+        pass
+
+    def settimeout(self, value):
+        self.timeouts.append(value)
+
+    def sendall(self, data):
+        pass
+
+    def makefile(self, *args, **kwargs):
+        return io.BytesIO(self.reply)
+
+    def close(self):
+        pass
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class StubRerankerProvider:
+    def __init__(self, identity, outcome):
+        self.identity = identity
+        self.outcome = outcome
+        self.calls = 0
+
+    def rerank(self, query, documents):
+        self.calls += 1
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+EMBEDDING_IDENTITY = ModelIdentity(
+    task="embedding", model="model", normalized=True,
+    query_instruction=DEFAULT_QUERY_INSTRUCTION,
+)
+RERANKER_IDENTITY = ModelIdentity(task="reranker", model="model")
+
+
+class RemoteAvailabilityTests(unittest.TestCase):
+    def test_reaching_the_worker_is_bounded_separately_from_waiting_for_its_answer(self):
+        for scheme in ("http", "https"):
+            with self.subTest(scheme=scheme):
+                client = RemoteWorkerClient(
+                    f"{scheme}://worker.test:8765", token=None, timeout=120, connect_timeout=3
+                )
+                connected = FakeSocket()
+                with (
+                    patch("socket.create_connection", return_value=connected) as connect,
+                    patch("ssl.SSLContext.wrap_socket", side_effect=lambda sock, **_: sock),
+                ):
+                    self.assertEqual(client.request("/health"), {"status": "ok"})
+                # http.client passes (address, timeout, source_address) positionally.
+                self.assertEqual(connect.call_args.args[1], 3)
+                # Inference may take minutes, so the reply keeps the long limit.
+                self.assertEqual(connected.timeouts, [120])
+
+    def test_unreachable_worker_is_reported_after_the_connect_timeout(self):
+        for timeout, connect_timeout, expected in ((120, 3, 3), (2, 5, 2)):
+            with self.subTest(timeout=timeout, connect_timeout=connect_timeout):
+                client = RemoteWorkerClient(
+                    "http://worker.test:8765", token="secret", timeout=timeout,
+                    connect_timeout=connect_timeout,
+                )
+                self.assertEqual(client.connect_timeout, expected)
+                with (
+                    patch("socket.create_connection", side_effect=TimeoutError("timed out")) as connect,
+                    self.assertRaises(TransientProviderError) as raised,
+                ):
+                    client.request("/health")
+                self.assertEqual(connect.call_args.args[1], expected)
+                self.assertNotIn("secret", str(raised.exception))
+                self.assertNotIn("worker.test", str(raised.exception))
+
+    def test_cooldown_answers_locally_without_asking_the_failed_worker_again(self):
+        clock = FakeClock()
+        primary = StubEmbeddingProvider(EMBEDDING_IDENTITY, TransientProviderError("offline"))
+        fallback = StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0, 2.0]])
+        provider = FallbackEmbeddingProvider(
+            primary, fallback, cooldown=RemoteCooldown(60, clock=clock)
+        )
+
+        for _ in range(3):
+            self.assertEqual(provider.embed_queries(["q"]), [[1.0, 2.0]])
+            clock.now += 10
+        self.assertEqual(provider.embed_documents(["hypothetical passage"]), [[1.0, 2.0]])
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(fallback.calls, 4)
+        for event in provider.telemetry.since(0):
+            self.assertEqual(event.backend, "local")
+            self.assertTrue(event.fallback_used)
+            self.assertTrue(event.success)
+            self.assertEqual(event.error_category, "TransientProviderError")
+
+        # The wait is counted from the failure, not from the last skipped call.
+        clock.now = 1000.0 + 60
+        provider.embed_queries(["q"])
+        self.assertEqual(primary.calls, 2)
+        provider.embed_queries(["q"])
+        self.assertEqual(primary.calls, 2)
+
+    def test_recovered_worker_is_used_again_once_the_cooldown_ends(self):
+        clock = FakeClock()
+        primary = StubRerankerProvider(RERANKER_IDENTITY, TransientProviderError("offline"))
+        fallback = StubRerankerProvider(RERANKER_IDENTITY, [0.1])
+        provider = FallbackRerankerProvider(
+            primary, fallback, cooldown=RemoteCooldown(60, clock=clock)
+        )
+        self.assertEqual(provider.rerank("q", ["document"]), [0.1])
+
+        primary.outcome = [0.9]
+        clock.now += 59
+        self.assertEqual(provider.rerank("q", ["document"]), [0.1])
+        clock.now += 1
+        for _ in range(2):
+            self.assertEqual(provider.rerank("q", ["document"]), [0.9])
+        self.assertEqual(primary.calls, 3)
+        self.assertEqual(fallback.calls, 2)
+        event = provider.telemetry.since(0)[-1]
+        self.assertEqual(event.backend, "remote")
+        self.assertFalse(event.fallback_used)
+        self.assertIsNone(event.error_category)
+
+    def test_one_cooldown_covers_embedding_and_reranking_on_the_same_worker(self):
+        cooldown = RemoteCooldown(60, clock=FakeClock())
+        embedding_primary = StubEmbeddingProvider(
+            EMBEDDING_IDENTITY, TransientProviderError("offline")
+        )
+        reranker_primary = StubRerankerProvider(
+            RERANKER_IDENTITY, TransientProviderError("offline")
+        )
+        embedding = FallbackEmbeddingProvider(
+            embedding_primary, StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0]]),
+            cooldown=cooldown,
+        )
+        reranker = FallbackRerankerProvider(
+            reranker_primary, StubRerankerProvider(RERANKER_IDENTITY, [0.5]),
+            cooldown=cooldown,
+        )
+
+        self.assertEqual(embedding.embed_queries(["q"]), [[1.0]])
+        self.assertEqual(reranker.rerank("q", ["document"]), [0.5])
+        self.assertEqual(embedding_primary.calls, 1)
+        self.assertEqual(reranker_primary.calls, 0)
+        self.assertTrue(reranker.telemetry.since(0)[-1].fallback_used)
+
+    def test_cooldown_starts_only_for_transient_failures(self):
+        for error in (
+            AuthenticationError("bad token"),
+            ModelMismatchError("other model"),
+            ProviderProtocolError("malformed"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                cooldown = RemoteCooldown(60, clock=FakeClock())
+                primary = StubEmbeddingProvider(EMBEDDING_IDENTITY, error)
+                fallback = StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0]])
+                provider = FallbackEmbeddingProvider(primary, fallback, cooldown=cooldown)
+                for _ in range(2):
+                    with self.assertRaises(type(error)):
+                        provider.embed_queries(["q"])
+                self.assertEqual(primary.calls, 2)
+                self.assertEqual(fallback.calls, 0)
+                self.assertFalse(cooldown.active())
+
+    def test_rejection_after_a_cooldown_is_reported_instead_of_answered_locally(self):
+        clock = FakeClock()
+        primary = StubEmbeddingProvider(EMBEDDING_IDENTITY, TransientProviderError("offline"))
+        fallback = StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0]])
+        provider = FallbackEmbeddingProvider(
+            primary, fallback, cooldown=RemoteCooldown(60, clock=clock)
+        )
+        provider.embed_queries(["q"])
+
+        # The Worker came back with a different token while queries ran locally.
+        primary.outcome = AuthenticationError("bad token")
+        clock.now += 60
+        for _ in range(2):
+            with self.assertRaises(AuthenticationError):
+                provider.embed_queries(["q"])
+        self.assertEqual(primary.calls, 3)
+        self.assertEqual(fallback.calls, 1)
+
+    def test_failing_fallback_is_reported_during_a_cooldown(self):
+        primary = StubEmbeddingProvider(EMBEDDING_IDENTITY, TransientProviderError("offline"))
+        fallback = StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0]])
+        provider = FallbackEmbeddingProvider(
+            primary, fallback, cooldown=RemoteCooldown(60, clock=FakeClock())
+        )
+        provider.embed_queries(["q"])
+        fallback.outcome = RuntimeError("local model failed")
+        with self.assertRaisesRegex(RuntimeError, "local model failed"):
+            provider.embed_queries(["q"])
+        event = provider.telemetry.since(0)[-1]
+        self.assertFalse(event.success)
+        self.assertTrue(event.fallback_used)
+        self.assertEqual(event.error_category, "RuntimeError")
+
+    def test_zero_cooldown_and_no_cooldown_ask_the_worker_every_time(self):
+        for cooldown in (None, RemoteCooldown(0, clock=FakeClock())):
+            with self.subTest(cooldown=cooldown is not None):
+                primary = StubEmbeddingProvider(
+                    EMBEDDING_IDENTITY, TransientProviderError("offline")
+                )
+                fallback = StubEmbeddingProvider(EMBEDDING_IDENTITY, [[1.0]])
+                provider = FallbackEmbeddingProvider(primary, fallback, cooldown=cooldown)
+                for _ in range(3):
+                    provider.embed_queries(["q"])
+                self.assertEqual(primary.calls, 3)
+
+    def test_cooldown_length_must_be_finite_and_not_negative(self):
+        for seconds in (float("nan"), float("inf"), -1, True, "60"):
+            with self.subTest(seconds=seconds), self.assertRaises(ProviderError):
+                RemoteCooldown(seconds)
+
+    def test_only_query_fallback_remembers_worker_failures(self):
+        remote = ComputeSettings(
+            backend="remote", remote_url="http://127.0.0.1:9", device="cpu",
+            query_fallback_to_local=True, remote_connect_timeout_seconds=2,
+            remote_cooldown_seconds=45,
+        )
+        self.assertIsNone(create_remote_cooldown(ComputeSettings(device="cpu")))
+        self.assertIsNone(
+            create_remote_cooldown(
+                ComputeSettings(backend="remote", remote_url="http://127.0.0.1:9")
+            )
+        )
+
+        # Index builds never fall back, so they get no memory of earlier failures.
+        for factory, plain in (
+            (create_embedding_provider, RemoteEmbeddingProvider),
+            (create_reranker_provider, RemoteRerankerProvider),
+        ):
+            with self.subTest(factory=factory.__name__):
+                building = factory(remote)
+                self.assertIsInstance(building, plain)
+                self.assertEqual(building.client.connect_timeout, 2)
+                self.assertFalse(hasattr(building, "cooldown"))
+
+                querying = factory(remote, allow_query_fallback=True)
+                self.assertEqual(querying.cooldown.seconds, 45)
+                self.assertEqual(querying.primary.client.connect_timeout, 2)
+
+        shared = create_remote_cooldown(remote)
+        embedding = create_embedding_provider(remote, allow_query_fallback=True, cooldown=shared)
+        reranker = create_reranker_provider(remote, allow_query_fallback=True, cooldown=shared)
+        self.assertIs(embedding.cooldown, shared)
+        self.assertIs(reranker.cooldown, shared)
 
 
 if __name__ == "__main__":

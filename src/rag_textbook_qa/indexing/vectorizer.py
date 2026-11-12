@@ -22,6 +22,7 @@ from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
 from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
+from rag_textbook_qa.providers.remote import RemoteCooldown
 
 _BOOK_ID_PATTERN = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?")
 _BACKUP_NAME_PATTERN = re.compile(r"ragbackup_[0-9a-f]{32}_(.+)")
@@ -157,6 +158,7 @@ class MultiBookVectorizer:
         embedding_provider: EmbeddingProvider | None = None,
         compute_settings: ComputeSettings | None = None,
         allow_query_fallback: bool = False,
+        remote_cooldown: RemoteCooldown | None = None,
     ) -> None:
         print("初始化向量化器...")
 
@@ -172,6 +174,7 @@ class MultiBookVectorizer:
             self.embedding_provider = create_embedding_provider(
                 provider_settings,
                 allow_query_fallback=allow_query_fallback,
+                cooldown=remote_cooldown,
             )
         print(f"Embedding 模型: {self.embedding_provider.identity.model}")
 

@@ -85,7 +85,11 @@ def run(output: Path, repeats: int = 2, *, include_frozen: bool = True) -> dict[
     values.update(os.environ)
     values["RAG_QA_COMPUTE_BACKEND"] = "remote"
     compute = replace(ComputeSettings.from_env(values), query_fallback_to_local=False)
-    client = RemoteWorkerClient(compute.remote_url, token=compute.remote_token, timeout=compute.remote_timeout_seconds)
+    client = RemoteWorkerClient(
+        compute.remote_url, token=compute.remote_token,
+        timeout=compute.remote_timeout_seconds,
+        connect_timeout=compute.remote_connect_timeout_seconds,
+    )
     embedding = RemoteEmbeddingProvider(client, compute.embedding_model)
     reranker = RemoteRerankerProvider(client, compute.reranker_model)
     dataset = paths.evaluation_data / "retrieval_questions.json"
