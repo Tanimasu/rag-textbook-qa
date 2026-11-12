@@ -67,7 +67,8 @@ uv run --no-sync python -m playwright install chromium
 uv run --no-sync python tests/browser/public_chat_browser.py -v
 ```
 
-Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系统库。
+Linux CI 使用 `playwright install --with-deps chromium` 安装浏览器与系统库。这一步失败得很快时（例如软件包锁被占用）最多再试两次；
+已经耗时数分钟的失败不再重复，直接报告。
 本机已有 Chrome 时可设置 `RAG_QA_BROWSER_CHANNEL=chrome`，省去浏览器下载。
 `--only-group browser` 创建的环境仅含浏览器测试依赖，运行核心测试前需重新执行上面的完整同步命令。
 

@@ -128,7 +128,24 @@ jobs:
         run: uv sync --locked --group browser --extra api
 
       - name: Install Chromium and system libraries
-        run: uv run --no-sync python -m playwright install --with-deps chromium
+        shell: bash
+        # Retries failures that return quickly: a busy package lock, a mirror caught
+        # mid-sync, a failed browser download. An attempt that already spent minutes
+        # has been through apt's own retries, and repeating it would only run into
+        # the job timeout, so it is reported instead.
+        run: |
+          for attempt in 1 2 3; do
+            if uv run --no-sync python -m playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ] || [ "$SECONDS" -ge 180 ]; then
+              break
+            fi
+            echo "::warning::Chromium installation failed on attempt $attempt; retrying"
+            sleep $((attempt * 20))
+          done
+          echo "::error::Chromium installation failed"
+          exit 1
 
       - name: Run public chat in a real browser with a local fake backend
         run: uv run --no-sync python tests/browser/public_chat_browser.py -v
