@@ -62,14 +62,20 @@ class ModelIdentity:
     normalized: bool = False
     query_instruction: str = ""
     protocol_version: str = PROTOCOL_VERSION
+    max_length: int | None = None
+    dtype: str | None = None
+
+    def _configuration(self) -> dict:
+        # Omit absent overrides to preserve existing collection/Worker identities.
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
     @property
     def fingerprint(self) -> str:
-        canonical = json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
+        canonical = json.dumps(self._configuration(), ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def as_dict(self) -> dict[str, str | bool]:
-        return {**asdict(self), "fingerprint": self.fingerprint}
+    def as_dict(self) -> dict[str, str | bool | int]:
+        return {**self._configuration(), "fingerprint": self.fingerprint}
 
 
 @dataclass(frozen=True)

@@ -95,7 +95,9 @@ class ComputeSettings:
     remote_connect_timeout_seconds: float = DEFAULT_REMOTE_CONNECT_TIMEOUT
     remote_cooldown_seconds: float = DEFAULT_REMOTE_COOLDOWN
     query_fallback_to_local: bool = False
-    reranker_batch_size: int = 32
+    reranker_batch_size: int | None = None
+    reranker_max_length: int | None = None
+    reranker_dtype: str = "float32"
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ComputeSettings:
@@ -115,11 +117,22 @@ class ComputeSettings:
             values, "RAG_QA_REMOTE_COOLDOWN", DEFAULT_REMOTE_COOLDOWN, allow_zero=True
         )
         try:
-            reranker_batch_size = int(values.get("RAG_QA_RERANK_BATCH_SIZE", "32"))
+            raw_batch = values.get("RAG_QA_RERANK_BATCH_SIZE")
+            reranker_batch_size = int(raw_batch) if raw_batch is not None else None
         except ValueError as exc:
             raise ProviderError("RAG_QA_RERANK_BATCH_SIZE 必须是正整数") from exc
-        if reranker_batch_size <= 0:
+        if reranker_batch_size is not None and reranker_batch_size <= 0:
             raise ProviderError("RAG_QA_RERANK_BATCH_SIZE 必须是正整数")
+        raw_length = values.get("RAG_QA_RERANK_MAX_LENGTH", "").strip()
+        try:
+            reranker_max_length = int(raw_length) if raw_length else None
+        except ValueError as exc:
+            raise ProviderError("RAG_QA_RERANK_MAX_LENGTH 必须是正整数") from exc
+        if reranker_max_length is not None and reranker_max_length <= 0:
+            raise ProviderError("RAG_QA_RERANK_MAX_LENGTH 必须是正整数")
+        reranker_dtype = values.get("RAG_QA_RERANK_DTYPE", "float32").strip().lower()
+        if reranker_dtype not in {"float32", "float16"}:
+            raise ProviderError("RAG_QA_RERANK_DTYPE 只能是 float32 或 float16")
 
         if backend == "remote":
             if remote_url is None:
@@ -143,6 +156,8 @@ class ComputeSettings:
                 values.get("RAG_QA_QUERY_FALLBACK_TO_LOCAL"), default=False
             ),
             reranker_batch_size=reranker_batch_size,
+            reranker_max_length=reranker_max_length,
+            reranker_dtype=reranker_dtype,
         )
 
     def safe_summary(self) -> dict[str, str | float | bool | None]:
@@ -152,6 +167,8 @@ class ComputeSettings:
             "reranker_model": self.reranker_model,
             "device": self.device,
             "reranker_batch_size": self.reranker_batch_size,
+            "reranker_max_length": self.reranker_max_length,
+            "reranker_dtype": self.reranker_dtype,
             "remote_url": self.remote_url,
             "remote_token_configured": self.remote_token is not None,
             "remote_timeout_seconds": self.remote_timeout_seconds,

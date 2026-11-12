@@ -1057,6 +1057,8 @@ def _run_worker(args: argparse.Namespace, settings: Settings) -> int:
     from rag_textbook_qa.worker import run_worker_server
 
     compute = ComputeSettings.from_env()
+    if compute.reranker_max_length is not None or compute.reranker_dtype != "float32":
+        raise ValueError("Worker 暂不支持重排长度或精度开关；请清除对应环境变量")
     compute = replace(
         compute,
         embedding_model=args.embedding_model or compute.embedding_model,

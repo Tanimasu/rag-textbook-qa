@@ -100,6 +100,7 @@ rag-qa serve                           # 聊天页 http://127.0.0.1:8000，接�
 | [对外问答服务](docs/serving.md) | REST API、反馈收集、费用控制、Docker 镜像与部署 |
 | [评测方法与结果](docs/evaluation-methodology.md) | 各层评测的口径、依据和历次结果 |
 | [远程 Worker](docs/remote-worker.md) | 在 Windows GPU 上运行 Embedding 和 Reranker |
+| [重排性能](docs/retrieval-performance.md) | 本机耗时、逐题排名对照与默认关闭的长度/精度开关 |
 | [开发说明](docs/development.md) | 目录结构、CI、工具脚本、评测数据集 |
 | [个人学习工作流](docs/iteration-personal-study-20261018.md) | 历史、笔记、复习、导入故障恢复、跨页与跨服务一致性的功能与验收 |
 | [小版本记录](docs/release-notes.md) | 本轮功能和后续修复 |

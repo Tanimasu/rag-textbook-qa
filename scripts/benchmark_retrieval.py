@@ -1,7 +1,8 @@
 """Measure local retrieval routes with real, offline model inference on an index copy.
 
-Uses dev questions only and never loads project/.env, calls an LLM, or changes the
-source index. A historical Git ref can be compared with the working checkout.
+Uses dev questions by default and never loads project/.env, calls an LLM, or
+changes the source index. The all-question option is for final confirmation only.
+A historical Git ref can be compared with the working checkout.
 """
 
 from __future__ import annotations
@@ -82,6 +83,7 @@ def summaries(samples: list[dict[str, Any]]) -> dict[str, Any]:
         output[group] = {
             "samples": len(rows),
             "median_seconds": statistics.median(durations),
+            "p90_seconds": durations[math.ceil(len(durations) * 0.90) - 1],
             "p95_seconds": durations[math.ceil(len(durations) * 0.95) - 1],
             "mean_embedding_calls": statistics.mean(row["embedding_calls"] for row in rows),
             "mean_reranker_calls": statistics.mean(row["reranker_calls"] for row in rows),
@@ -103,14 +105,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu")
     parser.add_argument("--baseline-ref")
+    parser.add_argument("--compare-batch-size", type=int,
+                        help="同一引擎交替比较另一批大小，不与 --baseline-ref 同用")
     parser.add_argument("--repeats", type=int, default=2)
-    parser.add_argument("--reranker-batch-size", type=int, default=32)
+    parser.add_argument("--reranker-batch-size", type=int,
+                        help="不设时使用 provider 的实际设备默认值")
+    parser.add_argument("--reranker-max-length", type=int)
+    parser.add_argument("--reranker-dtype", choices=("float32", "float16"), default="float32")
+    parser.add_argument("--questions", choices=("sample", "dev", "all"), default="sample",
+                        help="sample 为每本首道开发题；all 仅用于最终确认")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats 必须大于 0")
-    if args.reranker_batch_size < 1:
+    if args.reranker_batch_size is not None and args.reranker_batch_size < 1:
         parser.error("--reranker-batch-size 必须大于 0")
+    if args.reranker_max_length is not None and args.reranker_max_length < 1:
+        parser.error("--reranker-max-length 必须大于 0")
+    if args.compare_batch_size is not None and args.compare_batch_size < 1:
+        parser.error("--compare-batch-size 必须大于 0")
+    if args.compare_batch_size is not None and args.baseline_ref:
+        parser.error("--compare-batch-size 与 --baseline-ref 不能同用")
     if args.output.exists():
         parser.error("输出文件已存在，请换一个路径")
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -122,19 +137,28 @@ def main() -> None:
         if question.split == "dev":
             by_book.setdefault(question.book_name, question)
     selected = [by_book[book] for book in sorted(by_book)]
+    if args.questions != "sample":
+        selected = [q for q in questions if args.questions == "all" or q.split == "dev"]
     embedding = CountedProvider(LocalEmbeddingProvider("BAAI/bge-large-zh-v1.5", device=args.device))
     reranker = CountedProvider(LocalRerankerProvider("BAAI/bge-reranker-base", device=args.device,
-                                                   batch_size=args.reranker_batch_size))
+                                                   batch_size=args.reranker_batch_size,
+                                                   max_length=args.reranker_max_length,
+                                                   dtype=args.reranker_dtype))
     report: dict[str, Any] = {
         "complete": False, "started_at_utc": datetime.now(UTC).isoformat(),
         "device": args.device, "platform": platform.system(), "python": platform.python_version(),
         "machine": platform.machine(),
         "libraries": {name: version(name) for name in ("torch", "sentence-transformers", "chromadb")},
-        "baseline_ref": args.baseline_ref, "split": "dev", "top_k": 5,
+        "baseline_ref": args.baseline_ref, "split": "all" if args.questions == "all" else "dev",
+        "top_k": 5,
         "reranker_batch_size": args.reranker_batch_size,
-        "question_selection": "first dev question from each book, sorted by book id",
+        "compare_batch_size": args.compare_batch_size,
+        "reranker_max_length": args.reranker_max_length, "reranker_dtype": args.reranker_dtype,
+        "question_selection": ("first dev question from each book, sorted by book id"
+                               if args.questions == "sample" else args.questions),
         "repeats": args.repeats, "inference_cache": False,
         "p95_method": "nearest rank; descriptive small-sample statistic, not a production SLO",
+        "p90_method": "nearest rank; descriptive statistic, not a production SLO",
         "embedding_fingerprint": embedding.identity.fingerprint,
         "reranker_fingerprint": reranker.identity.fingerprint,
         "engine_sha256": hashlib.sha256((paths.root / "src/rag_textbook_qa/rag/engine.py").read_bytes()).hexdigest(),
@@ -158,9 +182,12 @@ def main() -> None:
         if args.baseline_ref:
             engine_class = historical_engine(paths.root, args.baseline_ref, directory)
             engines["baseline"] = stack.enter_context(engine_class(**options))
+        if args.compare_batch_size is not None:
+            engines["batch_baseline"] = engines["current"]
         warm_started = time.monotonic()
         engines["current"].search_single_book(selected[0].book_name, selected[0].question, 5, use_hyde=False)
         report["warmup_seconds"] = time.monotonic() - warm_started
+        report["effective_reranker_batch_size"] = reranker.provider.effective_batch_size
         import torch
 
         def synchronize() -> None:
@@ -175,6 +202,9 @@ def main() -> None:
                 # Alternate route order so one implementation does not always run first.
                 ordered = routes if (repeat + question_index) % 2 == 0 else list(reversed(routes))
                 for route, engine, scope in ordered:
+                    reranker.provider.batch_size = (args.compare_batch_size
+                                                    if route.startswith("batch_baseline_")
+                                                    else args.reranker_batch_size)
                     counters = embedding.calls, reranker.calls, reranker.items
                     provider_seconds = embedding.seconds, reranker.seconds
                     synchronize()
@@ -186,7 +216,12 @@ def main() -> None:
                     seconds = time.monotonic() - started
                     report["samples"].append({
                         "route": route, "repeat": repeat, "book_name": question.book_name,
+                        "question": question.question,
                         "seconds": seconds, "results": len(rows),
+                        "effective_batch_size": reranker.provider.effective_batch_size,
+                        "top5": [{"book_name": row["book_name"], "chunk_id": row["chunk_id"],
+                                  "body_sha256": hashlib.sha256(row["content"].encode()).hexdigest()}
+                                 for row in rows],
                         "embedding_calls": embedding.calls - counters[0],
                         "reranker_calls": reranker.calls - counters[1],
                         "rerank_pairs": reranker.items - counters[2],

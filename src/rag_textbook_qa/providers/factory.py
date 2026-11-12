@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rag_textbook_qa.providers.base import ProviderError
 from rag_textbook_qa.providers.config import ComputeSettings
 from rag_textbook_qa.providers.local import LocalEmbeddingProvider, LocalRerankerProvider
 from rag_textbook_qa.providers.remote import (
@@ -63,8 +64,14 @@ def create_reranker_provider(
     cooldown: RemoteCooldown | None = None,
 ):
     settings = settings or ComputeSettings.from_env()
+    if settings.backend == "remote" and (
+        settings.reranker_max_length is not None or settings.reranker_dtype != "float32"
+    ):
+        raise ProviderError("远程 Worker 暂不支持重排长度或精度开关；请使用 local 后端")
     local = LocalRerankerProvider(settings.reranker_model, device=settings.device,
-                                 batch_size=settings.reranker_batch_size)
+                                 batch_size=settings.reranker_batch_size,
+                                 max_length=settings.reranker_max_length,
+                                 dtype=settings.reranker_dtype)
     if settings.backend == "local":
         return local
 

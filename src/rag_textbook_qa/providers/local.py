@@ -18,6 +18,8 @@ from rag_textbook_qa.providers.base import (
     validate_scores,
 )
 
+DEFAULT_MPS_RERANK_BATCH_SIZE = 8
+
 
 def _model_device(device: str) -> str | None:
     normalized = device.strip().lower()
@@ -117,10 +119,22 @@ class LocalEmbeddingProvider:
 class LocalRerankerProvider:
     """CrossEncoder provider that loads its model on first use."""
 
-    def __init__(self, model: str, *, device: str = "auto", batch_size: int = 32) -> None:
-        if type(batch_size) is not int or batch_size <= 0:
+    def __init__(
+        self, model: str, *, device: str = "auto", batch_size: int | None = None,
+        max_length: int | None = None, dtype: str = "float32",
+    ) -> None:
+        if batch_size is not None and (type(batch_size) is not int or batch_size <= 0):
             raise ValueError("batch_size 必须是正整数")
-        self._identity = ModelIdentity(task="reranker", model=model)
+        if max_length is not None and (type(max_length) is not int or max_length <= 0):
+            raise ValueError("max_length 必须是正整数或 None")
+        if dtype not in {"float32", "float16"}:
+            raise ValueError("reranker dtype 只能是 float32 或 float16")
+        if dtype == "float16" and _model_device(device) == "cpu":
+            raise ValueError("float16 重排需要 MPS 或 CUDA 设备")
+        self._identity = ModelIdentity(
+            task="reranker", model=model, max_length=max_length,
+            dtype=dtype if dtype != "float32" else None,
+        )
         self.device = _model_device(device)
         self.batch_size = batch_size
         self._model: Any | None = None
@@ -130,6 +144,21 @@ class LocalRerankerProvider:
     @property
     def identity(self) -> ModelIdentity:
         return self._identity
+
+    @property
+    def max_length(self) -> int | None:
+        return self.identity.max_length
+
+    @property
+    def dtype(self) -> str:
+        return self.identity.dtype or "float32"
+
+    @property
+    def effective_batch_size(self) -> int:
+        if self.batch_size is not None:
+            return self.batch_size
+        device = _runtime_device(self._model) if self._model is not None else (self.device or "auto")
+        return DEFAULT_MPS_RERANK_BATCH_SIZE if device.split(":")[0] == "mps" else 32
 
     def _load(self) -> Any:
         if self._model is None:
@@ -142,7 +171,14 @@ class LocalRerankerProvider:
                             "本地 reranker 需要安装：uv sync --extra local-models"
                         ) from exc
                     options = {} if self.device is None else {"device": self.device}
-                    self._model = CrossEncoder(self.identity.model, **options)
+                    if self.max_length is not None:
+                        options["max_length"] = self.max_length
+                    model = CrossEncoder(self.identity.model, **options)
+                    if self.dtype == "float16":
+                        if str(model.device).split(":")[0] not in {"mps", "cuda"}:
+                            raise ValueError("float16 重排需要 MPS 或 CUDA 设备")
+                        model.half()
+                    self._model = model
         return self._model
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
@@ -154,7 +190,7 @@ class LocalRerankerProvider:
         try:
             with self._lock:
                 model = self._load()
-                scores = model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                scores = model.predict(pairs, batch_size=self.effective_batch_size, show_progress_bar=False)
             if hasattr(scores, "tolist"):
                 scores = scores.tolist()
             result = validate_scores(scores, len(values))

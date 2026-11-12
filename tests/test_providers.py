@@ -1,6 +1,7 @@
 import io
 import unittest
 from http.client import IncompleteRead, RemoteDisconnected
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
@@ -22,6 +23,7 @@ from rag_textbook_qa.providers.factory import (
     create_remote_cooldown,
     create_reranker_provider,
 )
+from rag_textbook_qa.providers.local import LocalRerankerProvider
 from rag_textbook_qa.providers.remote import (
     FallbackEmbeddingProvider,
     FallbackRerankerProvider,
@@ -81,6 +83,59 @@ class StubEmbeddingProvider:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_automatic_batch_size_only_changes_mps_and_preserves_explicit_override(self):
+        for device, override, expected in (("mps", None, 8), ("mps:0", None, 8), ("cpu", None, 32),
+                                           ("cuda:0", None, 32), ("mps", 32, 32)):
+            with self.subTest(device=device, override=override):
+                provider = LocalRerankerProvider("model", batch_size=override)
+                model = MagicMock(device=device)
+                model.predict.return_value = [.2]
+                with patch.object(provider, "_load", return_value=model):
+                    provider._model = model
+                    provider.rerank("query", ["document"])
+                self.assertEqual(model.predict.call_args.kwargs["batch_size"], expected)
+
+    def test_reranker_configuration_changes_identity_and_reaches_lazy_model(self):
+        default = LocalRerankerProvider("model", device="mps")
+        self.assertEqual(default.identity, ModelIdentity(task="reranker", model="model"))
+        length = LocalRerankerProvider("model", device="mps", max_length=384)
+        half = LocalRerankerProvider("model", device="mps", dtype="float16")
+        self.assertEqual(len({p.identity.fingerprint for p in (default, length, half)}), 3)
+        model = MagicMock(device="mps")
+        constructor = MagicMock(return_value=model)
+        provider = LocalRerankerProvider("model", device="mps", max_length=256, dtype="float16")
+        with patch.dict("sys.modules", {"sentence_transformers": SimpleNamespace(CrossEncoder=constructor)}):
+            self.assertIs(provider._load(), model)
+            self.assertIs(provider._load(), model)
+        constructor.assert_called_once_with("model", device="mps", max_length=256)
+        model.half.assert_called_once_with()
+        self.assertEqual(provider.identity.as_dict()["max_length"], 256)
+        self.assertEqual(provider.identity.as_dict()["dtype"], "float16")
+
+    def test_reranker_overrides_fail_explicitly_for_remote_and_cpu_half(self):
+        for options in ({"reranker_max_length": 256}, {"reranker_dtype": "float16"}):
+            with self.subTest(options=options), self.assertRaisesRegex(ProviderError, "Worker"):
+                create_reranker_provider(ComputeSettings(backend="remote", **options))
+        with self.assertRaisesRegex(ValueError, "MPS"):
+            LocalRerankerProvider("model", device="cpu", dtype="float16")
+        model = MagicMock(device="cpu")
+        provider = LocalRerankerProvider("model", dtype="float16")
+        with patch.dict("sys.modules", {"sentence_transformers": SimpleNamespace(
+            CrossEncoder=MagicMock(return_value=model)
+        )}), self.assertRaisesRegex(ValueError, "MPS"):
+            provider._load()
+        self.assertIsNone(provider._model)
+
+    def test_default_remote_rejects_a_worker_with_different_reranker_configuration(self):
+        client = MagicMock()
+        client.request.return_value = {
+            "status": "ok", "protocol_version": "1", "models": {"reranker":
+                ModelIdentity(task="reranker", model="model", max_length=256).as_dict()},
+        }
+        with self.assertRaises(ModelMismatchError):
+            RemoteRerankerProvider(client, "model").rerank("query", ["document"])
+        client.request.assert_called_once_with("/health")
+
     def test_unhealthy_or_incompatible_health_stops_before_inference_or_fallback(self):
         invalid_states = [
             {"status": "starting", "protocol_version": "1"},

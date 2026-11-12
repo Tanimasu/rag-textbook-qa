@@ -204,7 +204,7 @@ def run_worker_server(
     device: str,
     token: str | None,
     warmup: bool = False,
-    reranker_batch_size: int = 32,
+    reranker_batch_size: int | None = None,
 ) -> None:
     validate_worker_bind(host, token)
     try:

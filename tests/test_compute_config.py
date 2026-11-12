@@ -4,6 +4,20 @@ from rag_textbook_qa.providers import ComputeSettings, ProviderError
 
 
 class ComputeSettingsTests(unittest.TestCase):
+    def test_reranker_experimental_configuration_is_validated_and_reported(self):
+        defaults = ComputeSettings.from_env({})
+        self.assertIsNone(defaults.reranker_max_length)
+        self.assertEqual(defaults.reranker_dtype, "float32")
+        settings = ComputeSettings.from_env({"RAG_QA_RERANK_MAX_LENGTH": "384",
+                                             "RAG_QA_RERANK_DTYPE": "FLOAT16"})
+        self.assertEqual(settings.safe_summary()["reranker_max_length"], 384)
+        self.assertEqual(settings.safe_summary()["reranker_dtype"], "float16")
+        for value in ("0", "-1", "1.5", "true"):
+            with self.subTest(value=value), self.assertRaisesRegex(ProviderError, "MAX_LENGTH"):
+                ComputeSettings.from_env({"RAG_QA_RERANK_MAX_LENGTH": value})
+        with self.assertRaisesRegex(ProviderError, "DTYPE"):
+            ComputeSettings.from_env({"RAG_QA_RERANK_DTYPE": "int8"})
+
     def test_remote_timeout_rejects_non_finite_values(self):
         for value in ("nan", "inf", "-inf", "1e999", "0", "-1"):
             with self.subTest(value=value), self.assertRaisesRegex(ProviderError, "REMOTE_TIMEOUT"):
@@ -41,7 +55,7 @@ class ComputeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.device, "auto")
         self.assertIsNone(settings.remote_url)
         self.assertFalse(settings.query_fallback_to_local)
-        self.assertEqual(settings.reranker_batch_size, 32)
+        self.assertIsNone(settings.reranker_batch_size)
 
     def test_reranker_batch_size_is_positive_and_reported(self):
         settings = ComputeSettings.from_env({"RAG_QA_RERANK_BATCH_SIZE": "8"})

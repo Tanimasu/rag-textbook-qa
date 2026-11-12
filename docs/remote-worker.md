@@ -20,9 +20,15 @@ RAG_QA_EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 RAG_QA_RERANKER_MODEL=BAAI/bge-reranker-base
 ```
 
-本地模型重排可通过 `RAG_QA_RERANK_BATCH_SIZE` 调整推理批大小，默认 32。
+本地模型重排可通过 `RAG_QA_RERANK_BATCH_SIZE` 调整推理批大小。
+不设时按实际设备选择：MPS 用 8，CPU/CUDA 保留 32；显式值（包括已有配置中的 32）优先。
 应在实际设备上使用同一批候选计时并检查排名；更大的批大小不一定更快。
 使用远程 Worker 时该值应配置在 Worker 机器，Mac 上的值只控制本地查询回退。
+
+本机实验可选 `RAG_QA_RERANK_MAX_LENGTH=384` 或 `RAG_QA_RERANK_DTYPE=float16`，
+两者默认关闭，可能改变排名；float16 需要 MPS 或 CUDA。非默认长度、精度进入 provider 指纹，
+已有的默认指纹保持兼容。remote 客户端和 `worker serve` 发现这两种开关会在推理/启动前明确报错，
+不会让本机回退与 Worker 使用不同配置却报告同一指纹。实测范围与取舍见[重排性能](retrieval-performance.md)。
 
 ## Windows Worker（4070 Super）
 

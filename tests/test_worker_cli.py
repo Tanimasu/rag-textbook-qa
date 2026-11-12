@@ -141,6 +141,22 @@ class WorkerCliTests(unittest.TestCase):
                 warmup=True,
             )
 
+    def test_serve_rejects_unsupported_reranker_overrides_before_startup(self):
+        for overrides in ({"RAG_QA_RERANK_MAX_LENGTH": "256"},
+                          {"RAG_QA_RERANK_DTYPE": "float16"}):
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.make_workspace(root, token="cli-test-secret")
+                error = io.StringIO()
+                with patch.dict(os.environ, overrides, clear=True), patch(
+                    "rag_textbook_qa.worker.run_worker_server"
+                ) as serve, contextlib.redirect_stderr(error):
+                    with self.assertRaises(SystemExit) as caught:
+                        main(["--workspace", str(root), "worker", "serve"])
+                    self.assertEqual(caught.exception.code, 1)
+                self.assertIn("Worker 暂不支持", error.getvalue())
+                serve.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rag-textbook-qa"
-version = "0.3.38"
+version = "0.3.39"
 description = "Cross-platform RAG question-answering system for Chinese computer science textbooks"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
