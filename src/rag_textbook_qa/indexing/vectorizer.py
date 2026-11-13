@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import time
 import traceback
 import uuid
@@ -18,7 +19,12 @@ from tqdm import tqdm
 
 from rag_textbook_qa.catalog import book_id_from_chunk_stem
 from rag_textbook_qa.config import Settings
-from rag_textbook_qa.indexing.revision import INDEX_REVISION_KEY
+from rag_textbook_qa.indexing.exact import ExactVectorIndex
+from rag_textbook_qa.indexing.revision import (
+    INDEX_REVISION_KEY,
+    IndexPublicationInProgress,
+    index_revision,
+)
 from rag_textbook_qa.json_utils import loads_strict
 from rag_textbook_qa.providers import ComputeSettings, EmbeddingProvider
 from rag_textbook_qa.providers.factory import create_embedding_provider
@@ -186,12 +192,17 @@ class MultiBookVectorizer:
         print(f"初始化向量数据库: {resolved_db_path}")
         self.db_path = resolved_db_path
         self.client = chromadb.PersistentClient(path=str(resolved_db_path))
+        self._search_lock = threading.RLock()
+        self._search_revision: str | None = None
+        self._search_cache: dict[str, tuple[dict[str, Any], ExactVectorIndex]] = {}
         print("数据库初始化完成\n")
 
     def close(self) -> None:
         """Release Chroma resources, including Windows file handles."""
 
-        self.client.close()
+        with self._search_lock:
+            self._search_cache.clear()
+            self.client.close()
 
     def __enter__(self) -> Self:
         return self
@@ -446,6 +457,46 @@ class MultiBookVectorizer:
                 print(f"已替换旧数据: {collection_name}")
         return self.client.get_collection(collection_name)
 
+    def _exact_book_results(self, book_name: str, query: str, top_k: int) -> list[tuple[str, dict, float]]:
+        """Read and cache a coherent snapshot for the standalone diagnostic route."""
+        def published_revision() -> str | None:
+            try:
+                return index_revision(self.db_path)
+            except IndexPublicationInProgress:
+                return None
+
+        with self._search_lock:
+            for _ in range(3):
+                revision = published_revision()
+                if revision is None:
+                    time.sleep(0.05)
+                    continue
+                try:
+                    collection = self.client.get_collection(f"textbook_{book_name}")
+                    self.validate_collection_embedding(collection)
+                    cache = self._search_cache if self._search_revision == revision else {}
+                    if book_name in cache:
+                        data, vectors = cache[book_name]
+                    else:
+                        data = collection.get(include=["documents", "metadatas", "embeddings"])
+                        if (len(data["ids"]) != len(data["documents"] or [])
+                                or len(data["ids"]) != len(data["metadatas"] or [])):
+                            raise ValueError("向量库记录不完整，向量数与文档数必须相同")
+                        vectors = ExactVectorIndex(data.pop("embeddings", None), data["ids"])
+                    query_embedding = self.embedding_provider.embed_queries([query])
+                    ranked = vectors.search(query_embedding, top_k)
+                except Exception:
+                    if published_revision() == revision:
+                        raise
+                    continue
+                if published_revision() != revision:
+                    continue
+                self._search_cache = {**cache, book_name: (data, vectors)}
+                self._search_revision = revision
+                return [(data["documents"][position], data["metadatas"][position], score)
+                        for position, score in ranked]
+            raise RuntimeError("检索期间教材索引连续更新，请稍后重试")
+
     def search_book(self, book_name: str, query: str, top_k: int = 5) -> None:
         collection_name = f"textbook_{_validate_book_id(book_name)}"
         if not self._collection_exists(collection_name):
@@ -458,19 +509,11 @@ class MultiBookVectorizer:
         print(f"\n搜索教材: 《{book_name}》")
         print(f"查询内容: {query!r}")
         print("-" * 70)
-        query_embedding = self.embedding_provider.embed_queries([query])
-        results = collection.query(query_embeddings=query_embedding, n_results=top_k)
+        results = self._exact_book_results(book_name, query, top_k)
 
-        for index, (document, metadata, distance) in enumerate(
-            zip(
-                results["documents"][0],
-                results["metadatas"][0],
-                results["distances"][0],
-            ),
-            1,
-        ):
+        for index, (document, metadata, similarity) in enumerate(results, 1):
             print(f"\n【结果 {index}】")
-            print(f"相似度: {1 - distance:.4f}")
+            print(f"相似度: {similarity:.4f}")
             print(f"教材: {metadata['book_name']}")
             print(f"章节: {metadata['chapter']}")
             print(f"小节: {metadata['section_h2']}")

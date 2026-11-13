@@ -19,6 +19,7 @@ WHEEL_REQUIRED = {
     "rag_textbook_qa/api/static/history-backup.js",
     "rag_textbook_qa/api/static/markdown.js",
     "rag_textbook_qa/cli.py",
+    "rag_textbook_qa/indexing/exact.py",
     "rag_textbook_qa/web/app.py",
     "rag_textbook_qa/worker.py",
 }

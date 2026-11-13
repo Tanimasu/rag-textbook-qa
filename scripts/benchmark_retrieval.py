@@ -39,6 +39,7 @@ class CountedProvider:
         self.identity, self.telemetry = provider.identity, provider.telemetry
         self.calls = self.items = 0
         self.seconds = 0.0
+        self.document_hashes: list[str] = []
 
     def _call(self, name: str, values: Any, *args: Any) -> Any:
         self.calls += 1
@@ -56,6 +57,7 @@ class CountedProvider:
         return self._call("embed_documents", texts)
 
     def rerank(self, query: str, documents: Any) -> Any:
+        self.document_hashes = [hashlib.sha256(text.encode()).hexdigest() for text in documents]
         return self._call("rerank", documents, query)
 
 
@@ -88,6 +90,8 @@ def summaries(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_embedding_calls": statistics.mean(row["embedding_calls"] for row in rows),
             "mean_reranker_calls": statistics.mean(row["reranker_calls"] for row in rows),
             "mean_rerank_pairs": statistics.mean(row["rerank_pairs"] for row in rows),
+            "semantic_median_seconds": statistics.median(row["semantic_seconds"] for row in rows),
+            "semantic_p90_seconds": sorted(row["semantic_seconds"] for row in rows)[math.ceil(len(rows) * .9) - 1],
         }
     return output
 
@@ -159,6 +163,7 @@ def main() -> None:
         "repeats": args.repeats, "inference_cache": False,
         "p95_method": "nearest rank; descriptive small-sample statistic, not a production SLO",
         "p90_method": "nearest rank; descriptive statistic, not a production SLO",
+        "semantic_timing_scope": "search_embedding wall time excluding embedding provider time, summed across books",
         "embedding_fingerprint": embedding.identity.fingerprint,
         "reranker_fingerprint": reranker.identity.fingerprint,
         "engine_sha256": hashlib.sha256((paths.root / "src/rag_textbook_qa/rag/engine.py").read_bytes()).hexdigest(),
@@ -184,6 +189,23 @@ def main() -> None:
             engines["baseline"] = stack.enter_context(engine_class(**options))
         if args.compare_batch_size is not None:
             engines["batch_baseline"] = engines["current"]
+        semantic_timings: dict[int, dict[str, float]] = {}
+        for engine in engines.values():
+            if id(engine) in semantic_timings:
+                continue
+            counter = {"seconds": 0.0}
+            semantic_timings[id(engine)] = counter
+            original_search = engine.search_embedding
+
+            def timed_search(*values, _search=original_search, _counter=counter, **kwargs):
+                before = embedding.seconds
+                started = time.monotonic()
+                try:
+                    return _search(*values, **kwargs)
+                finally:
+                    _counter["seconds"] += time.monotonic() - started - (embedding.seconds - before)
+
+            engine.search_embedding = timed_search
         warm_started = time.monotonic()
         engines["current"].search_single_book(selected[0].book_name, selected[0].question, 5, use_hyde=False)
         report["warmup_seconds"] = time.monotonic() - warm_started
@@ -207,6 +229,7 @@ def main() -> None:
                                                     else args.reranker_batch_size)
                     counters = embedding.calls, reranker.calls, reranker.items
                     provider_seconds = embedding.seconds, reranker.seconds
+                    semantic_before = semantic_timings[id(engine)]["seconds"]
                     synchronize()
                     started = time.monotonic()
                     rows, _, _ = engine._retrieve(question.question, {"status": "disabled"},
@@ -219,12 +242,14 @@ def main() -> None:
                         "question": question.question,
                         "seconds": seconds, "results": len(rows),
                         "effective_batch_size": reranker.provider.effective_batch_size,
+                        "semantic_seconds": semantic_timings[id(engine)]["seconds"] - semantic_before,
                         "top5": [{"book_name": row["book_name"], "chunk_id": row["chunk_id"],
                                   "body_sha256": hashlib.sha256(row["content"].encode()).hexdigest()}
                                  for row in rows],
                         "embedding_calls": embedding.calls - counters[0],
                         "reranker_calls": reranker.calls - counters[1],
                         "rerank_pairs": reranker.items - counters[2],
+                        "rerank_input_sha256": list(reranker.document_hashes),
                         "embedding_seconds": embedding.seconds - provider_seconds[0],
                         "reranker_seconds": reranker.seconds - provider_seconds[1],
                     })

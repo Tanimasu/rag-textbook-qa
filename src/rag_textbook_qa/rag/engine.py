@@ -18,6 +18,7 @@ from typing import Any, Protocol, Self
 from rank_bm25 import BM25Okapi
 
 from rag_textbook_qa.indexing import MultiBookVectorizer
+from rag_textbook_qa.indexing.exact import ExactVectorIndex
 from rag_textbook_qa.indexing.revision import IndexPublicationInProgress, index_revision
 from rag_textbook_qa.llm import (
     DEFAULT_LLM_BASE_URL,
@@ -328,6 +329,7 @@ class RAGEngine:
         self.bm25_corpus: dict[str, list[str]] = {}
         self.bm25_doc_ids: dict[str, list[str]] = {}
         self.bm25_metadatas: dict[str, list[dict[str, Any]]] = {}
+        self._semantic_indexes: dict[str, ExactVectorIndex] = {}
         self._index_lock = threading.RLock()
         self._index_revision: str | None = None
         try:
@@ -532,16 +534,20 @@ class RAGEngine:
         harvested = []
         for collection in book_collections:
             book_name = collection.name.removeprefix("textbook_")
-            data = collection.get(include=["documents", "metadatas"])
+            data = collection.get(include=["documents", "metadatas", "embeddings"])
             documents = data["documents"] or []
+            identifiers, metadatas = data["ids"], data["metadatas"] or []
+            if len(documents) != len(identifiers) or len(documents) != len(metadatas):
+                raise ValueError(f"{book_name} 的向量库记录不完整")
+            semantic = ExactVectorIndex(data.pop("embeddings", None), identifiers)
             if not documents:
                 continue
-            harvested.append((book_name, documents, data["ids"], data["metadatas"] or []))
+            harvested.append((book_name, documents, identifiers, metadatas, semantic))
 
         # The textbook's own headings are the closest thing to a domain
         # glossary the corpus offers, so mine them before tokenizing anything.
         terms: set[str] = set()
-        for _, _, _, metadatas in harvested:
+        for _, _, _, metadatas, _ in harvested:
             terms |= heading_terms(
                 str(metadata.get(field, ""))
                 for metadata in metadatas
@@ -552,8 +558,9 @@ class RAGEngine:
         corpora = {}
         doc_ids = {}
         metadata_by_book = {}
+        semantic_indexes = {}
 
-        for book_name, documents, document_ids, metadatas in harvested:
+        for book_name, documents, document_ids, metadatas, semantic in harvested:
             if len(documents) != len(document_ids) or len(documents) != len(metadatas):
                 raise ValueError(f"{book_name} 的向量库记录不完整")
             indexes[book_name] = BM25Okapi(
@@ -562,6 +569,7 @@ class RAGEngine:
             corpora[book_name] = documents
             doc_ids[book_name] = document_ids
             metadata_by_book[book_name] = [dict(metadata or {}) for metadata in metadatas]
+            semantic_indexes[book_name] = semantic
             indexed_count += 1
         if self._published_revision() != expected_revision:
             return False
@@ -571,6 +579,7 @@ class RAGEngine:
         self.bm25_corpus = corpora
         self.bm25_doc_ids = doc_ids
         self.bm25_metadatas = metadata_by_book
+        self._semantic_indexes = semantic_indexes
         self._adjacent_corpora = {}
         if self.verbose:
             print(f"BM25 索引构建完成（{indexed_count} 本教材）")
@@ -683,6 +692,14 @@ class RAGEngine:
         _query_embedding: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
         _require_positive_integer(top_k, "top_k")
+        return self._run_with_index_snapshot(
+            lambda: self._search_embedding(book_name, query, top_k, use_hyde, _query_embedding)
+        )
+
+    def _search_embedding(
+        self, book_name: str, query: str, top_k: int, use_hyde: bool | None,
+        query_embedding: list[list[float]] | None,
+    ) -> list[dict[str, Any]]:
         collection_name = f"textbook_{book_name}"
         collection_names = {
             collection.name for collection in self.vectorizer.client.list_collections()
@@ -694,40 +711,31 @@ class RAGEngine:
 
         collection = self.vectorizer.client.get_collection(collection_name)
         self.vectorizer.validate_collection_embedding(collection)
+        if book_name not in self.bm25_corpus:
+            return []
+        semantic = self._semantic_indexes[book_name]
         query_embedding = (
             self._embed_query(query, use_hyde)
-            if _query_embedding is None else _query_embedding
-        )
-
-        response = collection.query(
-            query_embeddings=query_embedding,
-            n_results=top_k,
+            if query_embedding is None else query_embedding
         )
         return [
             {
-                "chunk_id": document_id,
+                "chunk_id": self.bm25_doc_ids[book_name][position],
                 "rank": rank,
-                "similarity": float(1 - distance),
+                "similarity": similarity,
                 "method": "embedding",
                 "book_name": metadata["book_name"],
                 "chapter": metadata["chapter"],
                 "section_h2": metadata["section_h2"],
                 "section_h3": metadata.get("section_h3", ""),
                 "section_h4": metadata.get("section_h4", ""),
-                "content": document,
+                "content": self.bm25_corpus[book_name][position],
                 "has_code": metadata["has_code"],
                 "has_image": metadata["has_image"],
                 "char_count": metadata["char_count"],
             }
-            for rank, (document_id, document, metadata, distance) in enumerate(
-                zip(
-                    response["ids"][0],
-                    response["documents"][0],
-                    response["metadatas"][0],
-                    response["distances"][0],
-                ),
-                1,
-            )
+            for rank, (position, similarity) in enumerate(semantic.search(query_embedding, top_k), 1)
+            for metadata in [self.bm25_metadatas[book_name][position]]
         ]
 
     def search_single_book(

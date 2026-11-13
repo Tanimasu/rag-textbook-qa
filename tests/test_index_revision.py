@@ -5,8 +5,10 @@ import sqlite3
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 from chromadb.api.models.Collection import Collection
 from chromadb.api.rust import RustBindingsAPI
 from filelock import FileLock
@@ -62,6 +64,110 @@ class IndexRevisionTests(unittest.TestCase):
         with patch.object(engine, "_build_bm25_indexes") as rebuild:
             engine.refresh_index_if_changed()
         rebuild.assert_not_called()
+
+    def test_exact_vectors_refresh_with_the_same_bm25_and_reader_generation(self):
+        engine = self.engine()
+        old_vectors = engine._semantic_indexes["os"]
+        first = engine.search_single_book("os", "进程", 1)
+        engine._context_candidates(first, use_adjacent_context=True)
+        newer = [{**row, "content": "新正文" + str(i), "chunk_id": f"new_p{i}"}
+                 for i, row in enumerate(_chunks())]
+        with patch.object(self.provider, "embed_documents", return_value=[[0., 1.], [1., 0.]]):
+            self.write(newer)
+        rows = engine.search_embedding("os", "问题", 2, use_hyde=False)
+        self.assertEqual([row["chunk_id"] for row in rows], ["new_p1", "new_p0"])
+        self.assertEqual([row["similarity"] for row in rows], [1., 0.])
+        self.assertIsNot(old_vectors, engine._semantic_indexes["os"])
+        self.assertEqual(engine.bm25_doc_ids["os"], list(engine._semantic_indexes["os"].chunk_ids))
+        for identifier, vector in zip(engine.bm25_doc_ids["os"], engine._semantic_indexes["os"].matrix, strict=True):
+            np.testing.assert_array_equal(vector, [0., 1.] if identifier == "new_p0" else [1., 0.])
+        self.assertTrue(all(text.startswith("新正文") for text in engine.bm25_corpus["os"]))
+        self.assertEqual(engine._adjacent_corpora, {})
+        self.assertEqual(engine.read_passages("os", "new_p0")["passages"][0]["content"], "新正文0")
+        self.assertEqual(engine.index_revision, index_revision(self.db))
+
+    def test_invalid_new_vectors_never_publish_partial_cache_state(self):
+        engine = self.engine()
+        first = engine.search_single_book("os", "进程", 1)
+        engine._context_candidates(first, use_adjacent_context=True)
+        fields = ("bm25_tokenizer", "bm25_indexes", "bm25_corpus", "bm25_doc_ids", "bm25_metadatas",
+                  "_semantic_indexes", "_adjacent_corpora")
+        old = {name: getattr(engine, name) for name in fields}
+        old_revision = engine.index_revision
+        self.write([{**row, "content": "新正文" + str(i), "chunk_id": f"new_p{i}"}
+                    for i, row in enumerate(_chunks())])
+        self.write(_chunks(), "zeta")
+        original = Collection.get
+        collections = sorted(engine.vectorizer.client.list_collections(), key=lambda c: c.name)
+        for invalid in ([[float("nan"), 0.], [1., 0.]], [[1., 0.]]):
+            def corrupt(collection, *args, _invalid=invalid, **kwargs):
+                data = original(collection, *args, **kwargs)
+                if collection.name == "textbook_zeta" and "embeddings" in kwargs.get("include", []):
+                    data["embeddings"] = _invalid
+                return data
+            with self.subTest(invalid=invalid), patch.object(
+                engine.vectorizer.client, "list_collections", return_value=collections
+            ), patch.object(Collection, "get", corrupt), self.assertRaises(ValueError):
+                engine.refresh_index_if_changed()
+            self.assertEqual(engine.index_revision, old_revision)
+            for name, value in old.items():
+                self.assertIs(getattr(engine, name), value)
+        engine.refresh_index_if_changed()
+        self.assertEqual(set(engine._semantic_indexes), {"os", "zeta"})
+
+    def test_engine_and_standalone_search_use_cache_and_validate_live_fingerprint(self):
+        engine = self.engine()
+        with patch.object(Collection, "query", side_effect=AssertionError("HNSW is not a retrieval route")):
+            with patch.object(Collection, "get", side_effect=AssertionError("cache should already be loaded")):
+                rows = engine.search_embedding("os", "进程", 2, use_hyde=False)
+                self.assertEqual([row["chunk_id"] for row in rows], ["old_p0", "old_p1"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.vectorizer.search_book("os", "进程", 2)
+                cached = self.vectorizer._search_cache["os"][1]
+                with patch.object(Collection, "get", side_effect=AssertionError("standalone cache should be reused")):
+                    self.vectorizer.search_book("os", "线程", 2)
+                self.assertIs(self.vectorizer._search_cache["os"][1], cached)
+        self.write([{**row, "content": "独立路新正文" + str(i), "chunk_id": f"standalone_p{i}"}
+                    for i, row in enumerate(_chunks())])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.vectorizer.search_book("os", "问题", 2)
+        self.assertIsNot(self.vectorizer._search_cache["os"][1], cached)
+        self.assertTrue(all(text.startswith("独立路新正文")
+                            for text in self.vectorizer._search_cache["os"][0]["documents"]))
+        with patch.object(self.provider, "embed_queries", return_value=[[1., 0., 0.]]), self.assertRaisesRegex(
+            ValueError, "维度"
+        ):
+            engine.search_embedding("os", "问题")
+        collection = self.vectorizer.client.get_collection("textbook_os")
+        metadata = {key: value for key, value in collection.metadata.items() if key != "hnsw:space"}
+        collection.modify(metadata={**metadata, "embedding_fingerprint": "different"})
+        calls = self.provider.query_calls
+        with self.assertRaisesRegex(ValueError, "Provider 不一致"):
+            engine.search_embedding("os", "问题")
+        self.assertEqual(self.provider.query_calls, calls)
+
+    def test_hyde_decomposition_global_and_observatory_share_exact_vectors(self):
+        self.write(_chunks(), "database")
+        engine = self.engine()
+        with patch.object(Collection, "query", side_effect=AssertionError("no approximate retrieval")):
+            before = self.provider.query_calls
+            result = engine.inspect_retrieval("问题")
+            self.assertEqual(self.provider.query_calls - before, 1)
+            self.assertEqual({row["book_name"] for row in result["stages"]["fusion"]}, {"os", "database"})
+            engine.reranker = SimpleNamespace(rerank=MagicMock(side_effect=lambda q, docs: list(range(len(docs)))))
+            before = self.provider.query_calls
+            rows = engine.search_decomposed("原问题", ["子问题"], "os", 2)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(self.provider.query_calls - before, 2)
+            engine.reranker.rerank.assert_called_once()
+            engine.enable_llm = engine.enable_hyde = True
+            engine.llm = SimpleNamespace(generate_answer=MagicMock(return_value={"success": True, "answer": "假设正文"}))
+            before = self.provider.query_calls
+            with patch.object(self.provider, "embed_documents", wraps=self.provider.embed_documents) as documents:
+                engine.search_embedding("os", "问题", 2, use_hyde=True)
+                documents.assert_called_once_with(["假设正文"])
+            self.assertEqual(self.provider.query_calls, before)
+            engine.llm.generate_answer.assert_called_once()
 
     def test_book_addition_and_deletion_refresh_the_catalog(self):
         engine = self.engine()
@@ -357,6 +463,7 @@ class IndexRevisionTests(unittest.TestCase):
                 writer.vectorize_book(self.chunks_path, f"other{index}")
             rows = source.get(include=["embeddings"])
             self.assertEqual(rows["embeddings"].tolist(), expected)
+            # This query tests Chroma storage durability, not the product retrieval route.
             ranked = source.query(query_embeddings=[[1., 0.]], n_results=2)
             self.assertEqual(set(ranked["ids"][0]), {"old_p0", "old_p1"})
 
