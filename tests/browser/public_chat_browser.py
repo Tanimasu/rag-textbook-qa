@@ -2042,6 +2042,49 @@ class PublicChatBrowserTests(unittest.TestCase):
         self.assertEqual(self.history_records(), original)
         self.assertEqual(len(self.backend.asks), 1)
 
+    def test_opening_history_keeps_focus_the_user_moved_during_a_slow_read(self) -> None:
+        self.open_page()
+        self.saved_answer("慢读取时的焦点")
+        # Hold read-only history transactions until the test releases them, so the
+        # panel's asynchronous refresh finishes at a chosen moment.
+        self.page.evaluate("""() => {
+          const original = IDBDatabase.prototype.transaction;
+          const completed = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, 'oncomplete').set;
+          window.__historyReadGate = Promise.resolve();
+          window.__holdHistoryReads = () => {
+            window.__historyReadGate = new Promise(resolve => { window.__releaseHistoryReads = resolve; });
+          };
+          IDBDatabase.prototype.transaction = function (store, mode, ...rest) {
+            const transaction = original.call(this, store, mode, ...rest);
+            if (mode === 'readonly') {
+              Object.defineProperty(transaction, 'oncomplete', { configurable: true, set(handler) {
+                completed.call(transaction, event => window.__historyReadGate.then(() => handler.call(transaction, event)));
+              } });
+            }
+            return transaction;
+          };
+        }""")
+        release = """async () => {
+          window.__releaseHistoryReads();
+          for (let turn = 0; turn < 3; turn++) await new Promise(resolve => setTimeout(resolve, 0));
+        }"""
+        # Without other input, the panel still moves focus to its search box once loaded.
+        self.page.evaluate("window.__holdHistoryReads()")
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-panel")).to_be_visible()
+        self.page.evaluate(release)
+        self.expect(self.page.locator("#history-search")).to_be_focused()
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-panel")).to_be_hidden()
+        # A control the user reached before the read finished keeps its focus.
+        self.page.evaluate("window.__holdHistoryReads()")
+        self.page.locator("#toggle-history").click()
+        self.expect(self.page.locator("#history-panel")).to_be_visible()
+        self.page.locator("#history-favorites").focus()
+        self.page.evaluate(release)
+        self.expect(self.page.locator("#history-favorites")).to_be_focused()
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "history-favorites")
+
     def test_keyboard_review_and_history_reading_move_focus_to_current_content(self) -> None:
         self.open_page()
         for question in ("键盘复习第一题", "键盘复习第二题"):

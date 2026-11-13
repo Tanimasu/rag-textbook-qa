@@ -1944,13 +1944,17 @@ footer details p { margin-top: 6px; text-align: left; }
   });
   $("toggle-history").addEventListener("click", async () => {
     const panel = $("history-panel");
+    const toggle = $("toggle-history");
     panel.hidden = !panel.hidden;
-    $("toggle-history").setAttribute("aria-expanded", String(!panel.hidden));
+    toggle.setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden) {
       if (historyDB) {
         try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
       }
-      $("history-search").focus();
+      // The read is asynchronous: move focus only if the user has not already
+      // moved on to another control (or closed the panel) while it was pending.
+      const active = document.activeElement;
+      if (!panel.hidden && (!active || active === toggle || active === document.body)) $("history-search").focus();
     }
   });
   for (const id of ["history-search", "history-book", "history-favorites", "history-notes"]) {
