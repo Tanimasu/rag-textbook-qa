@@ -1075,10 +1075,13 @@ footer details p { margin-top: 6px; text-align: left; }
       if (editor.draftStorageFailed) sessionRemove(draftKey);
       editor.remove();
       syncHistoryControls();
+      const settled = document.activeElement;
       if (!records.some(item => item.id === id)) {
         sessionRemove(draftKey);
         try { await refreshHistory(); } catch { historyError("历史记录读取失败，请刷新后重试。"); }
       }
+      // The read above is asynchronous: leave focus alone if the user moved it meanwhile.
+      if (document.activeElement !== settled) return;
       (card.isConnected ? card.querySelector("[data-note]") : $("toggle-history"))?.focus({preventScroll: true});
     });
     save.addEventListener("click", async () => {
